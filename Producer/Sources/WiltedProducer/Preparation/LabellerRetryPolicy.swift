@@ -6,6 +6,7 @@ public enum LabellerStopReason: Equatable, Sendable {
     case modelUnavailable
     case unusableAnswer
     case commandLineToolUnavailable(provider: AdLabellerProvider)
+    case providerNotAccepted(provider: AdLabellerProvider)
     /// The provider kept failing until the owner's wait limit ran out.
     case waitLimit
     /// The day's request cap is reached and midnight is past the wait limit.
@@ -20,6 +21,7 @@ public enum LabellerStopReason: Equatable, Sendable {
         case .modelUnavailable: "model-unavailable"
         case .unusableAnswer: "unusable-answer"
         case .commandLineToolUnavailable: "command-line-tool-unavailable"
+        case .providerNotAccepted: "provider-not-accepted"
         case .waitLimit: "wait-limit"
         case .dailyCap: "daily-cap"
         case .providerPaused: "provider-paused"
@@ -31,6 +33,8 @@ public enum LabellerStopReason: Equatable, Sendable {
         switch self {
         case .commandLineToolUnavailable(let provider):
             return LabellerCommandLineRefusal(provider: provider).reasonSentence
+        case .providerNotAccepted(let provider):
+            return "\(provider.displayName) has not been turned on in Settings, so nothing was sent."
         case .keyRejected: return "Provider key was rejected. Update it in Settings."
         case .modelUnavailable: return "The labelling model is unavailable."
         case .unusableAnswer: return "The labelling model's answer could not be used."
@@ -96,6 +100,7 @@ public enum LabellerRetryPolicy {
         let proposed: Date
         switch input.trigger {
         case .failure(.commandLineToolUnavailable(let provider)): return .stop(.commandLineToolUnavailable(provider: provider))
+        case .failure(.providerNotAccepted(let provider)): return .stop(.providerNotAccepted(provider: provider))
         case .failure(.keyRejected): return .stop(.keyRejected)
         case .failure(.modelUnavailable): return .stop(.modelUnavailable)
         case .failure(.unusableAnswer): return .stop(.unusableAnswer)

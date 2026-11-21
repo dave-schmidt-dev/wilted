@@ -37,6 +37,9 @@ public struct ConfiguredLabellerSender: LabellerSending {
         onProgress: @escaping @Sendable (LabellerProgress) -> Void
     ) async throws -> LabellerResponse {
         let provider = preferences.provider
+        guard preferences.isAcknowledged(provider) else {
+            throw LabellerFailure.providerNotAccepted(provider: provider)
+        }
         let sender: any LabellerSending
         do {
             sender = try factory(provider)

@@ -24,6 +24,7 @@ All notable changes to this project are documented in this file.
 - The Mac sidebar now says "Library changes sent …" and the iPhone says "Mac last sent library changes …", instead of "Sent to devices" and "Mac last published". The time covers library changes only; playback positions sync every round.
 
 ### Added
+- Online ad finding requires privacy acknowledgement before sending transcripts to non-grandfathered providers, and checks command-line tool readiness without touching episode records.
 - Mac Settings > Devices shows each device’s last announcement and lets you name it on this Mac. Removing a device asks first. A newer announcement can link it again, with direct downloads still stopped.
 - Online ad finding supports key-based requests to OpenRouter, OpenAI, and Anthropic, each with its own Keychain slot and wire format.
 - Online ad finding can send requests through Claude Code or Codex command-line tools in a private, tool-less session.

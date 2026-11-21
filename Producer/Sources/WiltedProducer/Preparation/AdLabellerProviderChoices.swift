@@ -20,6 +20,16 @@ public enum AdLabellerProvider: String, Codable, CaseIterable, Sendable {
         }
     }
 
+    /// Whether using this provider requires the owner to acknowledge its privacy note.
+    public var requiresAcknowledgement: Bool {
+        switch self {
+        case .opencodeGoKey, .openCodeCLI:
+            return false
+        case .claudeCodeCLI, .codexCLI, .openRouterKey, .openAIKey, .anthropicKey:
+            return true
+        }
+    }
+
     /// User-facing display name.
     public var displayName: String {
         switch self {

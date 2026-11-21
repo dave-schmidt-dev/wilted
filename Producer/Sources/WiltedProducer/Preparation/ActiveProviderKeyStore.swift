@@ -62,12 +62,17 @@ public struct ActiveProviderKeyStore: LabellerKeyStoring, @unchecked Sendable {
         try currentSlot().remove()
     }
 
-    /// Returns `true` when the chosen provider needs no saved key (e.g. command-line tools)
-    /// or when its own slot holds a saved key.
+    /// Returns `true` when the chosen provider is ready (key-present for key providers,
+    /// and acknowledged if required).
     public func hasKey() -> Bool {
-        let provider = preferences.provider
+        isReady(provider: preferences.provider)
+    }
+
+    /// Whether `provider` is ready: key-present (for key providers) AND acknowledged.
+    public func isReady(provider: AdLabellerProvider) -> Bool {
+        guard preferences.isAcknowledged(provider) else { return false }
         guard provider.requiresSavedKey else { return true }
-        return currentSlot().hasKey()
+        return slot(for: provider).hasKey()
     }
 
     /// Whether a saved key is present in the chosen provider's slot.

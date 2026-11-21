@@ -101,6 +101,7 @@ public enum LabellerFailure: Error, Equatable, Sendable {
     case usageLimit
     case unusableAnswer
     case commandLineToolUnavailable(provider: AdLabellerProvider)
+    case providerNotAccepted(provider: AdLabellerProvider)
 
     /// A stable short name for journals; carries no associated data.
     public var kind: String {
@@ -112,6 +113,7 @@ public enum LabellerFailure: Error, Equatable, Sendable {
         case .usageLimit: "usage-limit"
         case .unusableAnswer: "unusable-answer"
         case .commandLineToolUnavailable: "command-line-tool-unavailable"
+        case .providerNotAccepted: "provider-not-accepted"
         }
     }
 
@@ -120,6 +122,8 @@ public enum LabellerFailure: Error, Equatable, Sendable {
         switch self {
         case .commandLineToolUnavailable(let provider):
             return LabellerCommandLineRefusal(provider: provider).reasonSentence
+        case .providerNotAccepted(let provider):
+            return "\(provider.displayName) has not been turned on in Settings, so nothing was sent."
         case .rateLimited:
             return "The provider is temporarily rate limited."
         case .temporary:
