@@ -100,6 +100,7 @@ public enum LabellerFailure: Error, Equatable, Sendable {
     case modelUnavailable
     case usageLimit
     case unusableAnswer
+    case commandLineToolUnavailable(provider: AdLabellerProvider)
 
     /// A stable short name for journals; carries no associated data.
     public var kind: String {
@@ -110,6 +111,27 @@ public enum LabellerFailure: Error, Equatable, Sendable {
         case .modelUnavailable: "model-unavailable"
         case .usageLimit: "usage-limit"
         case .unusableAnswer: "unusable-answer"
+        case .commandLineToolUnavailable: "command-line-tool-unavailable"
+        }
+    }
+
+    /// Plain reason sentence for user-facing explanation without code words.
+    public var reasonSentence: String {
+        switch self {
+        case .commandLineToolUnavailable(let provider):
+            return LabellerCommandLineRefusal(provider: provider).reasonSentence
+        case .rateLimited:
+            return "The provider is temporarily rate limited."
+        case .temporary:
+            return "A temporary problem prevented finding ads."
+        case .keyRejected:
+            return "The saved provider key was rejected."
+        case .modelUnavailable:
+            return "The requested model is unavailable."
+        case .usageLimit:
+            return "The provider usage limit has been reached."
+        case .unusableAnswer:
+            return "The provider returned an unusable answer."
         }
     }
 }

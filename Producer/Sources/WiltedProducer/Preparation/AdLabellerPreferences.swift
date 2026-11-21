@@ -18,6 +18,7 @@ public struct AdLabellerPreferences: @unchecked Sendable {
     static let enabledKey = keyPrefix + "enabled"
     static let confirmedKey = keyPrefix + "confirmedFeedIDs"
     static let localOnlyKey = keyPrefix + "localOnlyFeedIDs"
+    static let providerKey = keyPrefix + "provider"
     static let modelKey = keyPrefix + "modelID"
     static let levelKey = keyPrefix + "level"
     static let capKey = keyPrefix + "dailyCap"
@@ -32,6 +33,27 @@ public struct AdLabellerPreferences: @unchecked Sendable {
 
     public init(preferences: UserDefaults) {
         self.preferences = preferences
+    }
+
+    /// The chosen provider.
+    ///
+    /// Migrates on read from `useOpenCodeCLI` if `provider` is not explicitly set.
+    /// Defaults to OpenCode Go (`opencodeGoKey`) when no preference exists, or `openCodeCLI` if `useOpenCodeCLI` is true.
+    public var provider: AdLabellerProvider {
+        get {
+            if let stored = preferences.string(forKey: Self.providerKey),
+               let parsed = AdLabellerProvider(rawValue: stored) {
+                return parsed
+            }
+            if preferences.object(forKey: Self.useOpenCodeCLIKey) != nil {
+                return preferences.bool(forKey: Self.useOpenCodeCLIKey) ? .openCodeCLI : .opencodeGoKey
+            }
+            return .opencodeGoKey
+        }
+        nonmutating set {
+            preferences.set(newValue.rawValue, forKey: Self.providerKey)
+            preferences.set(newValue == .openCodeCLI, forKey: Self.useOpenCodeCLIKey)
+        }
     }
 
     /// The global switch. Off by default; while off nothing is sent.
@@ -112,10 +134,10 @@ public struct AdLabellerPreferences: @unchecked Sendable {
     }
 
     /// Whether labelling runs the OpenCode command-line tool instead of calling the provider
-    /// over HTTP with a key. Off by default.
+    /// over HTTP with a key. Derived from `provider`.
     public var usesOpenCodeCLI: Bool {
-        get { preferences.bool(forKey: Self.useOpenCodeCLIKey) }
-        nonmutating set { preferences.set(newValue, forKey: Self.useOpenCodeCLIKey) }
+        get { provider == .openCodeCLI }
+        nonmutating set { provider = newValue ? .openCodeCLI : .opencodeGoKey }
     }
 
     /// Consecutive tickets that ended at the wait limit on temporary provider failures.
