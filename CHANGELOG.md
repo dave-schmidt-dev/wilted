@@ -24,6 +24,7 @@ All notable changes to this project are documented in this file.
 
 ### Added
 - Mac Settings > Devices shows each device’s last announcement and lets you name it on this Mac. Removing a device asks first. A newer announcement can link it again, with direct downloads still stopped.
+- Online ad finding supports key-based requests to OpenRouter, OpenAI, and Anthropic, each with its own Keychain slot and wire format.
 - Online ad finding can send requests through Claude Code or Codex command-line tools in a private, tool-less session.
 - Online ad finding now supports choosing the provider, model, and thinking level, refusing unusable command-line tools without falling back, and recording provider details on each result.
 - iPhone: the app now keeps its own record (`Library/Logs/playback-journal.log`, about the last 2 MB) of every play, pause and skip command it receives from the car, the lock screen, a headset, Siri or the Watch, every start and stop with the position and whether that position was the phone's own, another device's or zero, what auto-continue picked or passed over, and every Mark completed or Remove request from the tap to the Mac's answer. `scripts/pull-iphone-cloudkit-log.sh` copies it to the Mac and prints its last 40 lines, with the voice request log when the phone has one.

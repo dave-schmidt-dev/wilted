@@ -59,6 +59,10 @@ public struct AdLabellerModelCatalog: Sendable {
             ModelInfo(id: "gpt-6.1-terra", displayName: "GPT 6.1 Terra", supportedLevels: ["low", "medium", "high", "xhigh"]),
         ],
         .anthropicKey: claudeModels,
+        // openRouterKey and openAIKey leave the catalog empty (custom model ids are accepted);
+        // the owner types the model id.
+        .openRouterKey: [],
+        .openAIKey: [],
     ]
 
     private static let deepSeekModels = [
