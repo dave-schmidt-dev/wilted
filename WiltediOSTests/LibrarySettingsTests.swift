@@ -373,7 +373,7 @@ extension LibrarySettingsTests {
 
 extension LibrarySettingsTests {
     func testPhoneSettingsSectionOrderAndTitles() {
-        XCTAssertEqual(LibrarySettingsSection.allCases.map(\.title), ["General", "Playback", "Storage", "Devices", "About"])
+        XCTAssertEqual(LibrarySettingsSection.allCases.map(\.title), ["General", "Playback", "Storage", "Reports", "Devices", "About"])
     }
 
     func testSharedSettingsTitlesMatchMacOrder() {
@@ -392,13 +392,15 @@ extension LibrarySettingsTests {
     func testPhoneSettingsIdentifierInventory() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let paths = ["WiltediOS/Library/LibrarySettingsView.swift", "WiltediOS/Library/LibrarySettingsFormat.swift",
-                     "WiltediOS/Library/LibraryListView.swift", "Shared/WiltedRootView.swift"]
+                     "WiltediOS/Library/LibraryListView.swift", "Shared/WiltedRootView.swift",
+                     "WiltediOS/Library/LibrarySettingsBulletinsCard.swift"]
         let sources = try paths.map { try String(contentsOf: root.appendingPathComponent($0), encoding: .utf8) }.joined()
         let identifiers = [
             "wilted-library-settings",
             "wilted-library-settings-about",
             "wilted-library-settings-appearance",
             "wilted-library-settings-auto-play-next",
+            "wilted-library-settings-bulletins-off",
             "wilted-library-settings-button",
             "wilted-library-settings-cache-size",
             "wilted-library-settings-device-id",
@@ -410,6 +412,7 @@ extension LibrarySettingsTests {
             "wilted-library-settings-playback",
             "wilted-library-settings-remove-audio",
             "wilted-library-settings-remove-notice",
+            "wilted-library-settings-reports",
             "wilted-library-settings-skip-back",
             "wilted-library-settings-skip-forward",
             "wilted-library-settings-speak-interruptions",
@@ -424,6 +427,7 @@ extension LibrarySettingsTests {
             "wilted-library-settings-sync-diagnostics",
             "wilted-library-settings-sync-progress",
             "wilted-library-settings-sync-status",
+            "wilted-library-settings-test-bulletin",
             "wilted-library-settings-text-scale",
             "wilted-library-settings-version",
             "wilted-library-settings-voice-routing-log",
