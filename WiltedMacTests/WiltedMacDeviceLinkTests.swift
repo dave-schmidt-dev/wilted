@@ -291,6 +291,67 @@ final class WiltedMacDeviceLinkTests: XCTestCase {
         XCTAssertEqual(rows.map(\.value), ["Linked · sending 1 episode, 2 episodes queued", "Linking…", "Linked"])
     }
 
+    func testStoppingDirectDownloadsClearsOnlyLinkKeysAndKeepsRequestStatus() async throws {
+        let server = InMemoryLibraryServer(writerDeviceID: macID)
+        await server.setClock(start)
+        let macTransport = HandshakeTransport(InMemoryLibraryTransport(deviceID: macID, server: server))
+        let phoneTransport = InMemoryLibraryTransport(deviceID: ipadID, server: server)
+        let links = WiltedMacDeviceLinks(transport: macTransport, macDeviceID: macID, now: { [start] in start })
+        let phoneKey = LANKeyAgreementKey()
+        let directory = LibraryDeviceDirectory(devices: [LibraryDeviceAnnouncement(
+            deviceID: ipadID, kind: "iPad", announcedAt: start, lanPublicKey: phoneKey.publicKey)])
+        await links.setMacLANPublicKey(Data([1, 2, 3]))
+        await links.noteDirectory(directory)
+        let request = try LibraryIntent.requestMedia(
+            entryID: entry("ep-stop"), deviceID: ipadID, createdAt: start, id: "r-stop")
+        await links.record(request, stage: .sending)
+
+        let beforeValue = try await phoneTransport.fetchDeviceLink()
+        let before = try XCTUnwrap(beforeValue)
+        XCTAssertNotNil(before.lanPublicKey)
+        XCTAssertNotNil(before.knownPhoneKeyFingerprint)
+        XCTAssertEqual(before.status(intentID: "r-stop")?.stage, .sending)
+
+        let devicesBefore = await links.devices()
+        let row = try XCTUnwrap(WiltedMacLibrarySyncStatus.deviceRows(devicesBefore).first)
+        let writesBefore = macTransport.linkWriteCount
+        var operation: Task<Void, Never>?
+        let menu = WiltedMacDeviceDownloadsMenu(row: row, macEnabled: true) {
+            operation = Task { await links.stopDirectDownloads(for: row.id) }
+        }
+        menu.downloads.wrappedValue = false
+        let stop = try XCTUnwrap(operation)
+        await stop.value
+        XCTAssertEqual(macTransport.linkWriteCount, writesBefore + 1)
+
+        let afterValue = try await phoneTransport.fetchDeviceLink()
+        let after = try XCTUnwrap(afterValue)
+        XCTAssertNil(after.lanPublicKey)
+        XCTAssertNil(after.knownPhoneKeyFingerprint)
+        XCTAssertEqual(after.deviceID, before.deviceID)
+        XCTAssertEqual(after.linkedAt, before.linkedAt)
+        XCTAssertEqual(after.requests, before.requests)
+
+        let devices = await links.devices()
+        let device = try XCTUnwrap(devices.first)
+        XCTAssertEqual(device.inFlight.map(\.stage), [.sending])
+        XCTAssertTrue(device.isDirectDownloadsStopped)
+    }
+
+    func testDeviceRowsCarryStoppedStateWithoutChangingLiveStatus() throws {
+        let item = try entry("ep-row")
+        let sending = LibraryMediaRequestStatus(intentID: "r-row", entryID: item, stage: .sending, updatedAt: start)
+        let rows = WiltedMacLibrarySyncStatus.deviceRows([
+            WiltedMacLinkedDevice(deviceID: "phone", kind: "iPhone", isLinked: true,
+                                  inFlight: [sending], isDirectDownloadsStopped: true),
+            WiltedMacLinkedDevice(deviceID: "other", kind: nil, isLinked: false, inFlight: []),
+        ])
+
+        XCTAssertEqual(rows.map(\.label), ["iPhone", "Device"])
+        XCTAssertEqual(rows.map(\.value), ["Linked · sending 1 episode", "Linking…"])
+        XCTAssertEqual(rows.map(\.isDirectDownloadsStopped), [true, false])
+    }
+
     /// A Mac linked only to an iPad names the iPad, and its copy about devices in general names no phone.
     func testAMacLinkedToAnIPadNamesTheIPadAndItsGeneralCopyNamesNoPhone() {
         let rows = WiltedMacLibrarySyncStatus.deviceRows([

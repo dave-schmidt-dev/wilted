@@ -20,15 +20,23 @@ struct WiltedMacLarderView: View {
     let paneMode: WiltedMacPaneMode
     let sidebarMode: WiltedMacSidebarMode
 
-    init(model: WiltedMacModel, paneMode: WiltedMacPaneMode, sidebarMode: WiltedMacSidebarMode = .rail) {
+    init(
+        model: WiltedMacModel,
+        paneMode: WiltedMacPaneMode,
+        sidebarMode: WiltedMacSidebarMode = .rail,
+        policyBoard: WiltedMacFeedPolicyBoard? = nil
+    ) {
         self.model = model
         self.paneMode = paneMode
         self.sidebarMode = sidebarMode
+        _feedPolicyBoard = State(initialValue: policyBoard ?? WiltedMacFeedPolicyBoard(model: model))
     }
     @Environment(\.colorScheme) var colorScheme
     @State var dropTargetID: String?
     /// The row whose possible duplicate review sheet is open.
     @State var reviewTarget: WiltedMacEpisodeIdentityReviewRequest?
+    @State private var presentedShowSettings: LarderShowSettingsPresentation?
+    @State private var feedPolicyBoard: WiltedMacFeedPolicyBoard
     @State private var searchFocusAction: (() -> Void)?
 
     var body: some View {
@@ -53,6 +61,26 @@ struct WiltedMacLarderView: View {
         .sheet(item: $reviewTarget) { request in
             WiltedMacEpisodeIdentityReview(model: model, anchorID: request.anchorID)
         }
+        .sheet(item: $presentedShowSettings) { target in
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    Button("Done") { presentedShowSettings = nil }
+                        .keyboardShortcut(.cancelAction)
+                        .accessibilityIdentifier("wilted-feed-sheet-done")
+                }
+                .padding(.horizontal, WiltedTheme.Spacing.large)
+                .padding(.top, WiltedTheme.Spacing.small)
+
+                if let subscription = model.subscriptions.first(where: { $0.id == target.feedID }) {
+                    WiltedMacShowSettingsView(model: model, board: feedPolicyBoard, subscription: subscription)
+                }
+            }
+        }
+    }
+
+    func presentShowSettings(for feedID: String) {
+        presentedShowSettings = LarderShowSettingsPresentation(feedID: feedID)
     }
 
     var playbackHelp: WiltedMacHelpContent {
@@ -143,6 +171,11 @@ struct WiltedMacLarderView: View {
         filterBar(colorScheme: colorScheme)
         groupList.wiltedMarksRowsTop()
     }
+}
+
+private struct LarderShowSettingsPresentation: Identifiable {
+    let feedID: String
+    var id: String { feedID }
 }
 
 /// The active Larder window supplies its own search focus action to the native Find command.

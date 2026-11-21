@@ -178,6 +178,7 @@ final class WiltedMacEpisodeStatesHostedTests: XCTestCase {
 
     func testEpisodeCountControlOffersFiveTenAndCustomWithNumericInputOnlyForCustom() throws {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        model.settingsSection = .newEpisodes
         let shown = try text(WiltedMacSettingsView(model: model), size: CGSize(width: 900, height: 1300))
         XCTAssertTrue(shown.contains("Episodes to list when adding a feed"), shown)
         XCTAssertFalse(shown.contains("Custom episodes"), "numeric input appears only for Custom")

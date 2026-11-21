@@ -131,12 +131,12 @@ final class WiltedMacSelfPromotionPreferenceTests: XCTestCase {
         XCTAssertEqual(WiltedMacSelfPromotionPreference(preferences: model.preferences).feedIDs, [])
     }
 
-    func testToggleAndCaptionShowOnlyForAPodcastFeed() throws {
-        let podcastText = try popoverText(isArticleFeed: false, suffix: "self-promotion-podcast")
-        XCTAssertTrue(podcastText.contains("own promotion"), podcastText)
-        XCTAssertTrue(podcastText.contains("sponsor roll call"), podcastText)
+    func testOwnPromotionControlShowsOnlyForAPodcast() throws {
+        let podcastText = try showSettingsText(isArticleFeed: false, suffix: "self-promotion-podcast")
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Remove the show's own promotion", in: podcastText), 1, podcastText)
+        XCTAssertTrue(podcastText.contains("Default: Off"), podcastText)
 
-        let articleText = try popoverText(isArticleFeed: true, suffix: "self-promotion-article")
+        let articleText = try showSettingsText(isArticleFeed: true, suffix: "self-promotion-article")
         XCTAssertFalse(articleText.contains("own promotion"), articleText)
         XCTAssertFalse(articleText.contains("sponsor roll call"), articleText)
     }
@@ -160,7 +160,7 @@ final class WiltedMacSelfPromotionPreferenceTests: XCTestCase {
         )
     }
 
-    private func popoverText(isArticleFeed: Bool, suffix: String) throws -> String {
+    private func showSettingsText(isArticleFeed: Bool, suffix: String) throws -> String {
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/\(suffix).xml"))
         let feedID = isArticleFeed
             ? try ItemID.articleFeed(canonicalFeedURL: feedURL).rawValue
@@ -173,8 +173,8 @@ final class WiltedMacSelfPromotionPreferenceTests: XCTestCase {
         let board = WiltedMacFeedPolicyBoard(model: model)
         board.loadForPreview(feedID: feedID, isArticleFeed: isArticleFeed, isNews: false)
         return try WiltedMacHeadless.recognizedText(
-            WiltedMacFeedPolicyContent(board: board, subscription: subscription),
-            size: CGSize(width: WiltedMacFeedPolicyContent.width, height: 800)
+            WiltedMacShowSettingsView(model: board.model, board: board, subscription: subscription),
+            size: CGSize(width: 900, height: 1_600)
         ).joined(separator: " ")
     }
 

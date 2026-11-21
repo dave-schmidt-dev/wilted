@@ -3,6 +3,14 @@ import SwiftUI
 import WiltedDomain
 
 extension WiltedMacLarderView {
+    @ViewBuilder
+    func showSettingsAction(feedID: String?) -> some View {
+        if let feedID, model.subscriptions.contains(where: { $0.id == feedID }) {
+            Button("Show settings") { presentShowSettings(for: feedID) }
+                .accessibilityIdentifier("wilted-larder-show-settings-\(feedID)")
+        }
+    }
+
     func larderRow(
         _ episode: WiltedMacEpisode,
         position: Int,
@@ -153,6 +161,7 @@ extension WiltedMacLarderView {
         .accessibilityIdentifier("wilted-larder-row-\(episode.id)")
         .contextMenu {
             WiltedMacAddToPlaylistMenu(model: model, entryID: episode.id)
+            showSettingsAction(feedID: episode.feedID)
             if model.canShowInFinder(episode) {
                 Button("Show in Finder") { model.showInFinder(episode) }
                     .accessibilityIdentifier("wilted-larder-show-in-finder-\(episode.id)")

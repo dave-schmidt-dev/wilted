@@ -2,6 +2,59 @@ import XCTest
 
 @MainActor
 extension WiltedMacJourneyUITests {
+    func test02ShowSettingsUsesTheSameFeedIDFromFeedsLarderAndAllShows() throws {
+        let app = try launch(arguments: ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"])
+        let navFeeds = app.descendants(matching: .any)["wilted-navigation-feeds"]
+        let navLarder = app.descendants(matching: .any)["wilted-navigation-larder"]
+        let navSettings = app.descendants(matching: .any)["wilted-navigation-settings"]
+        XCTAssertTrue(navFeeds.waitForExistence(timeout: 5))
+        XCTAssertTrue(navLarder.waitForExistence(timeout: 5))
+        XCTAssertTrue(navSettings.waitForExistence(timeout: 5))
+
+        navFeeds.click()
+        let feedName = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-podcast-feed-name-' AND label == 'Settings for Field Notes'")
+        ).firstMatch
+        XCTAssertTrue(feedName.waitForExistence(timeout: 5))
+        let feedID = String(feedName.identifier.dropFirst("wilted-podcast-feed-name-".count))
+        let page = app.descendants(matching: .any)["wilted-show-settings-page-\(feedID)"]
+
+        feedName.click()
+        XCTAssertTrue(page.waitForExistence(timeout: 5), "Feeds opens settings for the selected feed ID")
+        app.buttons["wilted-feed-sheet-done"].click()
+        XCTAssertTrue(page.waitForNonExistence(timeout: 5))
+
+        let episodeTitle = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-feeds-show-notes-' AND label == 'Show notes for Quiet Machines'")
+        ).firstMatch
+        XCTAssertTrue(episodeTitle.waitForExistence(timeout: 5))
+        let episodeID = String(episodeTitle.identifier.dropFirst("wilted-feeds-show-notes-".count))
+        let keep = app.buttons["wilted-feeds-keep-\(episodeID)"]
+        XCTAssertTrue(keep.waitForExistence(timeout: 5))
+        keep.click()
+
+        navLarder.click()
+        let larderRow = app.descendants(matching: .any)["wilted-larder-row-\(episodeID)"]
+        XCTAssertTrue(larderRow.waitForExistence(timeout: 5))
+        larderRow.rightClick()
+        let larderSettings = app.menuItems["wilted-larder-show-settings-\(feedID)"]
+        XCTAssertTrue(larderSettings.waitForExistence(timeout: 5))
+        larderSettings.click()
+        XCTAssertTrue(page.waitForExistence(timeout: 5), "Larder opens the same feed ID")
+        app.buttons["wilted-feed-sheet-done"].click()
+        XCTAssertTrue(page.waitForNonExistence(timeout: 5))
+
+        navSettings.click()
+        app.buttons["wilted-settings-section-ads"].click()
+        let consentSummary = app.buttons["wilted-ad-finding-consent-summary"]
+        XCTAssertTrue(consentSummary.waitForExistence(timeout: 5))
+        consentSummary.click()
+        let allShowsPage = app.descendants(matching: .any)["wilted-settings-all-shows-page"]
+        XCTAssertTrue(allShowsPage.waitForExistence(timeout: 5))
+        app.buttons["wilted-settings-all-show-\(feedID)"].click()
+        XCTAssertTrue(page.waitForExistence(timeout: 5), "All shows opens the same feed ID")
+    }
+
     /// Absorbs:
     /// - testEachDestinationExclusivelyOccupiesTheDetailRegion
     /// - testSidebarListsDestinationsOnlyAndNotTheArticleList (sidebar assertion only)
@@ -140,10 +193,20 @@ extension WiltedMacJourneyUITests {
         ).firstMatch
         XCTAssertTrue(feedName.waitForExistence(timeout: 5))
         feedName.click()
+        let showSettingsPage = app.descendants(matching: .any).matching(
+            NSPredicate(format: "identifier BEGINSWITH 'wilted-show-settings-page-'")
+        ).firstMatch
+        XCTAssertTrue(showSettingsPage.waitForExistence(timeout: 5), "the feed name opens Show settings")
+        for section in ["new-episodes", "playback", "ads", "type", "details"] {
+            XCTAssertTrue(
+                app.descendants(matching: .any)["wilted-show-settings-section-\(section)"].exists,
+                "Show settings includes the \(section) section"
+            )
+        }
         let sourceFacts = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-feed-details-source-facts-'")
         ).firstMatch
-        XCTAssertTrue(sourceFacts.waitForExistence(timeout: 5), "the feed name opens source facts")
+        XCTAssertTrue(sourceFacts.waitForExistence(timeout: 5), "the page keeps source facts in Details")
         XCTAssertTrue(app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier BEGINSWITH 'wilted-feed-details-source-' AND NOT identifier BEGINSWITH 'wilted-feed-details-source-facts-'")
         ).firstMatch.exists, "details includes the stored source URL")
@@ -213,6 +276,17 @@ extension WiltedMacJourneyUITests {
         app.typeKey(.escape, modifierFlags: [])
 
         navSettings.click()
+        for (section, control) in [
+            ("general", "wilted-text-scale"), ("new-episodes", "wilted-automation-status"),
+            ("preparing", "wilted-automation-processing-policy"), ("ads", "wilted-automation-remove-ads"),
+            ("reports", "wilted-reports-controls"), ("about", "wilted-lifetime-statistics"),
+            ("devices", "wilted-sync-controls")
+        ] {
+            let selector = app.buttons["wilted-settings-section-\(section)"]
+            XCTAssertTrue(selector.waitForExistence(timeout: 5), section)
+            selector.click()
+            XCTAssertTrue(element(app, control).waitForExistence(timeout: 5), section)
+        }
         XCTAssertTrue(syncControls.waitForExistence(timeout: 5))
         XCTAssertFalse(removedAddHint.exists)
         XCTAssertTrue(compact.exists)
@@ -404,8 +478,7 @@ extension WiltedMacJourneyUITests {
         XCTAssertFalse(restartItem.exists, "restart does not open the More menu")
     }
 
-    /// Presses the removal dialog's destructive button: by identifier, or by
-    /// its label where the dialog does not carry identifiers through.
+    /// Uses the label when the removal dialog drops its button identifier.
     private func confirmRemoval(in app: XCUIApplication, label: String) {
         let byIdentifier = app.descendants(matching: .any)["wilted-delete-confirm"]
         let confirm = byIdentifier.waitForExistence(timeout: 5) ? byIdentifier : app.buttons[label]
@@ -420,7 +493,6 @@ extension WiltedMacJourneyUITests {
         return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
-    /// A fresh Smoke fixture, traced so a window that never appears says why.
     private func launch(arguments: [String]) throws -> XCUIApplication {
         try openFixture(arguments + ["--wilted-ui-fixture-window-trace"], prefix: "wilted-ui-test")
     }

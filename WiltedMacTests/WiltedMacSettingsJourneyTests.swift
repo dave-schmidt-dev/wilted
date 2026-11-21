@@ -44,13 +44,15 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
         let appearance = settingsText
         XCTAssertTrue(appearance.contains("Appearance"), appearance)
         XCTAssertFalse(appearance.contains("Applies to every screen"), appearance)
-        let automation = settingsText
+        model.settingsSection = .newEpisodes
+        let automation = try WiltedMacHeadless.recognizedText(view, size: CGSize(width: 1000, height: 2000)).joined(separator: " ")
         XCTAssertTrue(automation.contains("Automation"), automation)
         for paragraph in ["Refresh adds metadata only", "Both overrides stay on", "An episode joins Larder"] {
             XCTAssertFalse(automation.contains(paragraph), automation)
         }
         let statistics = WiltedMacLifetimeStatisticsCard(model: model)
-        let stats = settingsText
+        model.settingsSection = .about
+        let stats = try WiltedMacHeadless.recognizedText(view, size: CGSize(width: 1000, height: 2000)).joined(separator: " ")
         XCTAssertTrue(stats.contains("counted from"), "actual tracking date remains visible: \(stats)")
         try retainCopyEvidence(WiltedMacHeadless.render(view, size: CGSize(width: 1_000, height: 2_000)), name: "settings-inline-light")
         for (name, help, marker) in [("appearance", view.appearanceHelp, "Applies"), ("automation", view.automationHelp, "override"), ("statistics", statistics.statisticsHelp, "measured")] {
@@ -83,7 +85,7 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
         XCTAssertTrue(context.contains("previous account"), "the dialog says why the library is held")
 
         // "Keep held" is an empty action, so it changes nothing; "Use reviewed account" approves.
-        let settings = try WiltedMacHeadless.viewSource("WiltedMacSettingsView.swift")
+        let settings = try WiltedMacHeadless.viewSource("WiltedMacLibrarySyncCard.swift")
         XCTAssertTrue(settings.contains("Button(WiltedMacLibrarySyncStatus.keepHeld, role: .cancel) {}"))
         XCTAssertTrue(settings.contains("Button(WiltedMacLibrarySyncStatus.approveReview) { model.reviewLibraryAccount() }"))
         XCTAssertEqual(model.librarySyncStatus.headline, held, "Keep held changes nothing")
@@ -103,7 +105,7 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
             WiltedMacLibrarySyncStatus.timeLabel(model.librarySyncActivity.lastSentAt), "Not yet this launch")
 
         // The card's identifiers: the legacy actions live only in the legacy card.
-        let library = try XCTUnwrap(settings.range(of: "private struct WiltedMacLibrarySyncCard"))
+        let library = try XCTUnwrap(settings.range(of: "struct WiltedMacLibrarySyncCard"))
         let libraryCard = String(settings[library.lowerBound...])
         for identifier in ["wilted-sync-scope-note", "wilted-sync-now", "wilted-sync-review-account", "wilted-sync-last-send"] {
             XCTAssertTrue(libraryCard.contains(identifier), identifier)
@@ -135,6 +137,7 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
         model.selectedNavigation = .settings
 
         // The rendered Settings destination, including its automation card.
+        model.settingsSection = .newEpisodes
         let bitmap = try WiltedMacHeadless.render(WiltedMacRootView(model: model))
         let detail = NSRect(x: 260, y: 0, width: bitmap.pixelsWide - 260, height: bitmap.pixelsHigh)
         XCTAssertGreaterThan(WiltedMacHeadless.distinctColorCount(in: bitmap, region: detail), 8,
@@ -173,10 +176,12 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
             XCTAssertTrue(settings.contains(identifier), identifier)
         }
         XCTAssertTrue(settings.contains("Uses local time. The window may continue overnight."))
+        model.settingsSection = .preparing
         let offPeakBitmap = try WiltedMacHeadless.render(WiltedMacRootView(model: model))
         XCTAssertGreaterThan(WiltedMacHeadless.distinctColorCount(in: offPeakBitmap, region: detail), 8)
 
         // When no sync engine runs, Settings shows the not-running text.
+        model.settingsSection = .devices
         let settingsView = WiltedMacSettingsView(model: model)
         let settingsLines = try WiltedMacHeadless.recognizedText(settingsView, size: CGSize(width: 1_000, height: 2_000))
         let settingsText = settingsLines.joined(separator: " ")

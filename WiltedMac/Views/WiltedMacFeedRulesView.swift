@@ -6,7 +6,7 @@ import WiltedProducer
 
 /// One feed's match rules in a resizable sheet: the ordered editor beside a
 /// live preview of what the rules decide for the feed's episodes, with Apply
-/// to existing and Undo. The feed-settings popover opens it.
+/// to existing and Undo. Show settings opens it.
 struct WiltedMacFeedRulesView: View {
     /// The sheet's smallest size. It opens a little larger and can grow.
     static let width: CGFloat = 720
@@ -123,9 +123,9 @@ struct WiltedMacFeedRulesView: View {
     }
 }
 
-// MARK: - Entry from the settings popover
+// MARK: - Entry from Show settings
 
-/// The row in the feed-settings popover that opens the rules sheet.
+/// The row in Show settings that opens the rules sheet.
 struct WiltedMacFeedRulesEntry: View {
     let editor: WiltedMacFeedRulesEditor
     let subscription: WiltedMacSubscription

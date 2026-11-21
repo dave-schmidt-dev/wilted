@@ -15,6 +15,7 @@ file-size:
 	@python3 scripts/check_file_size.py --staged
 
 check-fast: file-size lint deadcode
+	@python3 scripts/test-settings-section-inventory.py
 	@python3 scripts/check-no-global-tmp.py
 
 install-hooks:

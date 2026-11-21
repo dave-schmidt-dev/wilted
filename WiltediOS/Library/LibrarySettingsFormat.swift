@@ -66,8 +66,6 @@ enum LibrarySettingsFormat {
         }
     }
 
-    static let aboutTitle = "About"
-    static let diagnosticsTitle = "Diagnostics"
     static let diagnosticsDisclosureLabel = "Device and sync details"
     static let versionIdentifier = "wilted-library-settings-version"
     static let deviceIdentifier = "wilted-library-settings-device-id"

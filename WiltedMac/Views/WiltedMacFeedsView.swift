@@ -67,12 +67,12 @@ struct WiltedMacFeedsView: View {
     @State private var policyBoard: WiltedMacFeedPolicyBoard
 
     private enum Sheet: Identifiable {
-        case details(String)
+        case showSettings(String)
         case history
 
         var id: String {
             switch self {
-            case let .details(feedID): "details-\(feedID)"
+            case let .showSettings(feedID): "show-settings-\(feedID)"
             case .history: "history"
             }
         }
@@ -139,9 +139,9 @@ struct WiltedMacFeedsView: View {
                 .padding(.top, WiltedTheme.Spacing.small)
 
                 switch sheet {
-                case let .details(feedID):
+                case let .showSettings(feedID):
                     if let subscription = model.subscriptions.first(where: { $0.id == feedID }) {
-                        WiltedMacFeedDetailsView(model: model, board: policyBoard, subscription: subscription)
+                        WiltedMacShowSettingsView(model: model, board: policyBoard, subscription: subscription)
                     }
                 case .history:
                     WiltedMacFeedHistoryView(model: model)
@@ -400,14 +400,14 @@ struct WiltedMacFeedsView: View {
                     }
                 } else {
                     HStack(spacing: WiltedTheme.Spacing.xSmall) {
-                        Button { presentedSheet = .details(subscription.id) } label: {
+                        Button { presentedSheet = .showSettings(subscription.id) } label: {
                             Text(subscription.title)
                                 .wiltedFont(.body)
                                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                         }
                         .buttonStyle(.plain)
-                        .help("Show feed details")
-                        .accessibilityLabel("Details for \(subscription.title)")
+                        .help("Show settings")
+                        .accessibilityLabel("Settings for \(subscription.title)")
                         .accessibilityIdentifier("wilted-podcast-feed-name-\(subscription.id)")
                         Button { beginFeedName(subscription) } label: {
                             Image(systemName: "pencil")
@@ -438,7 +438,6 @@ struct WiltedMacFeedsView: View {
             .disabled(model.isFeedWritePending(subscription.id))
             .accessibilityLabel("Show episodes from \(subscription.title)")
             .accessibilityIdentifier("wilted-podcast-feed-enabled-\(subscription.id)")
-            WiltedMacFeedPolicyButton(board: policyBoard, subscription: subscription)
             Button { feedRemoval.request(.feed(subscription)) } label: {
                 Image(systemName: "trash")
             }

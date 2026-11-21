@@ -265,6 +265,33 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
                        "no Feeds visit builds a board of its own")
     }
 
+    func testFeedsLarderAndAllShowsRouteTheSameFeedIDToShowSettings() throws {
+        let feeds = try WiltedMacHeadless.viewSource("WiltedMacFeedsView.swift")
+        let larderRows = try WiltedMacHeadless.viewSource("WiltedMacLarderView+Rows.swift")
+        let larder = try WiltedMacHeadless.viewSource("WiltedMacLarderView.swift")
+        let settings = try WiltedMacHeadless.viewSource("WiltedMacAdFindingSettingsView.swift")
+
+        XCTAssertTrue(feeds.contains(".showSettings(subscription.id)"), feeds)
+        XCTAssertTrue(larderRows.contains("showSettingsAction(feedID: episode.feedID)"), larderRows)
+        XCTAssertTrue(larder.contains("presentedShowSettings = LarderShowSettingsPresentation(feedID: feedID)"), larder)
+        XCTAssertTrue(settings.contains(".showSettings(subscription.id)"), settings)
+        for source in [feeds, larder, settings] {
+            XCTAssertTrue(source.contains("WiltedMacShowSettingsView("), source)
+        }
+    }
+
+    func testSettingsProvidesAllShowsAndKeepsArticleFeedsOutOfAdFindingSummary() throws {
+        let adFinding = try WiltedMacHeadless.viewSource("WiltedMacAdFindingSettingsView.swift")
+
+        XCTAssertTrue(adFinding.contains("Text(\"All shows\")"), adFinding)
+        XCTAssertTrue(adFinding.contains("WiltedMacFeedKind.isArticleSubscription"), adFinding)
+        XCTAssertTrue(adFinding.contains("allowed for ad finding"), adFinding)
+        XCTAssertFalse(adFinding.contains("waitingRow"), adFinding)
+        XCTAssertFalse(adFinding.contains("wilted-ad-finding-review"), adFinding)
+        XCTAssertTrue(adFinding.contains("Button(\"Confirm\")"), "the global switch confirmation remains")
+        XCTAssertTrue(adFinding.contains("Shows you add later are not sent"), adFinding)
+    }
+
     /// A revisit is a fresh Feeds view over the board the first visit loaded. It draws that capacity
     /// while the revisit's own background refresh is still reading, rather than "Capacity loading".
     func testRevisitDrawsCachedCapacityWhileTheSharedBoardRefreshes() async throws {

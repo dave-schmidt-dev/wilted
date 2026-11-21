@@ -5,8 +5,7 @@ import WiltedDomain
 import WiltedProducer
 @testable import WiltedMac
 
-/// The per-feed "This show has no ads" choice: where it is kept, how it reaches
-/// the snapshot an episode is admitted with, and the toggle that sets it.
+/// The per-show Remove ads choice, its saved preference and admitted job policy.
 @MainActor
 final class WiltedMacAdFreeFeedPreferenceTests: XCTestCase {
     // MARK: Preference
@@ -124,12 +123,13 @@ final class WiltedMacAdFreeFeedPreferenceTests: XCTestCase {
     }
 
     func testTitleAppearsOnceForAPodcastFeedAndNeverForAnArticleFeed() throws {
-        let podcastText = try popoverText(isArticleFeed: false, suffix: "ad-free-podcast")
-        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "This show has no ads", in: podcastText), 1, podcastText)
-        XCTAssertTrue(podcastText.contains("without ad removal"), podcastText)
+        let podcastText = try showSettingsText(isArticleFeed: false, suffix: "ad-free-podcast", adFree: true)
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Remove ads", in: podcastText), 1, podcastText)
+        XCTAssertTrue(podcastText.contains("Off (Custom)"), podcastText)
+        XCTAssertFalse(podcastText.contains("This show has no ads"), podcastText)
 
-        let articleText = try popoverText(isArticleFeed: true, suffix: "ad-free-article")
-        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "This show has no ads", in: articleText), 0, articleText)
+        let articleText = try showSettingsText(isArticleFeed: true, suffix: "ad-free-article")
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Remove ads", in: articleText), 0, articleText)
         XCTAssertFalse(articleText.contains("without ad removal"), articleText)
     }
 
@@ -144,8 +144,8 @@ final class WiltedMacAdFreeFeedPreferenceTests: XCTestCase {
         return model
     }
 
-    /// Same headless OCR path the feed-policy rendering tests use for the popover canvas.
-    private func popoverText(isArticleFeed: Bool, suffix: String) throws -> String {
+    /// Same headless OCR path the Show settings rendering tests use.
+    private func showSettingsText(isArticleFeed: Bool, suffix: String, adFree: Bool = false) throws -> String {
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/\(suffix).xml"))
         let feedID = isArticleFeed
             ? try ItemID.articleFeed(canonicalFeedURL: feedURL).rawValue
@@ -157,9 +157,10 @@ final class WiltedMacAdFreeFeedPreferenceTests: XCTestCase {
         model.subscriptions = [subscription]
         let board = WiltedMacFeedPolicyBoard(model: model)
         board.loadForPreview(feedID: feedID, isArticleFeed: isArticleFeed, isNews: false)
+        if adFree { XCTAssertTrue(board.setAdFree(true, for: feedID)) }
         return try WiltedMacHeadless.recognizedText(
-            WiltedMacFeedPolicyContent(board: board, subscription: subscription),
-            size: CGSize(width: WiltedMacFeedPolicyContent.width, height: 800)
+            WiltedMacShowSettingsView(model: board.model, board: board, subscription: subscription),
+            size: CGSize(width: 900, height: 1_600)
         ).joined(separator: " ")
     }
 }
