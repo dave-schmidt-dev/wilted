@@ -78,7 +78,7 @@ validate_pixel_snapshot_baselines() {
     "$repo_root/WiltedMacTests/WiltedMacPlaybackJourneyTests.swift" ||
     fail 'Mac persistent compact-player journey selector is missing'
 
-  expected_count=228
+  expected_count=229
   [[ "$(find "$snapshot_dir" -type f -name '*.png' | wc -l | tr -d ' ')" -eq "$expected_count" ]] ||
     fail "Mac pixel baseline count is not $expected_count"
   empty_pngs="$(find "$snapshot_dir" -type f -name '*.png' -size 0c -print)"
@@ -118,7 +118,7 @@ validate_pixel_snapshot_baselines() {
   done <<<"$expected_state_ids"
   expected_selectors+=$'mac-shell-library-light\nmac-shell-library-dark\nmac-shell-player-light\nmac-shell-player-dark\nmac-shell-navigation-selection-light\nmac-shell-navigation-selection-dark\nmac-shell-producer-library-light\nmac-shell-producer-library-dark\nmac-shell-producer-url-focus-light\nmac-shell-producer-url-focus-dark\nmac-shell-sidebar-full-light\nmac-shell-sidebar-full-dark\nmac-shell-sidebar-rail-light\nmac-shell-sidebar-rail-dark\nmac-shell-sidebar-counts-light\nmac-shell-sidebar-counts-dark\nmac-shell-toolbar-light\nmac-shell-toolbar-dark\nmac-shell-add-sheet-link-light\nmac-shell-add-sheet-link-dark\nmac-shell-add-sheet-results-light\nmac-shell-add-sheet-results-dark\nmac-shell-add-sheet-followed-light\nmac-shell-add-sheet-followed-dark\nmac-shell-add-sheet-error-light\nmac-shell-add-sheet-error-dark\nmac-shell-add-sheet-import-progress-light\nmac-shell-add-sheet-import-progress-dark\nmac-shell-add-sheet-import-refusal-light\nmac-shell-add-sheet-import-refusal-dark\nmac-shell-show-settings-light\nmac-shell-show-settings-changed-light\nmac-shell-show-settings-article-light\nmac-shell-show-settings-article-dark\nmac-shell-feeds-article-row-light\nmac-shell-feeds-article-row-dark\nmac-shell-feeds-row-light\nmac-shell-feeds-row-dark\nmac-shell-larder-kind-filter-light\nmac-shell-larder-kind-filter-dark\nmac-shell-larder-real-size-minimum-light\nmac-shell-larder-real-size-minimum-dark\nmac-shell-larder-real-size-full-light\nmac-shell-larder-real-size-full-dark\nmac-shell-larder-book-row-light\nmac-shell-larder-book-row-dark\nmac-shell-player-chapters-light\nmac-shell-player-chapters-dark\nmac-shell-sidebar-playlists-light\nmac-shell-sidebar-playlists-dark\nmac-shell-playlist-manual-light\nmac-shell-playlist-manual-dark\nmac-shell-playlist-rules-light\nmac-shell-playlist-rules-dark\nmac-shell-settings-reports-light\nmac-shell-settings-reports-dark\nmac-shell-settings-reports-not-ready-light\nmac-shell-settings-reports-not-ready-dark\nmac-shell-settings-reports-ready-light\nmac-shell-settings-reports-ready-dark\nmac-shell-player-bulletin-banner-light\nmac-shell-player-bulletin-banner-dark\nmac-shell-larder-report-row-light\nmac-shell-larder-report-row-dark\nmac-shell-now-playing-pane-light\nmac-shell-now-playing-pane-dark\nmac-shell-section-devices-synthetic-rows-light\nmac-shell-direct-downloads-device-menu-light\nmac-shell-device-removal-confirmation-light'
   local section
-  for section in general new-episodes preparing ads reports devices about; do
+  for section in general new-episodes preparing ads providers reports devices about; do
     expected_selectors+="\nmac-shell-section-$section-light"
   done
   expected_selectors="$(printf '%b' "$expected_selectors" | sort)"
@@ -215,6 +215,7 @@ validate_pixel_snapshot_baselines() {
     testNewEpisodesSettingsPixels.mac-shell-section-new-episodes-light.png \
     testPreparingSettingsPixels.mac-shell-section-preparing-light.png \
     testAdsSettingsPixels.mac-shell-section-ads-light.png \
+    testProvidersSettingsPixels.mac-shell-section-providers-light.png \
     testReportsSettingsPixels.mac-shell-section-reports-light.png \
     testDevicesSettingsPixels.mac-shell-section-devices-light.png \
     testAboutSettingsPixels.mac-shell-section-about-light.png; do
@@ -264,5 +265,5 @@ validate_pixel_snapshot_baselines() {
     }
   done < <(find "$snapshot_dir" -type f -name '*.png' -print)
   [[ "$bad_pngs" -eq 0 ]] || fail "pixel baselines contain invalid or zero-size images: $bad_pngs"
-  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=76 window_shells=16\n' "$expected_count"
+  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=77 window_shells=16\n' "$expected_count"
 }

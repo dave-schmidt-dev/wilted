@@ -375,8 +375,8 @@ assert_contains 'self_test_watchos_zero_test_evidence' "$gate"
 # The shipping phone lane keeps the original eight captures, adds the eight Add sheet captures, and verifies pixels, not hidden labels.
 assert_validation_contains 'iOS pixel snapshot method membership must remain exactly twenty-six'
 assert_validation_contains 'iOS pixel test does not verify painted date and Storage geometry'
-assert_validation_contains 'expected_count=228'
-assert_validation_contains 'shells=76'
+assert_validation_contains 'expected_count=229'
+assert_validation_contains 'shells=77'
 assert_validation_contains 'window_shells=16'
 for snapshot in \
   testShowSettingsPagePixelBaselines.mac-shell-show-settings-light.png \
