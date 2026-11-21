@@ -10,10 +10,7 @@ struct LibrarySettingsBulletinsCard: View {
     @AppStorage(LibraryInterruptionPreferences.speakKey) private var speaksInterruptions = true
 
     var body: some View {
-        WiltedSettingsCard(title: "Reports") {
-            Toggle(LibrarySettingsFormat.speakInterruptionsLabel(deviceKind: model.deviceKind), isOn: $speaksInterruptions)
-                .wiltedFont(.utility)
-                .accessibilityIdentifier("wilted-library-settings-speak-interruptions")
+        WiltedSettingsCard(title: LibrarySettingsSection.reports.title) {
             if speaksInterruptions {
                 ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
                     Text(line)
@@ -29,7 +26,16 @@ struct LibrarySettingsBulletinsCard: View {
                 .buttonStyle(.bordered)
                 .disabled(model.handoffState.interruptions?.canSpeakTestBulletin != true)
                 .accessibilityIdentifier("wilted-library-settings-test-bulletin")
+            } else {
+                Text("Spoken interruptions is off under Playback, so no bulletin is read.")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("wilted-library-settings-bulletins-off")
             }
+            Text(LibrarySettingsSection.reports.footnote(deviceKind: model.deviceKind))
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-settings-reports")

@@ -13,6 +13,7 @@ struct LibrarySettingsView: View {
     let onDone: () -> Void
 
     @Environment(\.colorScheme) private var colorScheme
+    @AppStorage(LibraryInterruptionPreferences.speakKey) private var speaksInterruptions = true
     @State private var cache = LibraryCacheSummary()
     @State private var isConfirmingRemoval = false
     @State private var removalNotice: String?
@@ -25,10 +26,9 @@ struct LibrarySettingsView: View {
                     ForEach(LibrarySettingsSection.allCases, id: \.self) { section in
                         switch section {
                         case .general: generalCard
-                        case .playback:
-                            playbackCard
-                            LibrarySettingsBulletinsCard(model: model)
+                        case .playback: playbackCard
                         case .storage: storageCard
+                        case .reports: LibrarySettingsBulletinsCard(model: model)
                         case .devices: devicesCard
                         case .about: aboutCard
                         }
@@ -78,6 +78,9 @@ struct LibrarySettingsView: View {
             Toggle("Auto-play next episode", isOn: $settings.autoPlayNext)
                 .wiltedFont(.utility)
                 .accessibilityIdentifier("wilted-library-settings-auto-play-next")
+            Toggle(LibrarySettingsFormat.speakInterruptionsLabel(deviceKind: model.deviceKind), isOn: $speaksInterruptions)
+                .wiltedFont(.utility)
+                .accessibilityIdentifier("wilted-library-settings-speak-interruptions")
             iconRow("gauge.with.dots.needle.67percent", "Default speed") {
                 Text(LibrarySettingsFormat.speed(settings.defaultSpeed)).wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
