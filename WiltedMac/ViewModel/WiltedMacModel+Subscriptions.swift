@@ -401,6 +401,13 @@ extension WiltedMacModel {
             )
             duplicate = !inserted
         }
+        // A feed marked News only supplies bulletin headlines: none of its posts is offered or kept.
+        if try await store.isNews(feedID: feed.itemID) {
+            newsFeedIDs.insert(feed.itemID.rawValue)
+            setOfferedArticles([], feed: feed)
+            return (feed.itemID, feed.title, duplicate)
+        }
+        newsFeedIDs.remove(feed.itemID.rawValue)
         let refresh = ArticleFeedRefresh(store: store, defaults: automationSettings.feedAutomationDefaults)
         var prepare: ArticleFeedRefresh.Prepare?
         if !subscribing {

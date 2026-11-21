@@ -65,6 +65,7 @@ struct WiltedMacFeedsView: View {
     @FocusState private var focusedFeedID: String?
     @State private var presentedSheet: Sheet?
     @State private var policyBoard: WiltedMacFeedPolicyBoard
+    @State private var collapsedFeedSections: Set<WiltedMacFeedSection.Kind> = []
 
     private enum Sheet: Identifiable {
         case showSettings(String)
@@ -339,10 +340,19 @@ struct WiltedMacFeedsView: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-podcast-feeds-empty")
             } else {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(model.subscriptions.enumerated()), id: \.element.id) { index, subscription in
-                        if index > 0 { Divider() }
-                        feedRow(subscription)
+                ForEach(WiltedMacFeedSection.sections(model.subscriptions, isNews: policyBoard.isNews)) { section in
+                    WiltedMacFeedSectionHeader(section: section, isExpanded: Binding(
+                        get: { !collapsedFeedSections.contains(section.kind) },
+                        set: { open in
+                            if open { collapsedFeedSections.remove(section.kind) } else { collapsedFeedSections.insert(section.kind) }
+                        }))
+                    if !collapsedFeedSections.contains(section.kind) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(Array(section.subscriptions.enumerated()), id: \.element.id) { index, subscription in
+                                if index > 0 { Divider() }
+                                feedRow(subscription)
+                            }
+                        }
                     }
                 }
             }

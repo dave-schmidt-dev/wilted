@@ -13,6 +13,7 @@ struct WiltedMacReportsCard: View {
     @State private var latitudeText = ""
     @State private var longitudeText = ""
     @State private var contactText = ""
+    @State private var skipWordsText = ""
     @State private var coordinateProblem = false
     @State private var showsDetails: Bool
     @FocusState private var focusedLocationField: LocationField?
@@ -52,6 +53,9 @@ struct WiltedMacReportsCard: View {
                         Toggle("Headlines", isOn: reportsBinding(\.headlinesEnabled))
                             .disabled(!settings.interruptionsEnabled)
                             .accessibilityIdentifier("wilted-reports-headlines")
+                        topicsSection
+                            .padding(.leading, WiltedTheme.Spacing.large)
+                            .disabled(!settings.interruptionsEnabled || !settings.headlinesEnabled)
                         Stepper(value: reportsBinding(\.waitLimitSeconds), in: WiltedAutomationSettings.waitLimitRange, step: 10) {
                             labeledValue("Wait for a break", "\(settings.waitLimitSeconds) seconds")
                         }
@@ -111,6 +115,7 @@ struct WiltedMacReportsCard: View {
             latitudeText = settings.typedLatitude.map(Self.decimal) ?? ""
             longitudeText = settings.typedLongitude.map(Self.decimal) ?? ""
             contactText = settings.nwsContact
+            skipWordsText = Self.wordsText(settings.skippedHeadlineWords)
             location.typedCoordinates = settings.typedCoordinates
         }
     }
@@ -259,6 +264,28 @@ struct WiltedMacReportsCard: View {
         location.typedCoordinates = model.automationSettings.typedCoordinates
     }
 
+    /// Skip sports, the listener's own words, and how many of the current headlines they skip.
+    @ViewBuilder private var topicsSection: some View {
+        Toggle("Skip sports headlines", isOn: reportsBinding(\.skipSportsHeadlines))
+            .accessibilityIdentifier("wilted-reports-skip-sports")
+        LabeledContent("Also skip") {
+            TextField("Also skip", text: $skipWordsText, prompt: Text("Words, separated by commas"))
+                .labelsHidden()
+                .frame(maxWidth: 280)
+                .onSubmit(commitSkipWords)
+                .accessibilityIdentifier("wilted-reports-skip-words")
+        }
+        if let line = Self.skippedNote(model.bulletinHub.status.skippedHeadlineCount) {
+            note(line, id: "wilted-reports-skipped-count")
+        }
+    }
+
+    private func commitSkipWords() {
+        let words = skipWordsText.split(separator: ",").map(String.init)
+        model.updateAutomationSettings { current in current.updatingReports { $0.skippedHeadlineWords = words } }
+        skipWordsText = Self.wordsText(model.automationSettings.skippedHeadlineWords)
+    }
+
     private func commitContact() {
         model.updateAutomationSettings { current in current.updatingReports { $0.nwsContact = contactText } }
         contactText = model.automationSettings.nwsContact
@@ -326,8 +353,20 @@ struct WiltedMacReportsCard: View {
 
     static let help = WiltedMacHelpContent(title: "Reports", text:
         "Playback pauses at a natural break, reads the bulletin, then resumes. Interruptions are off until you turn them on. "
+        + "Headlines about sports, or containing any word you list under Also skip, are never read. "
         + "Typed coordinates are used whenever this Mac has no location fix; press Return to save them, or clear both to remove. "
         + "The National Weather Service contact is sent with weather requests so the service can reach you; press Return to save it.")
+
+    static func wordsText(_ words: [String]) -> String { words.joined(separator: ", ") }
+
+    /// How many of the headlines the news feeds list now are skipped; nil when none is.
+    static func skippedNote(_ count: Int) -> String? {
+        switch count {
+        case ..<1: nil
+        case 1: "1 current headline is skipped by these topics."
+        default: "\(count) current headlines are skipped by these topics."
+        }
+    }
 
     static func statusText(_ status: WiltedLocationStatus) -> String {
         switch status {

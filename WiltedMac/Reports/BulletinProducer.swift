@@ -9,6 +9,8 @@ struct BulletinProducerSettings: Equatable, Sendable {
     var alertsEnabled: Bool
     var headlinesEnabled: Bool
     var headlineMinimumGapMinutes: Int
+    /// Headlines about these topics are never read.
+    var topics = HeadlineTopicFilter()
 }
 
 /// One post of a news feed, as the producer needs it.
@@ -18,6 +20,8 @@ struct NewsHeadlineCandidate: Equatable, Sendable {
     let feedTitle: String
     let title: String
     let publishedAt: Date?
+    var link: URL?
+    var categories: [String] = []
 }
 
 /// Why a poll could not do its work, without being a failure to back off from: the library
@@ -39,6 +43,8 @@ struct BulletinProducerStatus: Equatable, Sendable {
     /// Whether the channel last published, or read back at the start, has any switch on.
     /// Nil until the channel has been read once.
     var publishedActive: Bool?
+    /// How many of the posts the news feeds list now are skipped by the topic list.
+    var skippedHeadlineCount = 0
 }
 
 /// Publishes `LibraryBulletins` for the Mac: the switches from Settings and the headlines of
@@ -74,6 +80,7 @@ actor BulletinProducer {
     private var headlines: [Bulletin] = []
     private var seen: Set<String> = []
     private var seenOrder: [String] = []
+    private var stories = HeadlineStoryMemory()
     private var newsBaselined = false
     private var lastEmittedAt: Date?
     private var observedSettings: BulletinProducerSettings?
@@ -118,7 +125,7 @@ actor BulletinProducer {
         let current = await settings()
         let moved = observedSettings.map {
             $0.interruptionsEnabled != current.interruptionsEnabled || $0.alertsEnabled != current.alertsEnabled
-                || $0.headlinesEnabled != current.headlinesEnabled
+                || $0.headlinesEnabled != current.headlinesEnabled || $0.topics != current.topics
         } ?? false
         observedSettings = current
         guard moved, loop != nil, status.consecutiveFailures == 0 else { return }
@@ -205,7 +212,10 @@ actor BulletinProducer {
             baselineLoaded = true
             if let published {
                 headlines = published.headlines
-                for bulletin in published.headlines { remember(bulletin.id) }
+                for bulletin in published.headlines {
+                    remember(bulletin.id)
+                    stories.remember(Self.headlineTitle(of: bulletin.text), at: bulletin.issuedAt)
+                }
                 lastEmittedAt = published.headlines.map(\.issuedAt).max()
             }
             status.publishedActive = published.map { $0.alertsEnabled || $0.headlinesEnabled } ?? false
@@ -215,7 +225,7 @@ actor BulletinProducer {
             let time = now()
             headlines.removeAll { $0.isExpired(at: time) }
             if current.headlinesEnabled {
-                try await collectHeadlines(gapMinutes: current.headlineMinimumGapMinutes)
+                try await collectHeadlines(gapMinutes: current.headlineMinimumGapMinutes, topics: current.topics)
             } else {
                 headlines = []
             }
@@ -245,8 +255,12 @@ actor BulletinProducer {
 
     // MARK: - Headlines
 
-    private func collectHeadlines(gapMinutes: Int) async throws {
+    private func collectHeadlines(gapMinutes: Int, topics: HeadlineTopicFilter) async throws {
         let candidates = try await newsItems()
+        let skipped = Set(candidates.filter {
+            topics.skips(title: $0.title, link: $0.link, categories: $0.categories)
+        }.map(\.id))
+        status.skippedHeadlineCount = skipped.count
         let time = now()
         let isBaseline = !newsBaselined
         let fresh = candidates.filter { !seen.contains($0.id) }
@@ -255,12 +269,16 @@ actor BulletinProducer {
         // A dated post counts while it is recent. An undated one cannot be aged, so the first
         // look at a feed only records it.
         let eligible = fresh.filter { candidate in
+            guard !skipped.contains(candidate.id) else { return false }
             guard let date = candidate.publishedAt else { return !isBaseline }
             return time.timeIntervalSince(date) <= Self.headlineLifetime && date.timeIntervalSince(time) < 300
         }
+        // The same story from another feed is read once; a major update to it may be read again.
+        .filter { stories.verdict(for: $0.title, at: time) != .duplicate }
         guard let newest = eligible.max(by: { ($0.publishedAt ?? time) < ($1.publishedAt ?? time) }) else { return }
         if let lastEmittedAt, time.timeIntervalSince(lastEmittedAt) < Double(gapMinutes) * 60 { return }
         guard let bulletin = Self.bulletin(for: newest, at: time) else { return }
+        stories.remember(newest.title, at: time)
         headlines.append(bulletin)
         headlines.sort { $0.issuedAt > $1.issuedAt }
         if headlines.count > LibraryBulletins.maximumHeadlines {
@@ -278,6 +296,12 @@ actor BulletinProducer {
                              text: String(text.prefix(Bulletin.maximumTextCharacters)),
                              severity: .unknown, issuedAt: time,
                              expiresAt: time.addingTimeInterval(headlineLifetime))
+    }
+
+    /// The headline part of a published bulletin text, which reads "Source. Headline".
+    static func headlineTitle(of text: String) -> String {
+        guard let range = text.range(of: ". ") else { return text }
+        return String(text[range.upperBound...])
     }
 
     private func remember(_ id: String) {

@@ -4,7 +4,7 @@ import XCTest
 @testable import WiltedMac
 
 /// Everything the producer touches, scripted. Thread-safe because the producer calls it from its actor.
-private final class Harness: @unchecked Sendable {
+final class BulletinProducerHarness: @unchecked Sendable {
     private let lock = NSLock()
     private var _settings = BulletinProducerSettings(
         interruptionsEnabled: true, alertsEnabled: true, headlinesEnabled: true, headlineMinimumGapMinutes: 30)
@@ -82,7 +82,7 @@ final class BulletinProducerTests: XCTestCase {
     // MARK: Done-when
 
     func testInterruptionsOffPublishesBothFlagsFalseAndNoHeadlines() async throws {
-        let h = Harness()
+        let h = BulletinProducerHarness()
         let producer = h.producer()
         await producer.poll()
         h.items = [h.item("a")]
@@ -100,7 +100,7 @@ final class BulletinProducerTests: XCTestCase {
     }
 
     func testTwoNewsItemsWithinTheGapYieldOneHeadlineBulletin() async throws {
-        let h = Harness()
+        let h = BulletinProducerHarness()
         let producer = h.producer()
         await producer.poll()  // baseline
         h.items = [h.item("a", minutesAgo: 3), h.item("b", minutesAgo: 1)]
@@ -126,7 +126,7 @@ final class BulletinProducerTests: XCTestCase {
     }
 
     func testAnUnchangedListIsNotRepublished() async throws {
-        let h = Harness()
+        let h = BulletinProducerHarness()
         let producer = h.producer()
         await producer.poll()
         XCTAssertEqual(h.publishCount, 1, "switches on, first write")
@@ -142,7 +142,7 @@ final class BulletinProducerTests: XCTestCase {
     // MARK: More behaviour
 
     func testNothingIsPublishedForAChannelThatWasNeverOn() async throws {
-        let h = Harness()
+        let h = BulletinProducerHarness()
         h.settings.interruptionsEnabled = false
         let producer = h.producer()
         await producer.poll()
@@ -153,7 +153,7 @@ final class BulletinProducerTests: XCTestCase {
     }
 
     func testExpiredHeadlinesAreDropped() async throws {
-        let h = Harness()
+        let h = BulletinProducerHarness()
         let producer = h.producer()
         await producer.poll()
         h.items = [h.item("a")]
@@ -166,7 +166,7 @@ final class BulletinProducerTests: XCTestCase {
     }
 
     func testOldAndUndatedPostsDoNotBecomeHeadlinesOnTheFirstLook() async throws {
-        let h = Harness()
+        let h = BulletinProducerHarness()
         h.items = [h.item("old", minutesAgo: 600),
                    NewsHeadlineCandidate(id: "nodate", feedTitle: "Wire", title: "No date", publishedAt: nil)]
         let producer = h.producer()
@@ -177,7 +177,7 @@ final class BulletinProducerTests: XCTestCase {
     }
 
     func testHeadlinesOffPublishesNoHeadlines() async throws {
-        let h = Harness()
+        let h = BulletinProducerHarness()
         h.settings.headlinesEnabled = false
         h.items = [h.item("a")]
         let producer = h.producer()
@@ -189,7 +189,7 @@ final class BulletinProducerTests: XCTestCase {
     }
 
     func testARestartDoesNotAnnounceWhatTheServerAlreadyHolds() async throws {
-        let h = Harness()
+        let h = BulletinProducerHarness()
         let first = h.producer()
         await first.poll()
         h.items = [h.item("a")]
@@ -202,7 +202,7 @@ final class BulletinProducerTests: XCTestCase {
     }
 
     func testAFailedPublishBacksOffAndIsRetriedWithTheSameList() async throws {
-        let h = Harness()
+        let h = BulletinProducerHarness()
         h.publishError = Boom()
         let producer = h.producer()
         await producer.start()
@@ -222,7 +222,7 @@ final class BulletinProducerTests: XCTestCase {
     }
 
     func testAnUnreachableServerWaitsWithoutCountingAFailure() async throws {
-        let h = Harness()
+        let h = BulletinProducerHarness()
         h.publishError = BulletinProducerUnavailable(reason: "Library sync is not running")
         let producer = h.producer()
         await producer.start()
@@ -235,7 +235,7 @@ final class BulletinProducerTests: XCTestCase {
     }
 
     func testStatusReportsPollingThenTheResult() async throws {
-        let h = Harness()
+        let h = BulletinProducerHarness()
         let seen = StatusLog()
         let producer = BulletinProducer(
             settings: { h.settings }, newsItems: { [] }, fetchPublished: { nil }, publish: { _ in },
@@ -259,7 +259,7 @@ final class BulletinProducerTests: XCTestCase {
     }
 
     func testAnOfflinePollFailureIsAPlainSentenceInSettings() async throws {
-        let h = Harness()
+        let h = BulletinProducerHarness()
         h.publishError = URLError(
             .notConnectedToInternet,
             userInfo: [NSURLErrorFailingURLStringErrorKey: "https://news.example.test/feed?token=SECRET-TOKEN"])

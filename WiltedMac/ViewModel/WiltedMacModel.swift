@@ -385,6 +385,8 @@ final class WiltedMacModel {
     /// Posts of followed article feeds that no rule or policy decided: the Feeds inbox lists them
     /// beside podcast episodes. In memory; the next refresh offers them again.
     var offeredArticles: [WiltedMacOfferedArticle] = []
+    /// Article feeds marked News: headline sources only. Their posts are never offered or kept.
+    var newsFeedIDs: Set<String> = []
     /// The final Feed writer in admission order. Feed decisions await this
     /// chain, while unrelated subscription work remains independently live.
     var feedDecisionWriteTailToken: UUID?

@@ -12,9 +12,16 @@ public struct ArticleFeedItem: Equatable, Sendable {
     public let title: String
     public let link: URL
     public let publishedAt: Date?
+    /// The topics the feed files the post under (RSS `category`, Atom `category term`), in feed order.
+    public let categories: [String]
 
-    public init(guid: String?, title: String, link: URL, publishedAt: Date?) {
+    /// At most this many categories are kept per post, each at most `maximumCategoryLength` characters.
+    public static let maximumCategoryCount = 20
+    public static let maximumCategoryLength = 100
+
+    public init(guid: String?, title: String, link: URL, publishedAt: Date?, categories: [String] = []) {
         self.guid = guid; self.title = title; self.link = link; self.publishedAt = publishedAt
+        self.categories = Array(categories.prefix(Self.maximumCategoryCount).map { String($0.prefix(Self.maximumCategoryLength)) })
     }
 
     /// The item's identity inside `feedURL`: its GUID, else its link.
@@ -87,7 +94,10 @@ public enum ArticleFeedParser {
     }
 
     private final class Reader: NSObject, XMLParserDelegate {
-        struct Draft { var title = "", guid: String?, link: String?, atomLink: String?, date: String?, hasEnclosure = false }
+        struct Draft {
+            var title = "", guid: String?, link: String?, atomLink: String?, date: String?, hasEnclosure = false
+            var categories: [String] = []
+        }
         let feedURL: URL
         var channelTitle: String?
         var channelAuthor: String?
@@ -107,7 +117,12 @@ public enum ArticleFeedParser {
                 let rel = attributeDict["rel"] ?? "alternate"
                 if let href = attributeDict["href"], rel == "alternate", draft?.atomLink == nil { draft?.atomLink = href }
             }
-            capturing = ["title", "link", "guid", "id", "pubdate", "published", "updated", "date", "author", "creator", "name"]
+            if draft != nil, element == "category", let term = attributeDict["term"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !term.isEmpty, (draft?.categories.count ?? 0) < ArticleFeedItem.maximumCategoryCount {
+                draft?.categories.append(term)
+            }
+            capturing = ["title", "link", "guid", "id", "pubdate", "published", "updated", "date", "author", "creator", "name",
+                         "category"]
                 .contains(element)
             text = ""
         }
@@ -139,6 +154,8 @@ public enum ArticleFeedParser {
                 case "link": if (namespaceURI ?? "").isEmpty { current.link = value }
                 case "guid", "id": if current.guid == nil { current.guid = value }
                 case "pubdate", "published", "date", "updated": if current.date == nil { current.date = value }
+                case "category":
+                    if current.categories.count < ArticleFeedItem.maximumCategoryCount { current.categories.append(value) }
                 default: break
                 }
                 draft = current
@@ -160,7 +177,8 @@ public enum ArticleFeedParser {
                   link.absoluteString.count <= PodcastEpisode.maximumEpisodeLinkLength else { return }
             let title = draft.title.isEmpty ? link.absoluteString : String(draft.title.prefix(1_024))
             let guid = draft.guid.flatMap { $0.utf8.count <= 1_024 ? $0 : nil }
-            items.append(ArticleFeedItem(guid: guid, title: title, link: link, publishedAt: draft.date.flatMap(Self.date)))
+            items.append(ArticleFeedItem(guid: guid, title: title, link: link, publishedAt: draft.date.flatMap(Self.date),
+                                         categories: draft.categories))
         }
 
         private static func date(_ raw: String) -> Date? {

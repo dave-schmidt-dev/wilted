@@ -231,7 +231,8 @@ final class WiltedMacBulletinHub {
         let settings = model.automationSettings
         return BulletinProducerSettings(
             interruptionsEnabled: settings.interruptionsEnabled, alertsEnabled: settings.alertsEnabled,
-            headlinesEnabled: settings.headlinesEnabled, headlineMinimumGapMinutes: settings.headlineMinimumGapMinutes)
+            headlinesEnabled: settings.headlinesEnabled, headlineMinimumGapMinutes: settings.headlineMinimumGapMinutes,
+            topics: HeadlineTopicFilter(skipSports: settings.skipSportsHeadlines, words: settings.skippedHeadlineWords))
     }
 
     /// The running library publisher, whose transport holds the account gate and the rate limit.
@@ -258,7 +259,8 @@ final class WiltedMacBulletinHub {
                 for item in document.items.prefix(50) {
                     guard let id = try? item.id(feedURL: feed.canonicalURL) else { continue }
                     candidates.append(NewsHeadlineCandidate(
-                        id: id.rawValue, feedTitle: feed.title, title: item.title, publishedAt: item.publishedAt))
+                        id: id.rawValue, feedTitle: feed.title, title: item.title, publishedAt: item.publishedAt,
+                        link: item.link, categories: item.categories))
                 }
             } catch is CancellationError {
                 throw CancellationError()

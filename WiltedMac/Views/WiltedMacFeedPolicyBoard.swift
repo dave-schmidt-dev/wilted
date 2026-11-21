@@ -26,7 +26,10 @@ final class WiltedMacFeedPolicyBoard {
     private(set) var loadState: LoadState = .idle
     /// The feeds that list posts rather than audio, and which of them the reader treats as news.
     private(set) var articleFeedIDs: Set<String> = []
-    private(set) var newsFeedIDs: Set<String> = []
+    /// Article feeds marked News. Mirrored on the model, which keeps their posts out of the Feeds inbox.
+    private(set) var newsFeedIDs: Set<String> = [] {
+        didSet { if model.newsFeedIDs != newsFeedIDs { model.newsFeedIDs = newsFeedIDs } }
+    }
     /// The podcast feeds whose preparation also removes the show's own promotion.
     private(set) var selfPromotionFeedIDs: Set<String> = []
     /// The podcast feeds the owner has marked as already ad-free (preparation leaves audio uncut).

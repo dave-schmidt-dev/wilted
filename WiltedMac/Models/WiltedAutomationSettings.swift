@@ -339,7 +339,13 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
     private(set) var typedLongitude: Double?
     /// Contact sent to the National Weather Service in the User-Agent; empty until entered.
     private(set) var nwsContact = ""
+    /// Headlines about sports are skipped; on by default.
+    private(set) var skipSportsHeadlines = true
+    /// The listener's own words and phrases whose headlines are skipped; cleaned on every change.
+    private(set) var skippedHeadlineWords: [String] = []
 
+    static let skippedHeadlineWordLimit = 30
+    static let skippedHeadlineWordLength = 60
     static let waitLimitRange = 10...300
     static let headlineGapRange = 5...240
     static let nwsContactLimit = 200
@@ -376,6 +382,7 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         case legacyReadableTranscriptPass = "readableTranscriptPass"
         case interruptionsEnabled, alertsEnabled, headlinesEnabled, waitLimitSeconds, headlineMinimumGapMinutes
         case reportEnabled, reportTime, typedLatitude, typedLongitude, nwsContact
+        case skipSportsHeadlines, skippedHeadlineWords
     }
 
     init(from decoder: Decoder) throws {
@@ -433,6 +440,9 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         typedLatitude = typed?.latitude
         typedLongitude = typed?.longitude
         nwsContact = Self.cleanedContact(try container.decodeIfPresent(String.self, forKey: .nwsContact) ?? "")
+        skipSportsHeadlines = try container.decodeIfPresent(Bool.self, forKey: .skipSportsHeadlines) ?? true
+        skippedHeadlineWords = Self.cleanedWords(
+            (try? container.decodeIfPresent([String].self, forKey: .skippedHeadlineWords)) ?? [])
         // Settings saved before the single-pass pipeline included this no-op
         // preference. Deliberately accept and discard it on migration.
         _ = try? container.decode(Bool.self, forKey: .legacyReadableTranscriptPass)
@@ -466,6 +476,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         try container.encodeIfPresent(typedLatitude, forKey: .typedLatitude)
         try container.encodeIfPresent(typedLongitude, forKey: .typedLongitude)
         try container.encode(nwsContact, forKey: .nwsContact)
+        try container.encode(skipSportsHeadlines, forKey: .skipSportsHeadlines)
+        try container.encode(skippedHeadlineWords, forKey: .skippedHeadlineWords)
     }
 
     /// The typed position, rounded to 2 decimals; nil unless both halves are present and in range.
@@ -493,6 +505,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         copy.typedLatitude = typed?.latitude
         copy.typedLongitude = typed?.longitude
         copy.nwsContact = Self.cleanedContact(fields.nwsContact)
+        copy.skipSportsHeadlines = fields.skipSportsHeadlines
+        copy.skippedHeadlineWords = Self.cleanedWords(fields.skippedHeadlineWords)
         return copy
     }
 
@@ -508,6 +522,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         var typedLatitude: Double?
         var typedLongitude: Double?
         var nwsContact: String
+        var skipSportsHeadlines: Bool
+        var skippedHeadlineWords: [String]
 
         init(_ settings: WiltedAutomationSettings) {
             interruptionsEnabled = settings.interruptionsEnabled
@@ -520,6 +536,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
             typedLatitude = settings.typedLatitude
             typedLongitude = settings.typedLongitude
             nwsContact = settings.nwsContact
+            skipSportsHeadlines = settings.skipSportsHeadlines
+            skippedHeadlineWords = settings.skippedHeadlineWords
         }
     }
 
@@ -531,6 +549,19 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
     private static func clamped(_ value: Int?, _ range: ClosedRange<Int>, default fallback: Int) -> Int {
         guard let value else { return fallback }
         return min(max(value, range.lowerBound), range.upperBound)
+    }
+
+    /// Trimmed, blank and repeated entries (ignoring case) dropped, each and the list capped.
+    static func cleanedWords(_ words: [String]) -> [String] {
+        var seen: Set<String> = []
+        var cleaned: [String] = []
+        for word in words {
+            let value = String(word.trimmingCharacters(in: .whitespacesAndNewlines).prefix(skippedHeadlineWordLength))
+            guard !value.isEmpty, seen.insert(value.lowercased()).inserted else { continue }
+            cleaned.append(value)
+            if cleaned.count == skippedHeadlineWordLimit { break }
+        }
+        return cleaned
     }
 
     private static func cleanedContact(_ value: String) -> String {

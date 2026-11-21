@@ -21,9 +21,10 @@ struct WiltedMacOfferedArticle: Identifiable {
 
 extension WiltedMacModel {
 #if canImport(WiltedProducer)
-    /// Offered posts of feeds still followed, newest first.
+    /// Offered posts of feeds still followed, newest first. A feed marked News is a headline source only, so its
+    /// posts are left out; they come back, untouched, if News is turned off.
     var feedsOfferedArticles: [WiltedMacOfferedArticle] {
-        let followed = Set(subscriptions.filter(\.enabled).map(\.id))
+        let followed = Set(subscriptions.filter(\.enabled).map(\.id)).subtracting(newsFeedIDs)
         return offeredArticles.filter {
             followed.contains($0.feedID) && !pendingFeedDecisionIDs.contains($0.id)
         }
