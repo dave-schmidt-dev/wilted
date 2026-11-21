@@ -32,6 +32,10 @@ extension WiltedPixelSnapshotTests {
         await captureSettingsSection(.ads, testName: "testAdsSettingsPixels")
     }
 
+    func testProvidersSettingsPixels() async {
+        await captureSettingsSection(.providers, testName: "testProvidersSettingsPixels")
+    }
+
     func testReportsSettingsPixels() async {
         await captureSettingsSection(.reports, testName: "testReportsSettingsPixels")
     }

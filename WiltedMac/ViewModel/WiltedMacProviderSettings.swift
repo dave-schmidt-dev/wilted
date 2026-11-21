@@ -87,6 +87,10 @@ public final class WiltedMacProviderSettings {
     public private(set) var levelMessage: String?
     public private(set) var keyMessage: String?
 
+    /// Bumped by every change made through this model, so views reading the stored
+    /// preferences and keys redraw: those stores are not observable themselves.
+    private var revision = 0
+
     private var runningChecks: Set<AdLabellerProvider> = []
     private var commandLineStatuses: [AdLabellerProvider: LabellerCommandLineStatus] = [:]
 
@@ -111,11 +115,13 @@ public final class WiltedMacProviderSettings {
     // MARK: - Choice
 
     public var provider: AdLabellerProvider {
-        labeller.provider
+        _ = revision
+        return labeller.provider
     }
 
     public func setProvider(_ newProvider: AdLabellerProvider) {
         labeller.provider = newProvider
+        revision += 1
         typedModel = labeller.modelID(for: newProvider)
         typedModelMessage = nil
         levelMessage = nil
@@ -127,12 +133,14 @@ public final class WiltedMacProviderSettings {
     }
 
     public var model: String {
-        labeller.modelID(for: provider)
+        _ = revision
+        return labeller.modelID(for: provider)
     }
 
     public func setModel(_ newModel: String) {
         let trimmed = newModel.trimmingCharacters(in: .whitespacesAndNewlines)
         labeller.setModelID(trimmed, for: provider)
+        revision += 1
         typedModel = trimmed
         typedModelMessage = nil
         levelMessage = nil
@@ -165,7 +173,8 @@ public final class WiltedMacProviderSettings {
     }
 
     public var level: String {
-        labeller.level(for: provider)
+        _ = revision
+        return labeller.level(for: provider)
     }
 
     public func setLevel(_ newLevel: String) {
@@ -176,6 +185,7 @@ public final class WiltedMacProviderSettings {
         }
         levelMessage = nil
         labeller.setLevel(newLevel, for: provider)
+        revision += 1
     }
 
     public static func levelLabel(_ level: String) -> String {
@@ -197,7 +207,8 @@ public final class WiltedMacProviderSettings {
     // MARK: - Per-provider Rows
 
     public var rows: [Row] {
-        Self.rowOrder.map { row(for: $0) }
+        _ = revision
+        return Self.rowOrder.map { row(for: $0) }
     }
 
     private func row(for targetProvider: AdLabellerProvider) -> Row {
@@ -258,6 +269,7 @@ public final class WiltedMacProviderSettings {
         do {
             try keyStore.slot(for: provider).save(trimmed)
             keyMessage = nil
+            revision += 1
         } catch {
             keyMessage = "The key could not be saved."
         }
@@ -265,14 +277,17 @@ public final class WiltedMacProviderSettings {
 
     public func removeKey(for provider: AdLabellerProvider) {
         try? keyStore.slot(for: provider).remove()
+        revision += 1
     }
 
     public func acknowledge(_ provider: AdLabellerProvider) {
         labeller.acknowledge(provider)
+        revision += 1
     }
 
     public func revokeAcknowledgement(_ provider: AdLabellerProvider) {
         labeller.revokeAcknowledgement(provider)
+        revision += 1
     }
 
     public func check(_ provider: AdLabellerProvider) async {
@@ -310,6 +325,7 @@ public final class WiltedMacProviderSettings {
     // MARK: - Readiness Line
 
     public var readinessLine: String {
+        _ = revision
         // Priority 1: No model chosen
         guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return "Type a model id."

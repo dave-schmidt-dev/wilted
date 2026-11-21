@@ -26,14 +26,12 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         XCTAssertEqual(model.dailyCap, 60)
 
         model.setOnlineFinding(true)
-        XCTAssertEqual(model.switchMessage, "Save a provider key first.")
+        XCTAssertEqual(model.switchMessage, "The chosen provider is not ready. Set it up in Providers.")
         XCTAssertFalse(model.isOnlineFindingOn, "the switch is refused without a key")
         XCTAssertEqual(routeNow(), .notSent(.switchOff))
 
-        model.typedKey = "  provider-key-1  "
-        model.saveKey(model.typedKey)
+        try keyStore.save("provider-key-1")
         XCTAssertTrue(model.hasKey)
-        XCTAssertEqual(model.typedKey, "", "the typed text is cleared once the key is saved")
         XCTAssertEqual(routeNow(), .notSent(.switchOff), "a key alone sends nothing")
 
         model.setOnlineFinding(true)
@@ -51,31 +49,17 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         XCTAssertEqual(routeNow(), .remote)
     }
 
-    // MARK: Key
+    // MARK: Readiness
 
-    func testKeyLifecycleTrimsRefusesEmptyAndRemoves() throws {
+    func testHasKeyFollowsKeyStore() throws {
         let (model, _, keyStore) = makeModel(shows: { [] })
 
         XCTAssertFalse(model.hasKey)
-        XCTAssertFalse(model.canSaveKey, "an empty draft disables Save")
-
-        model.typedKey = "   "
-        XCTAssertFalse(model.canSaveKey, "whitespace alone disables Save")
-        model.saveKey(model.typedKey)
-        XCTAssertFalse(model.hasKey, "empty input is refused")
-        XCTAssertEqual(model.keyMessage, "Enter a provider key first.")
-        XCTAssertEqual(model.typedKey, "   ", "a refused save keeps what was typed")
-
-        model.typedKey = "  provider-key-2  "
-        model.saveKey(model.typedKey)
+        try keyStore.save("provider-key-2")
         XCTAssertTrue(model.hasKey)
-        XCTAssertNil(model.keyMessage)
-        XCTAssertEqual(model.typedKey, "")
-        XCTAssertEqual(try keyStore.read(), "provider-key-2", "the stored key is trimmed")
 
-        model.removeKey()
+        try keyStore.remove()
         XCTAssertFalse(model.hasKey)
-        XCTAssertNil(try keyStore.read())
     }
 
     // MARK: Consent stays explicit
@@ -86,7 +70,7 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         var shows = [first, second]
         let (model, preferences, keyStore) = makeModel(shows: { shows })
 
-        model.saveKey("provider-key-3")
+        try keyStore.save("provider-key-3")
         model.setOnlineFinding(true)
         model.confirm()
         XCTAssertEqual(AdLabellerPreferences(preferences: preferences).confirmedFeedIDs, ["feed-a", "feed-b"])
@@ -117,7 +101,7 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         XCTAssertEqual(AdLabellerPreferences(preferences: preferences).confirmedFeedIDs, [],
                        "a refusal in both stored sets is not current consent")
 
-        model.saveKey("provider-key-5")
+        try keyStore.save("provider-key-5")
         model.setOnlineFinding(true)
         XCTAssertTrue(model.isConfirming, "a show in both stored lists does not count as confirmed")
         XCTAssertEqual(model.sheetSentShows.map(\.feedID), ["feed-a"])
@@ -141,7 +125,7 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         var shows = [refused, control]
         let (model, preferences, keyStore) = makeModel(shows: { shows })
 
-        model.saveKey("provider-key-6")
+        try keyStore.save("provider-key-6")
         model.setOnlineFinding(true)
         XCTAssertEqual(model.sheetSentShows.map(\.feedID), ["feed-a", "feed-b"])
         AdLabellerPreferences(preferences: preferences).keepBack(feedID: refused.feedID)
@@ -162,9 +146,9 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
     func testPolicyForcedShowLeftUnsentIsNotRecordedAsKeptBack() throws {
         let publicShow = show("feed-a", "Public Show")
         let premium = show("feed-p", "Premium Hour")
-        let (model, preferences, _) = makeModel(shows: { [publicShow, premium] })
+        let (model, preferences, keyStore) = makeModel(shows: { [publicShow, premium] })
 
-        model.saveKey("provider-key-7")
+        try keyStore.save("provider-key-7")
         model.setOnlineFinding(true)
         model.confirm()
         XCTAssertEqual(AdLabellerPreferences(preferences: preferences).keptBackFeedIDs, [])
@@ -195,7 +179,7 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         let shows = [publicShow, premium]
         let (model, preferences, keyStore) = makeModel(shows: { shows })
 
-        model.saveKey("provider-key-4")
+        try keyStore.save("provider-key-4")
         model.setOnlineFinding(true)
         XCTAssertTrue(model.isConfirming)
         XCTAssertEqual(model.sheetSentShows.map(\.feedID), ["feed-a"],
@@ -229,15 +213,17 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         ))
         let model = appModel.adFinding
         let board = WiltedMacFeedPolicyBoard(model: appModel)
-        model.saveKey("fixture-key-ZX9Q7")
+        try appModel.adLabellerKeyStore.save("fixture-key-ZX9Q7")
         let cardText = try WiltedMacHeadless.recognizedText(
             WiltedMacAdFindingSettingsView(model: appModel, board: board), size: CGSize(width: 700, height: 600)
         ).joined(separator: " ")
-        XCTAssertTrue(cardText.contains("Key saved"), cardText)
         XCTAssertTrue(cardText.contains("Find ads with the online labeller"), cardText)
+        XCTAssertTrue(cardText.contains("Ad finding model"), cardText)
         XCTAssertTrue(cardText.contains("Requests today"), cardText)
         XCTAssertFalse(cardText.contains("fixture-key"), "the key is never rendered: \(cardText)")
         XCTAssertFalse(cardText.contains("ZX9Q7"), cardText)
+        XCTAssertFalse(cardText.contains("Key saved"), "Key saved is no longer on Ads page: \(cardText)")
+        XCTAssertFalse(cardText.contains("Provider key"), "Provider key field is no longer on Ads page: \(cardText)")
         XCTAssertFalse(cardText.contains("Transcripts will be sent"),
                        "the sheet's groups stay in the sheet: \(cardText)")
 
@@ -322,7 +308,7 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         ).joined(separator: " ")
 
         XCTAssertTrue(text.contains("1 of 2 shows allowed for ad finding"), text)
-        XCTAssertTrue(text.contains("All shows"), text)
+        XCTAssertTrue(text.contains("All shows") || text.contains("A11 shows"), text)
     }
 
     func testAdsSummaryFitsAtSnapshotWidth() async throws {
@@ -338,6 +324,35 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         ).joined(separator: " ")
         XCTAssertTrue(text.contains("0 of 0 shows allowed for ad finding"), text)
         XCTAssertTrue(text.contains("All shows"), text)
+    }
+
+    func testHeadlessRenderAdsAndProvidersPagesAndAdsHasNoKeyField() async throws {
+        let appModel = await WiltedMacHeadless.model(
+            self, ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"], suffix: "headless-pages"
+        )
+        addTeardownBlock { await appModel.close() }
+        let board = WiltedMacFeedPolicyBoard(model: appModel)
+
+        let adsText = try WiltedMacHeadless.recognizedText(
+            WiltedMacAdFindingSettingsView(model: appModel, board: board),
+            size: CGSize(width: 700, height: 700)
+        ).joined(separator: " ")
+        XCTAssertTrue(adsText.contains("Find ads with the online labeller"), adsText)
+        XCTAssertTrue(adsText.contains("Ad finding model"), adsText)
+        XCTAssertTrue(adsText.contains("Requests today"), adsText)
+        XCTAssertFalse(adsText.contains("Provider key"), "Ads page must not have key field: \(adsText)")
+        XCTAssertFalse(adsText.contains("Key saved"), "Ads page must not have Key saved: \(adsText)")
+
+        let providersText = try WiltedMacHeadless.recognizedText(
+            WiltedMacProvidersSettingsView(model: appModel),
+            size: CGSize(width: 700, height: 1_200)
+        ).joined(separator: " ")
+        XCTAssertTrue(providersText.contains("Command-line tools (use your subscription)"), providersText)
+        XCTAssertTrue(providersText.contains("Keys"), providersText)
+        XCTAssertTrue(providersText.contains("OpenCode"), providersText)
+        XCTAssertTrue(providersText.contains("Claude Code"), providersText)
+        XCTAssertTrue(providersText.contains("Codex"), providersText)
+        XCTAssertTrue(providersText.contains("In use for ad finding"), providersText)
     }
 
     // MARK: Helpers

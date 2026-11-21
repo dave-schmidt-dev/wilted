@@ -29,14 +29,10 @@ final class WiltedMacAdFindingSettings {
     private let now: @Sendable () -> Date
     private let showsProvider: @MainActor () -> [Show]
 
-    /// The draft in the key field, cleared the moment a key is saved.
-    var typedKey = ""
-    /// Why the last key action was refused, shown beside the field.
-    private(set) var keyMessage: String?
     /// Why the switch was refused, shown under the switch.
     private(set) var switchMessage: String?
 
-    private(set) var hasKey: Bool
+    var hasKey: Bool { keyStore.hasKey() }
     private(set) var isOnlineFindingOn: Bool
 
     /// The global confirmation sheet and the eligible feed IDs it previews.
@@ -50,7 +46,6 @@ final class WiltedMacAdFindingSettings {
         self.keyStore = keyStore
         self.now = now
         self.showsProvider = shows
-        hasKey = keyStore.hasKey()
         isOnlineFindingOn = AdLabellerPreferences(preferences: preferences).isEnabled
     }
 
@@ -60,38 +55,6 @@ final class WiltedMacAdFindingSettings {
             guard let feedURL = show.feedURL else { return true }
             return !WiltedMacFeedKind.isArticleFeed(feedID: show.feedID, feedURL: feedURL)
         }
-    }
-
-    // MARK: Key
-
-    /// Whether the Save button can act on the draft.
-    var canSaveKey: Bool { !typedKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-
-    /// Stores the trimmed key. Empty input is refused with an inline message;
-    /// on success the typed text is cleared and the model keeps no copy of it.
-    func saveKey(_ key: String) {
-        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            keyMessage = "Enter a provider key first."
-            return
-        }
-        do {
-            try keyStore.save(trimmed)
-        } catch {
-            keyMessage = "The key could not be saved."
-            return
-        }
-        hasKey = keyStore.hasKey()
-        typedKey = ""
-        keyMessage = nil
-        switchMessage = nil
-    }
-
-    /// Removes the stored key. The policy answers no key, so online ad finding
-    /// stops until a key is saved again; the switch keeps its position.
-    func removeKey() {
-        try? keyStore.remove()
-        hasKey = keyStore.hasKey()
     }
 
     // MARK: Switch
@@ -108,7 +71,7 @@ final class WiltedMacAdFindingSettings {
             return
         }
         guard hasKey else {
-            switchMessage = "Save a provider key first."
+            switchMessage = "The chosen provider is not ready. Set it up in Providers."
             return
         }
         guard !labeller.confirmedFeedIDs.isEmpty else {

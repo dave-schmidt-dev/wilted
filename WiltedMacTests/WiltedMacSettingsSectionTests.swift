@@ -51,7 +51,7 @@ final class WiltedMacSettingsSectionTests: XCTestCase {
         let first = launch()
         XCTAssertEqual(first.settingsSection, .general)
         XCTAssertEqual(WiltedMacSettingsSection.allCases.map(\.title),
-                       ["General", "New episodes", "Preparing", "Ads", "Reports", "Devices", "About"])
+                       ["General", "New episodes", "Preparing", "Ads", "Providers", "Reports", "Devices", "About"])
         let legacy: [String: WiltedMacSettingsSection] = [
             "appearance": .general, "statistics": .about, "automation": .newEpisodes,
             "ad-finding": .ads, "ad-feedback": .ads, "reports": .reports, "sync": .devices

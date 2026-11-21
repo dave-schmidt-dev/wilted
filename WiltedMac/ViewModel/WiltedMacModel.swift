@@ -269,11 +269,20 @@ final class WiltedMacModel {
     var removedSpansByEpisode: [String: [WiltedMacRemovedSpan]] = [:]
     /// The listener's ad-removal feedback and its review inbox (`WiltedMacModel+AdFeedback`).
     /// The ad labeller's provider key: the Keychain in the real app, memory under tests and fixtures.
-    @ObservationIgnored lazy var adLabellerKeyStore: any LabellerKeyStoring =
+    @ObservationIgnored lazy var adLabellerKeyStore: ActiveProviderKeyStore =
         ActiveProviderKeyStore(
             preferences: AdLabellerPreferences(preferences: preferences),
             inMemory: fixtureMode || Self.hostsTests
         )
+    @ObservationIgnored lazy var providers = WiltedMacProviderSettings(
+        preferences: preferences,
+        keyStore: adLabellerKeyStore,
+        check: (fixtureMode || Self.hostsTests)
+            ? { @Sendable provider in
+                provider == .openCodeCLI ? .ready : .notFound
+            }
+            : { await LabellerCommandLineCheck.check(provider: $0) }
+    )
     /// Settings' Ad finding card. It reads the key store once, so views ask it, not the Keychain.
     @ObservationIgnored lazy var adFinding = WiltedMacAdFindingSettings(
         preferences: preferences, keyStore: adLabellerKeyStore,

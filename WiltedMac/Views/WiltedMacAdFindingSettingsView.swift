@@ -10,7 +10,6 @@ struct WiltedMacAdFindingSettingsView: View {
     private let appModel: WiltedMacModel
     private let board: WiltedMacFeedPolicyBoard
     @Environment(\.colorScheme) private var colorScheme
-    @State private var isRemovingKey = false
     @State private var presentedDestination: Destination?
 
     private enum Destination: Identifiable {
@@ -45,8 +44,6 @@ struct WiltedMacAdFindingSettingsView: View {
     var body: some View {
         WiltedSettingsCard(title: "Ad finding") {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-                if model.hasKey { savedKeyRow } else { keyEntryRow }
-                Divider()
                 Toggle("Find ads with the online labeller", isOn: Binding(
                     get: { model.isOnlineFindingOn }, set: { model.setOnlineFinding($0) }
                 ))
@@ -58,6 +55,9 @@ struct WiltedMacAdFindingSettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("wilted-ad-finding-switch-message")
                 }
+                Divider()
+                WiltedMacAdFindingModelSection(model: appModel)
+                Divider()
                 Button {
                     presentedDestination = .allShows
                 } label: {
@@ -101,12 +101,6 @@ struct WiltedMacAdFindingSettingsView: View {
             WiltedMacHelpButton(content: help, identifier: "wilted-ad-finding-help")
                 .padding(WiltedTheme.Spacing.medium)
         }
-        .alert("Remove the provider key?", isPresented: $isRemovingKey) {
-            Button("Remove", role: .destructive) { model.removeKey() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Online ad finding stops until you save one again.")
-        }
         .sheet(item: $presentedDestination) { destination in
             switch destination {
             case .allShows:
@@ -124,40 +118,6 @@ struct WiltedMacAdFindingSettingsView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-ad-finding-controls")
-    }
-
-    /// With a key saved, the field is gone; only the fact and Remove remain.
-    private var savedKeyRow: some View {
-        HStack(spacing: WiltedTheme.Spacing.small) {
-            Text("Key saved")
-                .wiltedFont(.body)
-                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                .accessibilityIdentifier("wilted-ad-finding-key-saved")
-            Spacer(minLength: WiltedTheme.Spacing.large)
-            Button("Remove") { isRemovingKey = true }
-                .accessibilityIdentifier("wilted-ad-finding-key-remove")
-        }
-    }
-
-    private var keyEntryRow: some View {
-        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-            HStack(spacing: WiltedTheme.Spacing.small) {
-                SecureField("Provider key", text: Binding(
-                    get: { model.typedKey }, set: { model.typedKey = $0 }
-                ))
-                .accessibilityIdentifier("wilted-ad-finding-key-field")
-                Button("Save") { model.saveKey(model.typedKey) }
-                    .disabled(!model.canSaveKey)
-                    .accessibilityIdentifier("wilted-ad-finding-key-save")
-            }
-            if let message = model.keyMessage {
-                Text(message)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.degraded, scheme: colorScheme))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("wilted-ad-finding-key-message")
-            }
-        }
     }
 
     private var allShowsPage: some View {
