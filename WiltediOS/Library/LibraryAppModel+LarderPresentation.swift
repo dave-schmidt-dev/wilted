@@ -32,7 +32,9 @@ extension LibraryAppModel {
 
     /// Prepared audio plus read-only preparation reports; media filters retain their meaning.
     var visibleRows: [LibraryRow] {
-        let ids = effectiveLarderMediaIDs(prepared: preparedIDs)
+        let prepared = preparedIDs
+        let ids = effectiveLarderMediaIDs(prepared: prepared)
+        var onPhone = ids.onPhone
         let display = completedDisplayContent ?? projectedEpisodeContent
         let groups = completedDisplayContent == nil ? projectedEpisodeGroupsByMember : completedDisplayGroupsByMember
         var rows = completedDisplayRows.map {
@@ -48,8 +50,18 @@ extension LibraryAppModel {
                 row.preparationAnnotations = current[row.id]?.preparationAnnotations ?? []
                 return row
             }
+            // Audio already on the phone is a local fact, not an offer: the snapshot keeps only offered
+            // rows, so without this a sync round briefly empties the list of downloaded episodes. It is
+            // matched in the current mirror's grouping, the one `logicalQueued` uses; an episode the
+            // snapshot already lists, alone or in a group, keeps that row and gets no second one.
+            let liveOnPhone = logicalIDs(prepared.onPhone, groupsByMember: projectedEpisodeGroupsByMember)
             let shown = Set(rows.map(\.id))
-            rows += logicalQueued.filter { !shown.contains($0.id) && !$0.preparationAnnotations.isEmpty }
+            let shownMembers = shown.union(rows.flatMap(\.memberIDs))
+            rows += logicalQueued.filter { row in
+                !shown.contains(row.id) && (!row.preparationAnnotations.isEmpty
+                    || (liveOnPhone.contains(row.id) && !row.memberIDs.contains(where: shownMembers.contains)))
+            }
+            onPhone.formUnion(liveOnPhone)
         }
         if listOrder == .mac {
             var queueIndices: [ItemID: Int] = [:]
@@ -73,7 +85,7 @@ extension LibraryAppModel {
         }
         let preparationIDs = Set(rows.filter { !$0.preparationAnnotations.isEmpty }.map(\.id))
         return LibraryListing.rows(rows, offered: ids.offered,
-            onPhone: ids.onPhone, filter: filter, kind: kindFilter, query: searchText,
+            onPhone: onPhone, filter: filter, kind: kindFilter, query: searchText,
             progress: logicalProgress, finished: logicalFinished, preparationIDs: preparationIDs,
             order: listOrder)
     }

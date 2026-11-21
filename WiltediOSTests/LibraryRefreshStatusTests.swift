@@ -162,6 +162,84 @@ final class LibraryRefreshStatusTests: XCTestCase {
         XCTAssertEqual(model.visibleRows.map(\.id), ids)
         XCTAssertNotNil(model.errorMessage)
     }
+    /// WL-21: every sync round retains the last completed display while it runs. An episode whose
+    /// audio is on the phone but that no current offer lists must stay listed through the round:
+    /// dropping it emptied the Larder for the round and swallowed a Play tap landing in that window.
+    func testRoundInProgressKeepsEpisodesWhoseAudioIsOnThePhoneListed() async throws {
+        let entryID = try ItemID(rawValue: "on-phone")
+        let entry = try LibraryEntry(id: entryID, kind: .podcastEpisode, sourceID: ItemID(rawValue: "show"), title: "On the phone", summary: "", publishedAt: Date(timeIntervalSince1970: 1000))
+        let batch = LibraryChangeBatch(generationID: "on-phone", changes: [
+            .init(version: 1, change: .entry(entry)), .init(version: 1, change: .slot(try QueueSlot(entryID: entryID, sortKey: 0)))], token: .init(rawValue: "on-phone-cursor"), provenance: .init(ownerToken: "owner", operationGeneration: 0, isFullBootstrap: true))
+        let transport = RefreshPollTransport(OwnerCacheTransport(batch: batch, offers: []))
+        await transport.allowPoll()
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("refresh-on-phone-\(UUID()).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let model = LibraryAppModel(transport: transport, store: FileLibraryStore(url: url), deviceID: "phone",
+            preferences: UserDefaults(suiteName: "refresh-on-phone-\(UUID())")!)
+        await model.refresh()
+        XCTAssertNil(model.errorMessage)
+        model.media[entryID] = .onPhone
+        XCTAssertEqual(model.visibleRows.map(\.id), [entryID], "audio on the phone is listed between rounds")
+
+        await transport.pauseNextPoll(records: LibraryDeviceRecords())
+        let round = Task { await model.refresh() }
+        await transport.waitForPoll()
+        XCTAssertTrue(model.hasPendingRefresh)
+        XCTAssertNotNil(model.completedDisplayRows, "the round retains the last completed display")
+        XCTAssertEqual(model.visibleRows.map(\.id), [entryID], "a round in progress must not drop audio on the phone")
+        await transport.invalidateAndRelease()
+        await round.value
+    }
+    /// A saved display shows `joiner` on its own; the current mirror folds it into a group that `representative`
+    /// stands for. Returns a model whose round failed after reading that mirror, so the saved display is kept,
+    /// with `joiner`'s audio on the phone.
+    private func regroupedDuringRound(joinerOfferedInSavedDisplay: Bool) async throws -> (LibraryAppModel, joiner: ItemID, representative: ItemID) {
+        let joiner = try ItemID(rawValue: "joiner"), representative = try ItemID(rawValue: "representative")
+        let show = try ItemID(rawValue: "show")
+        func entry(_ id: ItemID, _ association: LibraryEpisodeAssociation?) throws -> LibraryEntry {
+            try LibraryEntry(id: id, kind: .podcastEpisode, sourceID: show, title: id.rawValue, summary: "",
+                publishedAt: Date(timeIntervalSince1970: 1000), episodeAssociation: association)
+        }
+        let slot = VersionedLibraryChange(version: 1, change: .slot(try QueueSlot(entryID: joiner, sortKey: 0)))
+        let standalone = LibraryChangeBatch(generationID: "standalone", changes: [.init(version: 1, change: .entry(try entry(joiner, nil))), slot],
+            token: .init(rawValue: "standalone-cursor"), provenance: .init(ownerToken: "owner", operationGeneration: 0, isFullBootstrap: true))
+        let group = LibraryEpisodeAssociation(groupID: UUID(), representativeID: representative,
+            memberIDs: [joiner, representative], associationVersion: 1, isTerminal: false)
+        let grouped = LibraryChangeBatch(generationID: "grouped", changes: [
+            .init(version: 2, change: .entry(try entry(joiner, group))), .init(version: 2, change: .entry(try entry(representative, group))), slot],
+            token: .init(rawValue: "grouped-cursor"), provenance: .init(ownerToken: "owner", operationGeneration: 0, isFullBootstrap: true))
+        let offers = joinerOfferedInSavedDisplay ? [try PreparedMediaFixture.certified(LibraryMediaOffer(entryID: joiner,
+            revisionID: RevisionID(rawValue: "revision"), contentHash: PreparedMediaFixture.hash(Data(repeating: 7, count: 10)),
+            byteCount: 10, mediaType: "audio/mpeg", state: .available))] : []
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("refresh-regrouped-\(UUID()).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let seed = LibraryAppModel(transport: OwnerCacheTransport(batch: standalone, offers: offers), store: FileLibraryStore(url: url),
+            deviceID: "phone", preferences: UserDefaults(suiteName: "refresh-regrouped-seed-\(UUID())")!)
+        await seed.refresh()
+        XCTAssertNil(seed.errorMessage)
+        let model = LibraryAppModel(transport: RefreshPollTransport(OwnerCacheTransport(batch: grouped, offers: [])),
+            store: FileLibraryStore(url: url), deviceID: "phone", preferences: UserDefaults(suiteName: "refresh-regrouped-\(UUID())")!)
+        await model.loadLocalState()
+        await model.refresh()
+        XCTAssertNotNil(model.completedDisplayRows, "the failed round keeps the saved display")
+        XCTAssertEqual(model.logicalQueued.map(\.id), [representative], "the current mirror folds joiner into the group")
+        model.media[joiner] = .onPhone
+        return (model, joiner, representative)
+    }
+
+    /// WL-21 round 2: on-phone audio is matched in the current mirror's grouping. An episode that joined a
+    /// group since the saved display stays listed, as its group's row.
+    func testRoundInProgressKeepsOnPhoneEpisodeThatJoinedAGroupSinceTheSavedDisplay() async throws {
+        let (model, _, representative) = try await regroupedDuringRound(joinerOfferedInSavedDisplay: false)
+        XCTAssertEqual(model.visibleRows.map(\.id), [representative])
+    }
+
+    /// The saved display already lists the episode on its own: its new group's row is not added beside it.
+    func testSavedDisplayRowIsNotRepeatedByItsNewGroupsRow() async throws {
+        let (model, joiner, _) = try await regroupedDuringRound(joinerOfferedInSavedDisplay: true)
+        XCTAssertEqual(model.visibleRows.map(\.id), [joiner])
+    }
+
     func testCompletedDisplayWriteFailureKeepsPriorDisplayAndCurrentAuthorBody() async throws {
         let (_, transport, ids, url) = try await savedModel(replacement: true)
         let store = FileLibraryStore(url: url, writeData: { data, path in
