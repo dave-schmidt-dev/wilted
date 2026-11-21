@@ -31,7 +31,13 @@ final class WiltedMacBulletinHub {
 
     /// The latest poll result, for Settings.
     private(set) var status = BulletinProducerStatus()
-    private(set) var routeProtectionStatus: String?
+    private var lastFailure: MacAudioRouteFailureStep?
+    var routeProtectionStatus: String? { lastFailure == nil ? nil : Self.unavailableRouteMessage }
+    private(set) var hasNewsSource = false
+    private(set) var hasCheckedNewsSource = false
+    private(set) var isCheckingNewsSource = false
+    @ObservationIgnored private var newsReadinessRequest = 0
+    @ObservationIgnored private var testBulletinSpeaker: (any BulletinSpeaking)?
 
     @ObservationIgnored private weak var model: WiltedMacModel?
     @ObservationIgnored private var ownedLocation: WiltedLocationProvider?
@@ -40,6 +46,11 @@ final class WiltedMacBulletinHub {
     @ObservationIgnored private let makeSpeaker: @MainActor () -> any BulletinSpeaking
     @ObservationIgnored private let makeAlertSource: @MainActor (String?) -> any NWSAlertSource
     @ObservationIgnored private weak var attachedController: PlaybackController?
+    @ObservationIgnored private let retrySleep: @MainActor (Duration) async throws -> Void
+    @ObservationIgnored private var retryTask: Task<Void, Never>?
+    @ObservationIgnored private var retryIndex = 0
+    @ObservationIgnored private weak var lastController: PlaybackController?
+    @ObservationIgnored private var wasPlaying = false
     @ObservationIgnored private var attachedWaitLimit = 0
     @ObservationIgnored private var alertMonitor: AlertMonitor?
     @ObservationIgnored private var observing = false
@@ -51,7 +62,9 @@ final class WiltedMacBulletinHub {
     init(model: WiltedMacModel, location: WiltedLocationProvider? = nil,
          makeSpeaker: @escaping @MainActor () -> any BulletinSpeaking = { SystemBulletinSpeaker() },
          makeRouteSource: @escaping @MainActor () -> any MacAudioRouteSource = { MacAudioRouteLossObserver() },
-         makeAlertSource: @escaping @MainActor (String?) -> any NWSAlertSource = WiltedMacBulletinHub.nwsClient) {
+         makeAlertSource: @escaping @MainActor (String?) -> any NWSAlertSource = WiltedMacBulletinHub.nwsClient,
+         retrySleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+        self.retrySleep = retrySleep
         self.model = model
         ownedLocation = location
         self.makeRouteSource = makeRouteSource
@@ -60,6 +73,7 @@ final class WiltedMacBulletinHub {
     }
 
     deinit {
+        retryTask?.cancel()
         if let producer { Task { await producer.stop() } }
         if let alertMonitor { Task { await alertMonitor.stop() } }
     }
@@ -83,11 +97,84 @@ final class WiltedMacBulletinHub {
     var alertMonitorIsRunning: Bool { alertMonitor != nil }
     var interruptionsAreAttached: Bool { attachedController != nil }
 
+    /// The current setup lines for the selected bulletin types.
+    var readiness: BulletinReadiness {
+        let settings = model?.automationSettings
+        let location = self.location
+        return BulletinReadiness(
+            hasNewsSource: hasNewsSource,
+            hasWeatherLocation: location.coordinates != nil,
+            soundCheckPaused: lastFailure != nil,
+            headlinesEnabled: settings?.headlinesEnabled ?? true,
+            alertsEnabled: settings?.alertsEnabled ?? true,
+            newsCheck: hasCheckedNewsSource ? .checked : (isCheckingNewsSource ? .checking : .unavailable),
+            locationAccessDenied: location.authorization == .denied && location.coordinates == nil)
+    }
+
+    /// Checks the actual followed article feeds and their saved News choices.
+    /// A failed read keeps the last known result instead of claiming no source exists.
+    func refreshNewsSourceReadiness() async {
+        newsReadinessRequest &+= 1
+        let request = newsReadinessRequest
+        guard let model, let store = model.store else {
+            hasNewsSource = false
+            hasCheckedNewsSource = false
+            isCheckingNewsSource = false
+            return
+        }
+        isCheckingNewsSource = true
+        defer {
+            if request == newsReadinessRequest { isCheckingNewsSource = false }
+        }
+        do {
+            let feeds = try await store.articleFeeds()
+            var foundNewsSource = false
+            for feed in feeds {
+                guard try await store.isNews(feedID: feed.itemID) else { continue }
+                foundNewsSource = true
+                break
+            }
+            guard request == newsReadinessRequest, model.store === store else { return }
+            hasNewsSource = foundNewsSource
+            hasCheckedNewsSource = true
+        } catch {
+            guard request == newsReadinessRequest else { return }
+            hasCheckedNewsSource = false
+        }
+    }
+
+    /// Immediately retries the check that paused bulletins after a sound-output failure.
+    func retryBulletinOutputCheck() {
+        guard let model, lastFailure != nil else { return }
+        reconcileInterruptions(canRun: canRun, settings: model.automationSettings, retryDue: true)
+    }
+
+    /// Speaks a short sample through the bulletin speaker without involving playback.
+    @discardableResult
+    func playTestBulletin() -> Bool {
+        testBulletinSpeaker?.stop()
+        let speaker = makeSpeaker()
+        testBulletinSpeaker = speaker
+        let started = speaker.speak(Self.testBulletinText) { [weak self, weak speaker] in
+            guard let self, self.testBulletinSpeaker === speaker else { return }
+            self.testBulletinSpeaker = nil
+        }
+        if !started { testBulletinSpeaker = nil }
+        return started
+    }
+
+    static let testBulletinText = "This is a test bulletin."
+
+    private var canRun: Bool {
+        guard let model else { return false }
+        return model.store != nil && !model.fixtureMode && !model.isClosingTemporaryState
+    }
+
     /// Starts, nudges or stops the producer to match the settings. Safe to call at any time.
     func reconcile() {
         guard let model else { return }
         let settings = model.automationSettings
-        let canRun = model.store != nil && !model.fixtureMode && !model.isClosingTemporaryState
+        let canRun = self.canRun
         // The morning report needs a location too, even with interruptions off.
         if canRun, settings.interruptionsEnabled || settings.reportEnabled {
             let provider = location
@@ -108,7 +195,7 @@ final class WiltedMacBulletinHub {
             Task { await producer.stop() }
             status = BulletinProducerStatus()
         }
-        reconcileInterruptions(canRun: canRun, settings: settings)
+        reconcileInterruptions(canRun: canRun, settings: settings, retryDue: false)
     }
 
     private func makeProducer() -> BulletinProducer {
@@ -187,7 +274,7 @@ final class WiltedMacBulletinHub {
     // MARK: - Spoken interruptions
 
     /// Attaches or detaches the player and the alert monitor to match settings, playback and location.
-    private func reconcileInterruptions(canRun: Bool, settings: WiltedAutomationSettings) {
+    private func reconcileInterruptions(canRun: Bool, settings: WiltedAutomationSettings, retryDue: Bool) {
         let wantsSpeech = canRun && settings.interruptionsEnabled
         let controller = wantsSpeech ? model?.playback : nil
         let waitLimit = settings.waitLimitSeconds
@@ -195,23 +282,28 @@ final class WiltedMacBulletinHub {
             attached.disableInterruptions(resuming: canRun)
             attachedController = nil
         }
-        if let controller, attachedController == nil, routeProtectionStatus == nil {
+        let playing = model?.isPlaying == true
+        let retryTriggered = retryDue || controller !== lastController || (playing && !wasPlaying)
+        lastController = controller
+        wasPlaying = playing
+        if let controller, attachedController == nil, lastFailure == nil || retryTriggered {
+            let source = makeRouteSource()
             if controller.enableInterruptions(speaker: makeSpeaker(), waitLimit: TimeInterval(waitLimit),
-                                              routeSource: makeRouteSource(), protectionFailed: { [weak self] in
-                    self?.routeProtectionStatus = Self.unavailableRouteMessage
-                    self?.attachedController = nil
-                    self?.stopAlerts()
+                                              routeSource: source, protectionFailed: { [weak self] in
+                    self?.protectionFailed(at: source.failureStep ?? .defaultOutputRead)
                 }) {
-                routeProtectionStatus = nil
+                if let lastFailure {
+                    bulletinLog.info("Bulletin output monitoring recovered after \(lastFailure.rawValue, privacy: .public)")
+                }
+                clearFailure()
                 attachedController = controller
                 attachedWaitLimit = waitLimit
                 syncPlayer()
             } else {
-                routeProtectionStatus = Self.unavailableRouteMessage
+                protectionFailed(at: source.failureStep ?? .registration)
             }
         }
-        let playing = model?.isPlaying == true
-        if !wantsSpeech { routeProtectionStatus = nil }
+        if !wantsSpeech { clearFailure() }
         if wantsSpeech, settings.alertsEnabled, attachedController != nil, playing {
             startAlerts(contact: settings.nwsContact)
         } else {
@@ -220,11 +312,37 @@ final class WiltedMacBulletinHub {
         if wantsSpeech { observeChanges() }
     }
 
-    static let unavailableRouteMessage = "Bulletins are paused because audio output monitoring is unavailable. Turn Read bulletins off and on to retry."
+    static let unavailableRouteMessage = BulletinReadiness.Line.sound.text
+
+    private func protectionFailed(at step: MacAudioRouteFailureStep) {
+        bulletinLog.error("Bulletin output monitoring failed at \(step.rawValue, privacy: .public)")
+        lastFailure = step
+        attachedController = nil
+        stopAlerts()
+        guard retryTask == nil else { return }
+        let delays: [Duration] = [.seconds(5), .seconds(30), .seconds(120)]
+        let delay = delays[retryIndex]
+        retryIndex = min(retryIndex + 1, delays.count - 1)
+        retryTask = Task { @MainActor [weak self, retrySleep] in
+            do { try await retrySleep(delay) } catch { return }
+            guard !Task.isCancelled, let self, let model = self.model else { return }
+            self.retryTask = nil
+            self.reconcileInterruptions(canRun: self.canRun, settings: model.automationSettings, retryDue: true)
+        }
+    }
+
+    private func clearFailure() {
+        retryTask?.cancel()
+        retryTask = nil
+        retryIndex = 0
+        lastFailure = nil
+    }
 
     /// Close and quit cut held speech without the settings toggle's resume behavior.
     func shutdown() {
-        routeProtectionStatus = nil
+        clearFailure()
+        testBulletinSpeaker?.stop()
+        testBulletinSpeaker = nil
         attachedController?.disableInterruptions(resuming: false)
         attachedController = nil
         stopAlerts()

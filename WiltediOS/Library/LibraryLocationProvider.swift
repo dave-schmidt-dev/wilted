@@ -49,6 +49,7 @@ final class LibraryLocationProvider {
 
     private let manager: LibraryLocationManaging
     private let now: () -> Date
+    var onStatusChange: (() -> Void)?
     private(set) var alertsEnabled = false
     private var cachedFix: LibraryLocationFix?
     private var fixRequestInFlight = false
@@ -81,10 +82,12 @@ final class LibraryLocationProvider {
     /// The user turned weather alerts on (or off) for this iPhone. Permission is requested here
     /// and nowhere else; turning alerts off drops the in-memory fix.
     func setAlertsEnabled(_ enabled: Bool, appIsActive: Bool = true) {
+        let previousStatus = status
         alertsEnabled = enabled
         guard enabled else {
             cachedFix = nil
             fixRequestInFlight = false
+            notifyStatusChange(from: previousStatus)
             return
         }
         switch manager.authorization {
@@ -92,6 +95,7 @@ final class LibraryLocationProvider {
         case .authorized: if appIsActive { requestFix() }
         case .denied: break
         }
+        notifyStatusChange(from: previousStatus)
     }
 
     /// The app came to the foreground.
@@ -101,8 +105,13 @@ final class LibraryLocationProvider {
     func playbackStarted(inForeground: Bool) { if inForeground { requestFix() } }
 
     private func authorizationChanged() {
-        guard alertsEnabled, manager.authorization == .authorized else { return }
+        guard alertsEnabled else { return }
+        guard manager.authorization == .authorized else {
+            onStatusChange?()
+            return
+        }
         requestFix()
+        onStatusChange?()
     }
 
     private func requestFix() {
@@ -112,11 +121,17 @@ final class LibraryLocationProvider {
     }
 
     private func received(_ latitude: Double, _ longitude: Double, _ at: Date) {
+        let previousStatus = status
         fixRequestInFlight = false
         guard alertsEnabled else { return }
         let fix = LibraryLocationFix(latitude: Self.round2(latitude), longitude: Self.round2(longitude), fixedAt: at)
         if let held = cachedFix, held.fixedAt > fix.fixedAt { return }
         cachedFix = fix
+        notifyStatusChange(from: previousStatus)
+    }
+
+    private func notifyStatusChange(from previous: LibraryLocationStatus) {
+        if status != previous { onStatusChange?() }
     }
 
     private func isFresh(_ fix: LibraryLocationFix) -> Bool {

@@ -110,6 +110,8 @@ struct InterruptionRig {
     let remote: InterruptionRemote
     let events: InterruptionEvents
     let speaker: StubSpeaker
+    let previewSpeaker: StubSpeaker
+    let playingPreviewSpeaker: StubSpeaker
     let controller: LibraryInterruptionController
     let location: InterruptionLocationManager
     let monitor: StubMonitor
@@ -133,6 +135,7 @@ func makeInterruptionRig(
 ) -> InterruptionRig {
     let engine = InterruptionEngine(), session = InterruptionSession(), nowPlaying = InterruptionNowPlaying()
     let remote = InterruptionRemote(), events = InterruptionEvents(), speaker = StubSpeaker()
+    let previewSpeaker = StubSpeaker(), playingPreviewSpeaker = StubSpeaker()
     let player = LibraryPlayer(
         engine: engine, session: session, nowPlaying: nowPlaying, remoteCommands: remote,
         sessionEvents: events, tickInterval: tick)
@@ -143,7 +146,8 @@ func makeInterruptionRig(
     let controller = LibraryInterruptionController(
         player: player,
         dependencies: .init(
-            speaker: speaker, preferences: LibraryInterruptionPreferences(defaults: defaults),
+            speaker: speaker, previewSpeaker: previewSpeaker, playingPreviewSpeaker: playingPreviewSpeaker,
+            preferences: LibraryInterruptionPreferences(defaults: defaults),
             fetchBulletins: { channel },
             makeMonitor: { _ in made += 1; return monitor },
             location: LibraryLocationProvider(manager: location),
@@ -152,7 +156,8 @@ func makeInterruptionRig(
             sleep: { _ in try await Task.sleep(for: .seconds(3600)) }))
     return InterruptionRig(
         player: player, engine: engine, session: session, nowPlaying: nowPlaying, remote: remote, events: events,
-        speaker: speaker, controller: controller, location: location, monitor: monitor, monitorsMade: { made })
+        speaker: speaker, previewSpeaker: previewSpeaker, playingPreviewSpeaker: playingPreviewSpeaker,
+        controller: controller, location: location, monitor: monitor, monitorsMade: { made })
 }
 
 func headlineChannel(alerts: Bool = false) -> LibraryBulletins {
@@ -172,6 +177,39 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
     }
 
     override func tearDown() async throws { defaults.removePersistentDomain(forName: suite) }
+
+    func testTestBulletinUsesTheSpeakerOnceWithoutChangingPlayerState() {
+        let rig = makeInterruptionRig(channel: nil, defaults: defaults)
+        let position = rig.player.position
+        let status = rig.player.status
+        let activations = rig.session.activations
+
+        rig.controller.speakTestBulletin()
+
+        XCTAssertEqual(rig.previewSpeaker.spoken, ["This is a test bulletin."])
+        XCTAssertTrue(rig.speaker.spoken.isEmpty, "the live bulletin speaker remains untouched")
+        XCTAssertEqual(rig.player.position, position)
+        XCTAssertEqual(rig.player.status, status)
+        XCTAssertFalse(rig.player.isHoldingForSpeech)
+        XCTAssertEqual(rig.session.activations, activations)
+        XCTAssertEqual(rig.speaker.stops, 0)
+    }
+
+    func testTestBulletinUsesThePlayingSessionWithoutPausingTheEpisode() async {
+        let rig = makeInterruptionRig(channel: nil, defaults: defaults)
+        await rig.play(at: 42)
+        let activations = rig.session.activations
+
+        rig.controller.speakTestBulletin()
+
+        XCTAssertEqual(rig.playingPreviewSpeaker.spoken, ["This is a test bulletin."])
+        XCTAssertEqual(rig.previewSpeaker.spoken, [])
+        XCTAssertEqual(rig.speaker.spoken, [])
+        XCTAssertTrue(rig.player.status == .playing)
+        XCTAssertTrue(rig.engine.isPlaying)
+        XCTAssertEqual(rig.player.position, 42)
+        XCTAssertEqual(rig.session.activations, activations)
+    }
 
     func testPlaybackResumesAtTheStoredPositionAfterSkip() async {
         let rig = makeInterruptionRig(channel: headlineChannel(), defaults: defaults)

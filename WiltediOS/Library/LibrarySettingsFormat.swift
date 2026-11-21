@@ -1,5 +1,6 @@
 import Foundation
 import WiltedCloudKitLibrary
+import WiltedDomain
 import WiltedLibrary
 
 /// Words and numbers for the Settings page. Pure, so the formatting is testable without a view.
@@ -19,7 +20,54 @@ enum LibrarySettingsFormat {
     static func statisticsTitle(deviceKind: String) -> String { "This \(deviceKind)" }
 
     /// The per-device interruptions switch: it covers only the device it is set on.
-    static func speakInterruptionsLabel(deviceKind: String) -> String { "Speak interruptions on this \(deviceKind)" }
+    static func speakInterruptionsLabel(deviceKind: String) -> String { "Read bulletins on this \(deviceKind)" }
+
+    /// What this phone can verify about the Mac's bulletin settings and its own alert location.
+    /// News-feed classification and sound checks stay on the Mac, so the phone never claims those
+    /// settings are ready based only on an article feed in its library copy.
+    static func bulletinLines(
+        channel: LibraryBulletins?, hasCheckedChannel: Bool, articleFeedCount: Int?,
+        location: LibraryLocationStatus, channelCheckFailed: Bool = false,
+        isRefreshingLibrary: Bool = false, deviceKind: String = "iPhone"
+    ) -> [String] {
+        if channelCheckFailed { return ["Wilted could not check bulletin settings. It will try again."] }
+        guard hasCheckedChannel else { return ["Play an episode to check your Mac’s bulletin settings."] }
+        guard let channel else {
+            return ["Bulletins are not set up yet. Turn on Headlines or Weather alerts in Wilted on your Mac."]
+        }
+        guard channel.headlinesEnabled || channel.alertsEnabled else {
+            return ["Turn on Headlines or Weather alerts in Wilted on your Mac."]
+        }
+
+        var lines: [String] = []
+        if channel.headlinesEnabled {
+            if articleFeedCount == nil {
+                lines.append(isRefreshingLibrary
+                    ? "Checking your library for a news feed…"
+                    : "Wilted has not checked for a news feed yet. Refresh the library to check.")
+            } else if articleFeedCount == 0 {
+                lines.append(BulletinReadiness.Line.news.text)
+                lines.append("Set this up on your Mac.")
+            } else {
+                lines.append("Wilted can’t tell if one of your feeds is marked as News.")
+                lines.append("Check Wilted on your Mac.")
+            }
+        }
+        if channel.alertsEnabled {
+            switch location {
+            case .none:
+                lines.append(BulletinReadiness.Line.weather.text)
+                lines.append("Wilted asks when you play an episode with Weather alerts on.")
+            case .denied:
+                lines.append("Location access is off. Turn it on in \(deviceKind) Settings > Privacy & Security > Location Services > Wilted.")
+            case .stale:
+                lines.append("Weather alerts need a fresh location. Open Wilted while using it to get one.")
+            case .located:
+                break
+            }
+        }
+        return lines.isEmpty ? [BulletinReadiness.Line.ready.text] : lines
+    }
 
     /// This phone's three lifetime rows. Zero reads as "None" so a fresh install is not a wall of zeros.
     static func phoneStatRows(_ stats: LibraryPhoneStats) -> [StatRow] {

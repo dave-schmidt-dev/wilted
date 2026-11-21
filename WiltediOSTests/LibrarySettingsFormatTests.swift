@@ -100,7 +100,7 @@ final class LibrarySettingsFormatTests: XCTestCase {
     func testSettingsCopyNamesTheDeviceItRunsOn() {
         for kind in ["iPad", "iPhone"] {
             XCTAssertEqual(LibrarySettingsFormat.statisticsTitle(deviceKind: kind), "This \(kind)")
-            XCTAssertEqual(LibrarySettingsFormat.speakInterruptionsLabel(deviceKind: kind), "Speak interruptions on this \(kind)")
+            XCTAssertEqual(LibrarySettingsFormat.speakInterruptionsLabel(deviceKind: kind), "Read bulletins on this \(kind)")
             let fetched = LibrarySettingsFormat.sync(
                 isRefreshing: false, quarantined: false, error: nil, lastRefresh: Self.fetchedAt, deviceKind: kind)
             XCTAssertEqual(fetched.detail, "Fetch time reports this \(kind)’s last successful library read.")
@@ -108,8 +108,51 @@ final class LibrarySettingsFormatTests: XCTestCase {
             XCTAssertTrue(publication.hasSuffix("Author evidence does not prove this \(kind) has the same library."), publication)
         }
         XCTAssertEqual(LibrarySettingsFormat.statisticsTitle(deviceKind: "iPad"), "This iPad")
-        XCTAssertEqual(LibrarySettingsFormat.speakInterruptionsLabel(deviceKind: "iPad"), "Speak interruptions on this iPad")
+        XCTAssertEqual(LibrarySettingsFormat.speakInterruptionsLabel(deviceKind: "iPad"), "Read bulletins on this iPad")
         XCTAssertFalse(WiltedPublicationAge.detail(Self.fetchedAt, deviceKind: "iPad").contains("iPhone"))
+    }
+
+    func testPhoneBulletinLinesUseOnlyTheNewsAndLocationFactsThePhoneCanSee() throws {
+        let unchecked = LibrarySettingsFormat.bulletinLines(
+            channel: nil, hasCheckedChannel: false, articleFeedCount: 0, location: .none)
+        XCTAssertEqual(unchecked, ["Play an episode to check your Mac’s bulletin settings."])
+
+        let headlines = try LibraryBulletins(alertsEnabled: false, headlinesEnabled: true)
+        XCTAssertEqual(
+            LibrarySettingsFormat.bulletinLines(
+                channel: headlines, hasCheckedChannel: true, articleFeedCount: nil, location: .none),
+            ["Wilted has not checked for a news feed yet. Refresh the library to check."])
+        XCTAssertEqual(
+            LibrarySettingsFormat.bulletinLines(
+                channel: headlines, hasCheckedChannel: true, articleFeedCount: nil, location: .none,
+                isRefreshingLibrary: true),
+            ["Checking your library for a news feed…"])
+        XCTAssertEqual(
+            LibrarySettingsFormat.bulletinLines(
+                channel: headlines, hasCheckedChannel: true, articleFeedCount: 0, location: .none),
+            [BulletinReadiness.Line.news.text, "Set this up on your Mac."])
+        XCTAssertEqual(
+            LibrarySettingsFormat.bulletinLines(
+                channel: headlines, hasCheckedChannel: true, articleFeedCount: 1, location: .none),
+            ["Wilted can’t tell if one of your feeds is marked as News.", "Check Wilted on your Mac."])
+
+        let alerts = try LibraryBulletins(alertsEnabled: true, headlinesEnabled: false)
+        XCTAssertEqual(
+            LibrarySettingsFormat.bulletinLines(
+                channel: alerts, hasCheckedChannel: true, articleFeedCount: 0, location: .denied),
+            ["Location access is off. Turn it on in iPhone Settings > Privacy & Security > Location Services > Wilted."])
+        XCTAssertEqual(
+            LibrarySettingsFormat.bulletinLines(
+                channel: alerts, hasCheckedChannel: true, articleFeedCount: 0, location: .denied, deviceKind: "iPad"),
+            ["Location access is off. Turn it on in iPad Settings > Privacy & Security > Location Services > Wilted."])
+        XCTAssertEqual(
+            LibrarySettingsFormat.bulletinLines(
+                channel: alerts, hasCheckedChannel: true, articleFeedCount: 0, location: .located),
+            [BulletinReadiness.Line.ready.text])
+        XCTAssertEqual(
+            LibrarySettingsFormat.bulletinLines(
+                channel: alerts, hasCheckedChannel: true, articleFeedCount: 0, location: .none),
+            [BulletinReadiness.Line.weather.text, "Wilted asks when you play an episode with Weather alerts on."])
     }
 
     /// The fetch note comes from the model's own device kind.

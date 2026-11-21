@@ -97,6 +97,9 @@ final class WiltedMacBulletinHubTests: XCTestCase {
         await rig.model.waitForPlaybackOperationForTesting()
         await WiltedMacHeadless.eventually("the monitor starts once playing") { rig.hub.alertMonitorIsRunning }
         await WiltedMacHeadless.eventually("the monitor asks for alerts at the Mac's location") { rig.source.calls > 0 }
+        XCTAssertFalse(rig.hub.readiness.lines.contains(.weather),
+                       "saved coordinates work even though the system location permission is denied")
+        XCTAssertFalse(rig.hub.readiness.lines.contains(.locationDenied))
 
         rig.model.pausePlayback()
         await rig.model.waitForPlaybackOperationForTesting()

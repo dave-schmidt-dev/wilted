@@ -47,6 +47,39 @@ private struct LifecycleAlerts: NWSAlertSource {
 }
 
 @MainActor
+private final class LifecycleRetryClock {
+    private struct PendingSleep {
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    private var pending: [PendingSleep] = []
+    private(set) var requested: [Duration] = []
+
+    func sleep(_ duration: Duration) async throws {
+        requested.append(duration)
+        try await withCheckedThrowingContinuation { continuation in
+            pending.append(PendingSleep(continuation: continuation))
+        }
+    }
+
+    func advanceNext() {
+        guard !pending.isEmpty else { XCTFail("expected a scheduled retry"); return }
+        pending.removeFirst().continuation.resume()
+    }
+
+    func waitForRequestCount(_ count: Int) async {
+        for _ in 0..<100 where requested.count < count { await Task.yield() }
+        XCTAssertEqual(requested.count, count)
+    }
+
+    func resumePending() {
+        let sleeps = pending
+        pending = []
+        for sleep in sleeps { sleep.continuation.resume() }
+    }
+}
+
+@MainActor
 private final class LifecycleSpeaker: BulletinSpeaking {
     var completion: (@MainActor () -> Void)?
     var stops = 0
@@ -66,6 +99,7 @@ final class WiltedMacRouteLossLifecycleTests: XCTestCase {
         let route: LifecycleRoute
         let speaker: LifecycleSpeaker
         let hub: WiltedMacBulletinHub
+        let retryClock: LifecycleRetryClock
         var model: WiltedMacModel { library.model }
     }
 
@@ -76,11 +110,14 @@ final class WiltedMacRouteLossLifecycleTests: XCTestCase {
         route.canRegister = registers
         let speaker = LifecycleSpeaker()
         let location = WiltedLocationProvider(manager: LifecycleLocation(), wifi: LifecycleWiFi())
+        let retryClock = LifecycleRetryClock()
         let hub = WiltedMacBulletinHub(model: library.model, location: location,
                                       makeSpeaker: { speaker }, makeRouteSource: { route },
-                                      makeAlertSource: { _ in LifecycleAlerts() })
+                                      makeAlertSource: { _ in LifecycleAlerts() },
+                                      retrySleep: { duration in try await retryClock.sleep(duration) })
         library.model.installBulletinHubForTesting(hub)
-        return Rig(library: library, backend: backend, route: route, speaker: speaker, hub: hub)
+        return Rig(library: library, backend: backend, route: route, speaker: speaker, hub: hub,
+                   retryClock: retryClock)
     }
 
     private func enabled(_ rig: Rig, _ enabled: Bool) {
@@ -147,27 +184,58 @@ final class WiltedMacRouteLossLifecycleTests: XCTestCase {
         await rig.model.close()
     }
 
-    func testRegistrationFailureDisablesSpeechAndExposesCuratedReportsStatus() async throws {
+    func testRegistrationFailureRetriesWhenPlaybackStartsAndClearsStatus() async throws {
         let rig = try await rig(registers: false)
+        defer { rig.retryClock.resumePending() }
         enabled(rig, true)
         XCTAssertEqual(rig.route.listeners, 0)
         XCTAssertFalse(rig.hub.interruptionsAreAttached)
         XCTAssertFalse(rig.model.playback?.interruptionsEnabled ?? true)
+        XCTAssertEqual(rig.hub.routeProtectionStatus, WiltedMacBulletinHub.unavailableRouteMessage)
         XCTAssertEqual(rig.hub.routeProtectionStatus,
-                       "Bulletins are paused because audio output monitoring is unavailable. Turn Read bulletins off and on to retry.")
-        let attempts = rig.route.starts
-        rig.hub.reconcile()
-        XCTAssertEqual(rig.route.starts, attempts, "failure waits for an explicit toggle retry")
-        enabled(rig, false)
+                       "Bulletins are paused because Wilted couldn’t check the sound output.")
+        await rig.retryClock.waitForRequestCount(1)
+        XCTAssertEqual(rig.retryClock.requested.first, .seconds(5))
+
         rig.route.canRegister = true
+        rig.model.playEpisode(rig.library.episodes[0])
+        await rig.model.waitForPlaybackOperationForTesting()
+        for _ in 0..<20 where !rig.hub.interruptionsAreAttached { await Task.yield() }
+
+        XCTAssertEqual(rig.route.listeners, 1)
+        XCTAssertTrue(rig.hub.interruptionsAreAttached)
+        XCTAssertNil(rig.hub.routeProtectionStatus)
+        XCTAssertTrue(rig.model.playback?.interruptionsEnabled ?? false)
+        await rig.model.close()
+        XCTAssertEqual(rig.route.listeners, 0)
+    }
+
+    func testRegistrationFailureRetriesWhenPlayerChangesAndClearsStatus() async throws {
+        let rig = try await rig(registers: false)
+        defer { rig.retryClock.resumePending() }
         enabled(rig, true)
+        XCTAssertFalse(rig.hub.interruptionsAreAttached)
+        XCTAssertEqual(rig.hub.routeProtectionStatus, WiltedMacBulletinHub.unavailableRouteMessage)
+        await rig.retryClock.waitForRequestCount(1)
+
+        rig.route.canRegister = true
+        let store = try XCTUnwrap(rig.model.store)
+        let replacement = PlaybackController(
+            store: store, backend: WiltedMacScriptedBackend(), deviceID: "replacement")
+        rig.model.playback = replacement
+        for _ in 0..<20 where !rig.hub.interruptionsAreAttached { await Task.yield() }
+
+        XCTAssertTrue(rig.hub.interruptionsAreAttached)
+        XCTAssertTrue(replacement.interruptionsEnabled)
         XCTAssertEqual(rig.route.listeners, 1)
         XCTAssertNil(rig.hub.routeProtectionStatus)
         await rig.model.close()
         XCTAssertEqual(rig.route.listeners, 0)
     }
-    func testRuntimeMonitoringFailureShowsCuratedStatusAndStopsAlerts() async throws {
+
+    func testRuntimeMonitoringFailureStopsHeldAudioAndRecoversOnRetry() async throws {
         let rig = try await rig()
+        defer { rig.retryClock.resumePending() }
         try await hold(rig)
         rig.model.updateAutomationSettings { settings in
             settings.updatingReports {
@@ -180,6 +248,8 @@ final class WiltedMacRouteLossLifecycleTests: XCTestCase {
         rig.route.monitoringAvailable = false
         rig.route.changed?()
         XCTAssertEqual(rig.hub.routeProtectionStatus, WiltedMacBulletinHub.unavailableRouteMessage)
+        XCTAssertEqual(rig.hub.routeProtectionStatus,
+                       "Bulletins are paused because Wilted couldn’t check the sound output.")
         XCTAssertFalse(rig.hub.alertMonitorIsRunning)
         XCTAssertFalse(rig.hub.interruptionsAreAttached)
         XCTAssertFalse(rig.model.playback?.interruptionsEnabled ?? true)
@@ -200,6 +270,31 @@ final class WiltedMacRouteLossLifecycleTests: XCTestCase {
             attachment.lifetime = .keepAlways
             add(attachment)
         }
+        await rig.retryClock.waitForRequestCount(1)
+        XCTAssertEqual(rig.retryClock.requested.first, .seconds(5))
+
+        for attempt in 1...3 {
+            rig.retryClock.advanceNext()
+            await rig.retryClock.waitForRequestCount(attempt + 1)
+            XCTAssertFalse(rig.hub.interruptionsAreAttached)
+            XCTAssertFalse(rig.model.playback?.interruptionsEnabled ?? true)
+            XCTAssertFalse(rig.backend.isPlaying)
+            XCTAssertEqual(rig.backend.playCount, 0)
+            XCTAssertEqual(rig.backend.currentTime, 8)
+        }
+        XCTAssertEqual(Array(rig.retryClock.requested.prefix(4)),
+                       [.seconds(5), .seconds(30), .seconds(120), .seconds(120)])
+
+        rig.route.monitoringAvailable = true
+        rig.retryClock.advanceNext()
+        for _ in 0..<20 where !rig.hub.interruptionsAreAttached { await Task.yield() }
+        XCTAssertTrue(rig.hub.interruptionsAreAttached)
+        XCTAssertTrue(rig.model.playback?.interruptionsEnabled ?? false)
+        XCTAssertNil(rig.hub.routeProtectionStatus)
+        XCTAssertFalse(rig.backend.isPlaying)
+        XCTAssertEqual(rig.backend.playCount, 0)
+        XCTAssertEqual(rig.backend.currentTime, 8)
+
         await rig.model.close()
     }
 }

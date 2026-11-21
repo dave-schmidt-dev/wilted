@@ -9,6 +9,7 @@ private final class RouteHardware: MacAudioRouteHardware {
     var alive: UInt32 = 1
     var jack: UInt32 = 1
     var failedRead: UInt32?
+    var failNextRead: UInt32?
     var failRegistrationAt: Int?
     var additions = 0
     var removals = 0
@@ -17,6 +18,10 @@ private final class RouteHardware: MacAudioRouteHardware {
 
     func has(_ property: MacAudioRouteProperty) -> Bool { true }
     func read(_ property: MacAudioRouteProperty) -> UInt32? {
+        if failNextRead == property.selector {
+            failNextRead = nil
+            return nil
+        }
         if failedRead == property.selector { return nil }
         switch property.selector {
         case kAudioHardwarePropertyDefaultOutputDevice: return output
@@ -67,6 +72,7 @@ final class MacAudioRouteLossObserverTests: XCTestCase {
             XCTAssertFalse(observer.start {})
             XCTAssertTrue(hardware.active.isEmpty)
             XCTAssertNil(observer.currentRoute())
+            XCTAssertEqual(observer.failureStep, .registration)
             XCTAssertEqual(hardware.removals, index - 1)
         }
     }
@@ -121,7 +127,33 @@ final class MacAudioRouteLossObserverTests: XCTestCase {
         for _ in 0..<10 { await Task.yield() }
         XCTAssertNil(observer.currentRoute())
         XCTAssertFalse(observer.monitoringAvailable)
+        XCTAssertEqual(observer.failureStep, .registration)
         XCTAssertEqual(changes, 1, "the controller must hear that protection failed")
+        observer.stop()
+        XCTAssertTrue(hardware.active.isEmpty)
+    }
+
+    func testDefaultOutputReadFailureDuringChangeRecoversOnNextChange() async {
+        let hardware = RouteHardware()
+        let observer = MacAudioRouteLossObserver(hardware: hardware)
+        var changes = 0
+        XCTAssertTrue(observer.start { changes += 1 })
+        let callback = hardware.active.values.first { $0.0.selector == kAudioHardwarePropertyDefaultOutputDevice }!.1
+
+        hardware.failNextRead = kAudioHardwarePropertyDefaultOutputDevice
+        callback()
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertFalse(observer.monitoringAvailable)
+        XCTAssertEqual(observer.failureStep, .defaultOutputRead)
+        XCTAssertNil(observer.currentRoute())
+
+        callback()
+        for _ in 0..<10 { await Task.yield() }
+        XCTAssertTrue(observer.monitoringAvailable)
+        XCTAssertNil(observer.failureStep)
+        XCTAssertEqual(observer.currentRoute()?.device, 10)
+        XCTAssertEqual(changes, 2)
+
         observer.stop()
         XCTAssertTrue(hardware.active.isEmpty)
     }

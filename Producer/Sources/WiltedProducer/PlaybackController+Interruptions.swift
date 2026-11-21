@@ -174,7 +174,7 @@ extension PlaybackController {
         if let routeSource, !routeSource.start(changed: { [weak self, weak engine] in
             guard let self, let engine, self.interruptions === engine else { return }
             self.routeChanged(engine)
-        }) {
+        }) || !routeSource.monitoringAvailable {
             disableInterruptions(resuming: false)
             return false
         }

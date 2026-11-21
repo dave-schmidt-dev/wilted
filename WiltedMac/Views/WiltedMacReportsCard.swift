@@ -15,11 +15,17 @@ struct WiltedMacReportsCard: View {
     @State private var contactText = ""
     @State private var coordinateProblem = false
     @State private var showsDetails: Bool
+    @FocusState private var focusedLocationField: LocationField?
+    private let readinessOverride: BulletinReadiness?
+
+    private enum LocationField { case latitude, longitude }
 
     /// The details start folded: interruptions are off by default, and the rest only matters once on.
-    init(model: WiltedMacModel, location: WiltedLocationProvider, startsExpanded: Bool = false) {
+    init(model: WiltedMacModel, location: WiltedLocationProvider, startsExpanded: Bool = false,
+         readinessOverride: BulletinReadiness? = nil) {
         self.model = model
         self.location = location
+        self.readinessOverride = readinessOverride
         _showsDetails = State(initialValue: startsExpanded)
     }
 
@@ -31,12 +37,8 @@ struct WiltedMacReportsCard: View {
                 Toggle("Read bulletins while playing", isOn: reportsBinding(\.interruptionsEnabled))
                     .accessibilityIdentifier("wilted-reports-interruptions")
                 #if canImport(WiltedProducer)
-                if let status = model.bulletinHub.routeProtectionStatus {
-                    Text(status)
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.degraded, scheme: colorScheme))
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("wilted-reports-route-status")
+                if settings.interruptionsEnabled {
+                    readinessSection
                 }
                 #endif
                 DisclosureGroup(isExpanded: $showsDetails) {
@@ -113,6 +115,76 @@ struct WiltedMacReportsCard: View {
         }
     }
 
+    #if canImport(WiltedProducer)
+    @ViewBuilder private var readinessSection: some View {
+        let hub = model.bulletinHub
+        let readiness = readinessOverride ?? hub.readiness
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+            ForEach(readiness.lines, id: \.self) { line in readinessRow(line) }
+            Button("Play a test bulletin") { _ = model.bulletinHub.playTestBulletin() }
+                .accessibilityIdentifier("wilted-reports-test-bulletin")
+        }
+        .padding(.leading, WiltedTheme.Spacing.small)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-reports-readiness")
+        .task(id: model.store.map(ObjectIdentifier.init)) {
+            await hub.refreshNewsSourceReadiness()
+        }
+        .onChange(of: model.isPresentingAddSheet) { _, presented in
+            if !presented { refreshNewsSourceReadiness() }
+        }
+        .onChange(of: model.subscriptions) { _, _ in refreshNewsSourceReadiness() }
+    }
+
+    @ViewBuilder private func readinessRow(_ line: BulletinReadiness.Line) -> some View {
+        HStack(alignment: .top, spacing: WiltedTheme.Spacing.small) {
+            Text(line.text)
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(readinessColor(line), scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            switch line {
+            case .news:
+                Button("Add a news feed") { model.presentAddSheet() }
+                    .accessibilityIdentifier("wilted-reports-add-news-feed")
+            case .weather, .locationDenied:
+                Button("Set location") { focusLocationFields() }
+                    .accessibilityIdentifier("wilted-reports-set-location")
+            case .sound:
+                Button("Try again") { model.bulletinHub.retryBulletinOutputCheck() }
+                    .accessibilityIdentifier("wilted-reports-retry-sound-check")
+            case .ready, .checkingNews:
+                EmptyView()
+            case .unknownNews:
+                Button("Check news feeds") { refreshNewsSourceReadiness() }
+                    .accessibilityIdentifier("wilted-reports-refresh-news-readiness")
+            case .chooseSources:
+                Button("Choose bulletins") { showsDetails = true }
+            }
+        }
+    }
+
+    private func readinessColor(_ line: BulletinReadiness.Line) -> WiltedTheme.ColorToken {
+        switch line {
+        case .ready: .success
+        case .checkingNews: .secondaryText
+        default: .degraded
+        }
+    }
+
+    private func refreshNewsSourceReadiness() {
+        Task { await model.bulletinHub.refreshNewsSourceReadiness() }
+    }
+
+    private func focusLocationFields() {
+        showsDetails = true
+        Task { @MainActor in
+            await Task.yield()
+            focusedLocationField = .latitude
+        }
+    }
+    #endif
+
     // MARK: Location
 
     @ViewBuilder private var locationSection: some View {
@@ -127,6 +199,7 @@ struct WiltedMacReportsCard: View {
             TextField("Latitude", text: $latitudeText, prompt: Text("38.90"))
                 .labelsHidden()
                 .frame(maxWidth: 140)
+                .focused($focusedLocationField, equals: .latitude)
                 .onSubmit(commitCoordinates)
                 .accessibilityIdentifier("wilted-reports-latitude")
         }
@@ -134,6 +207,7 @@ struct WiltedMacReportsCard: View {
             TextField("Longitude", text: $longitudeText, prompt: Text("-77.04"))
                 .labelsHidden()
                 .frame(maxWidth: 140)
+                .focused($focusedLocationField, equals: .longitude)
                 .onSubmit(commitCoordinates)
                 .accessibilityIdentifier("wilted-reports-longitude")
         }

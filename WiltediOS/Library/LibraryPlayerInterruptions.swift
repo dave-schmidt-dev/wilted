@@ -1,4 +1,3 @@
-import AVFoundation
 import Combine
 import Foundation
 import OSLog
@@ -120,16 +119,6 @@ extension LibraryPlayer {
 
 // MARK: - Speech and alert seams
 
-/// Speaks one bulletin. Injected so tests never speak.
-@MainActor
-protocol LibrarySpeaking: AnyObject {
-    /// Starts speaking and calls `onFinish` once on the main actor when the speech ends or fails.
-    /// Returns false, never calling `onFinish`, when speech cannot start.
-    func speak(_ text: String, onFinish: @escaping @MainActor () -> Void) -> Bool
-    /// Stops silently: `onFinish` is not called.
-    func stop()
-}
-
 /// The alert monitor as the controller uses it, so a test can watch when it starts and where.
 protocol LibraryAlertMonitoring: AnyObject, Sendable {
     func start() async
@@ -141,80 +130,6 @@ protocol LibraryAlertMonitoring: AnyObject, Sendable {
 
 extension AlertMonitor: LibraryAlertMonitoring {}
 
-/// The production speaker: `AVSpeechSynthesizer` on the app's own audio session, which the player keeps
-/// active. Whether it speaks while the phone plays in the background is unverified (b64 facts, item 10), so
-/// it gives up if speech has not started within `startTimeout` and the player keeps playing.
-@MainActor
-final class LibrarySpeechSynthesizer: NSObject, LibrarySpeaking, AVSpeechSynthesizerDelegate {
-    static let startTimeout: Duration = .seconds(3)
-    private let synthesizer = AVSpeechSynthesizer()
-    private var current: (id: ObjectIdentifier, finish: @MainActor () -> Void)?
-    private var startedUtterance: ObjectIdentifier?
-    private var startWatch: Task<Void, Never>?
-    private(set) var currentUtterance: AVSpeechUtterance?
-
-    override init() {
-        super.init()
-        synthesizer.usesApplicationAudioSession = true
-        synthesizer.delegate = self
-    }
-
-    func speak(_ text: String, onFinish: @escaping @MainActor () -> Void) -> Bool {
-        guard !text.isEmpty else { return false }
-        stop()
-        let utterance = AVSpeechUtterance(string: text)
-        let id = ObjectIdentifier(utterance)
-        current = (id, onFinish)
-        currentUtterance = utterance
-        startedUtterance = nil
-        synthesizer.speak(utterance)
-        startWatch = Task { [weak self] in
-            try? await Task.sleep(for: Self.startTimeout)
-            guard !Task.isCancelled, let self, self.current?.id == id, self.startedUtterance != id else { return }
-            interruptionLog.error("Speech did not start; giving up on this bulletin")
-            self.synthesizer.stopSpeaking(at: .immediate)
-            self.complete(id)
-        }
-        return true
-    }
-
-    func stop() {
-        guard current != nil else { return }
-        current = nil
-        currentUtterance = nil
-        startedUtterance = nil
-        startWatch?.cancel()
-        synthesizer.stopSpeaking(at: .immediate)
-    }
-
-    private func complete(_ id: ObjectIdentifier) {
-        guard let current, current.id == id else { return }
-        self.current = nil
-        self.currentUtterance = nil
-        self.startedUtterance = nil
-        startWatch?.cancel()
-        current.finish()
-    }
-
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        let id = ObjectIdentifier(utterance)
-        Task { @MainActor [weak self] in
-            guard let self, self.current?.id == id else { return }
-            self.startedUtterance = id
-        }
-    }
-
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        let id = ObjectIdentifier(utterance)
-        Task { @MainActor [weak self] in self?.complete(id) }
-    }
-
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        let id = ObjectIdentifier(utterance)
-        Task { @MainActor [weak self] in self?.complete(id) }
-    }
-}
-
 // MARK: - The controller
 
 /// Runs `InterruptionReducer` for the iPhone player: reads the Mac's bulletin channel on each sync tick
@@ -222,9 +137,11 @@ final class LibrarySpeechSynthesizer: NSObject, LibrarySpeaking, AVSpeechSynthes
 /// reducer's effects (hold, speak, restore, resume). Speech that cannot start is dropped and playback
 /// carries on; every speech ends by finishing, a skip, a pause or the watchdog.
 @MainActor
-final class LibraryInterruptionController {
+final class LibraryInterruptionController: ObservableObject {
     struct Dependencies {
         var speaker: any LibrarySpeaking
+        var previewSpeaker: (any LibrarySpeaking)? = nil
+        var playingPreviewSpeaker: (any LibrarySpeaking)? = nil
         var preferences = LibraryInterruptionPreferences()
         /// The Mac's published channel; nil before it has published one.
         var fetchBulletins: @Sendable () async throws -> LibraryBulletins?
@@ -244,6 +161,9 @@ final class LibraryInterruptionController {
     private var reducer = InterruptionReducer()
     private var cancellables = Set<AnyCancellable>()
     private var channel: LibraryBulletins?
+    var observedChannel: LibraryBulletins? { channel }
+    private(set) var hasCheckedChannel = false
+    private(set) var channelCheckFailed = false
     private var alerts: [String: Bulletin] = [:]
     private var activeAlertIDs: Set<String> = []
     private var revision: (entry: ItemID, id: RevisionID)?
@@ -257,6 +177,12 @@ final class LibraryInterruptionController {
     private var monitorChain: Task<Void, Never>?
 
     var state: InterruptionState { reducer.state }
+    var locationStatus: LibraryLocationStatus { deps.location?.status ?? .none }
+    var canSpeakTestBulletin: Bool {
+        guard !player.isHoldingForSpeech else { return false }
+        if case .idle = reducer.state { return true }
+        return false
+    }
     var isMonitorRunning: Bool { monitorRunning }
     /// True once the playing item's revision is known; until then no bulletin is spoken.
     var hasRevision: Bool { revision != nil }
@@ -264,6 +190,7 @@ final class LibraryInterruptionController {
     init(player: LibraryPlayer, dependencies: Dependencies) {
         self.player = player
         self.deps = dependencies
+        dependencies.location?.onStatusChange = { [weak self] in self?.objectWillChange.send() }
         player.onSpeechHoldEnded = { [weak self] in self?.holdEndedByPlayer() }
         player.onSpeechSkip = { [weak self] in self?.send { .skip($0) } }
         player.$status.removeDuplicates().sink { [weak self] status in
@@ -281,6 +208,18 @@ final class LibraryInterruptionController {
     /// Waits for monitor work already queued. For tests.
     func settleMonitor() async { await monitorChain?.value }
 
+    /// Uses the same speaker as bulletins without pausing, seeking, or changing the player.
+    func speakTestBulletin() {
+        guard canSpeakTestBulletin else { return }
+        let preview = player.status == .playing ? deps.playingPreviewSpeaker : deps.previewSpeaker
+        _ = (preview ?? deps.speaker).speak("This is a test bulletin.", onFinish: {})
+    }
+
+    func stopTestBulletin() {
+        deps.previewSpeaker?.stop()
+        deps.playingPreviewSpeaker?.stop()
+    }
+
     // MARK: Sync tick
 
     /// One sync round: reads the channel while playing, applies it and brings the alert monitor in line.
@@ -291,10 +230,19 @@ final class LibraryInterruptionController {
             return
         }
         guard player.status == .playing else { reconcileMonitor(); return }
+        let previousChannel = channel
+        let previousCheck = hasCheckedChannel
+        let previousFailure = channelCheckFailed
         do {
             channel = try await deps.fetchBulletins()
+            hasCheckedChannel = true
+            channelCheckFailed = false
         } catch {
             interruptionLog.error("Could not read the bulletin channel: \(String(describing: error), privacy: .public)")
+            channelCheckFailed = true
+        }
+        if channel != previousChannel || hasCheckedChannel != previousCheck || channelCheckFailed != previousFailure {
+            objectWillChange.send()
         }
         reconcileMonitor()
         await refreshActiveAlerts()
@@ -511,31 +459,5 @@ final class LibraryInterruptionController {
         watchdog?.cancel()
         watchdog = nil
         deps.speaker.stop()
-    }
-}
-
-// MARK: - Live wiring
-
-extension LibraryInterruptionController {
-    /// The production stack for `model`'s player: the system speaker, the NWS-backed alert monitor, this
-    /// iPhone's location, the model's transport and its synced transcripts.
-    static func live(player: LibraryPlayer, model: LibraryAppModel) -> LibraryInterruptionController {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
-        let transport = model.transport
-        return LibraryInterruptionController(
-            player: player,
-            dependencies: Dependencies(
-                speaker: LibrarySpeechSynthesizer(),
-                fetchBulletins: { try await transport.fetchBulletins() },
-                makeMonitor: { deliver in
-                    AlertMonitor(
-                        source: NWSClient(appVersion: version, repositoryURL: "https://github.com/dave-schmidt-dev/wilted"),
-                        deliver: deliver)
-                },
-                location: LibraryLocationProvider(manager: LibraryCoreLocationManager()),
-                cues: { [weak model] in model?.transcript(for: $0)?.cues ?? [] },
-                revision: { [weak model] in await model?.mediaCache.cachedEntries()[$0]?.revisionID },
-                now: { [weak model] in model?.now() ?? Date() },
-                isForeground: { [weak model] in model?.tickState.sceneActive ?? false }))
     }
 }

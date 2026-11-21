@@ -18,10 +18,18 @@ public struct MacAudioRoute: Equatable, Sendable {
     public var isAvailable: Bool { device != kAudioObjectUnknown && alive }
 }
 
+/// The Core Audio operation that prevented the source from monitoring output changes.
+public enum MacAudioRouteFailureStep: String, Sendable {
+    case registration
+    case defaultOutputRead
+}
+
 /// Registration and synchronous reads are injectable; fixtures never need the owner's audio route.
 @MainActor
 public protocol MacAudioRouteSource: AnyObject, Sendable {
     var monitoringAvailable: Bool { get }
+    /// Retained through teardown so the caller can report a failed attachment or retarget.
+    var failureStep: MacAudioRouteFailureStep? { get }
     func start(changed: @escaping @MainActor () -> Void) -> Bool
     func currentRoute() -> MacAudioRoute?
     func stop()
@@ -31,6 +39,7 @@ public protocol MacAudioRouteSource: AnyObject, Sendable {
 
 public extension MacAudioRouteSource {
     var monitoringAvailable: Bool { true }
+    var failureStep: MacAudioRouteFailureStep? { nil }
     func isDeviceAvailable(_ device: UInt32) -> Bool { true }
 }
 
@@ -63,6 +72,7 @@ public final class MacAudioRouteLossObserver: MacAudioRouteSource {
     private var changed: (@MainActor () -> Void)?
     private var protected = false
     public var monitoringAvailable: Bool { protected }
+    public private(set) var failureStep: MacAudioRouteFailureStep?
 
     public convenience init() { self.init(hardware: CoreAudioRouteHardware()) }
     init(hardware: any MacAudioRouteHardware) { self.hardware = hardware }
@@ -84,10 +94,15 @@ public final class MacAudioRouteLossObserver: MacAudioRouteSource {
 
     public func start(changed: @escaping @MainActor () -> Void) -> Bool {
         stop()
+        failureStep = nil
         self.changed = changed
         let token = generation
         for property in [Self.output, Self.devices] {
-            guard let listener = register(property, generation: token) else { stop(); return false }
+            guard let listener = register(property, generation: token) else {
+                failureStep = .registration
+                stop()
+                return false
+            }
             listeners.append(listener)
         }
         guard retarget(generation: token) else { stop(); return false }
@@ -134,15 +149,21 @@ public final class MacAudioRouteLossObserver: MacAudioRouteSource {
         hardware.add(property) { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self, self.generation == token, self.changed != nil else { return }
-                if !self.retarget(generation: token) { self.protected = false }
+                self.protected = self.retarget(generation: token)
                 self.changed?()
             }
         }
     }
 
     private func retarget(generation token: UInt64) -> Bool {
-        guard let id = hardware.read(Self.output), id != kAudioObjectUnknown else { return false }
-        guard device != id else { return true }
+        guard let id = hardware.read(Self.output), id != kAudioObjectUnknown else {
+            failureStep = .defaultOutputRead
+            return false
+        }
+        guard device != id else {
+            failureStep = nil
+            return true
+        }
         for listener in deviceListeners { hardware.remove(listener) }
         deviceListeners = []
         device = nil
@@ -153,11 +174,13 @@ public final class MacAudioRouteLossObserver: MacAudioRouteSource {
             guard let listener = register(candidate, generation: token) else {
                 for listener in deviceListeners { hardware.remove(listener) }
                 deviceListeners = []
+                failureStep = .registration
                 return false
             }
             deviceListeners.append(listener)
         }
         device = id
+        failureStep = nil
         return true
     }
 }

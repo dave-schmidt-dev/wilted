@@ -131,6 +131,11 @@ extension LibraryAppModel {
         handoffState.player = player
         handoffState.interruptions = NSClassFromString("XCTestCase") == nil
             ? LibraryInterruptionController.live(player: player, model: self) : nil
+        if let interruptions = handoffState.interruptions {
+            interruptions.objectWillChange.sink { [weak self] in
+                MainActor.assumeIsolated { self?.objectWillChange.send() }
+            }.store(in: &handoffState.subscriptions)
+        }
         // `@Published` emits on the thread that mutates it, which is always the main actor here.
         player.$status.removeDuplicates().sink { [weak self] status in
             // The status is already visible on the player when its own subscribers run on the next turn.

@@ -12,6 +12,7 @@ All notable changes to this project are documented in this file.
 - Retired the standalone manual ad-gold review page and its commands; ad-reference labeling now uses independent model review and adjudication without requiring owner confirmation.
 
 ### Changed
+- Reports shows what you need to hear bulletins, where to set up headlines and weather alerts, and a short sample you can play. On the Mac, **Try again** checks the sound output immediately.
 - **Prepare Again** on the Mac now tries the download of the original again when the podcast server answers with a server error (HTTP 500 to 599): up to three more times, waiting 2, 4 and 8 seconds. Before, one such answer ended the run with "Could not download the original, so nothing changed".
 - Project docs rewritten in plain English with no token growth.
 - README and INVARIANTS cite local evidence and the private Apple guide as paths, not dead links.
@@ -195,6 +196,7 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- Mac bulletins automatically retry sound output monitoring after a failure. Audio held during route loss stays paused.
 - An episode paused on the Mac could start from the beginning on the iPhone. An iPhone app opened afresh while the Mac was idle did not know the Mac existed until the Mac next published something, so its sync read nothing from the Mac and replaced the positions it had saved with that nothing. The iPhone now tells its sync about the Mac and the episodes it holds positions for, and starting an episode reads that episode's position from iCloud first (for up to 2 seconds, then it starts on what the phone already has).
 - Pressing play on the iPhone for an episode it had paused, after the Mac played that episode further, resumed at the iPhone's old pause and handed that older place back to the Mac. When its pause is more than 30 seconds old, the iPhone now checks iCloud first (waiting 1 second at most) and resumes where the Mac stopped. A quick pause and play, a skip made on the iPhone after the Mac stopped, and a resume with no signal all stay where the iPhone was.
 - An episode on the iPhone could resume minutes behind where it was paused. After iOS suspended the paused app (a short stop with the car off), the audio player came back at the last skip instead of the pause. The iPhone player now keeps its own position while paused and writes it back on every resume, so a pause, a repeated pause, a lost audio route, a skip while paused and a switch to another episode all work from where you paused.
