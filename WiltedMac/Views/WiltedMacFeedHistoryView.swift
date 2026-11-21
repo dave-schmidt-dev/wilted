@@ -93,8 +93,8 @@ extension WiltedMacFeedHistoryRecord {
     }
 }
 
-/// Searchable, filtered history shared by the global Off the list page and feed
-/// details. It renders one store page at a time from its loader; search and
+/// Searchable, filtered history shared by the global Off the list page and Show
+/// settings. It renders one store page at a time from its loader; search and
 /// page state stay independent of the Feeds inbox selection and scroll anchor.
 struct WiltedMacFeedHistoryView: View {
     let model: WiltedMacModel

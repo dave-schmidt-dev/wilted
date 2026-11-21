@@ -202,7 +202,7 @@ assert_macos_ui_leg_is_executed() {
   # test holds the count up. The gate asserts this one by identifier too.
   assert_validation_contains 'testLarderOverridesAnOffPeakDeferralWithPrepareNow'
   assert_contains '-only-testing:WiltedMacUITests' "$gate"
-  for method in test01IntakeJourneyAcrossLarderFeedsAndSettings test02EpisodeDecisionJourneyFromFeedsToLarder; do
+  for method in test01IntakeJourneyAcrossLarderFeedsAndSettings test02ShowSettingsUsesTheSameFeedIDFromFeedsLarderAndAllShows test02EpisodeDecisionJourneyFromFeedsToLarder; do
     assert_contains "$method" "$repo_root/WiltedMacUITests/WiltedMacSmokeUITests.swift"
   done
   # The other journeys run headless in the Mac unit leg.
@@ -216,8 +216,13 @@ assert_snapshot_contract() {
   assert_contains 'source "$repo_root/scripts/lib/native-gate-validation.sh"' "$gate"
   assert_contains 'validate_pixel_snapshot_baselines' "$gate"
   assert_contains 'validate_ios_pixel_snapshot_baselines' "$gate"
-  assert_validation_contains 'expected_count=221'
-  assert_validation_contains 'shells=69'
+  assert_validation_contains 'expected_count=223'
+  assert_validation_contains 'shells=71'
+  assert_validation_contains 'window_shells=16'
+  assert_validation_contains 'mac-shell-show-settings-light'
+  assert_validation_contains 'mac-shell-show-settings-changed-light'
+  assert_validation_contains 'mac-shell-show-settings-article-light'
+  assert_validation_contains 'mac-shell-show-settings-article-dark'
   assert_validation_contains 'WiltedPixelSnapshotTests+Rendering.swift'
   assert_validation_contains "expected_size='202 x 260'"
   assert_validation_contains "expected_size='56 x 260'"
@@ -317,7 +322,8 @@ assert_snapshot_contract() {
     testMacSidebarCountsPixelBaselines \
     testMacToolbarPixelBaselines \
     testMacAddSheetPixelBaselines \
-    testArticleFeedPolicyPopoverPixelBaselines \
+    testShowSettingsPagePixelBaselines \
+    testArticleShowSettingsPixelBaselines \
     testArticleFeedInboxRowPixelBaselines \
     testLarderKindFilterPixelBaselines \
     testLarderBookRowPixelBaselines \

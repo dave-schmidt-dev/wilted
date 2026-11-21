@@ -6,13 +6,13 @@ import Vision
 
 @MainActor
 final class WiltedMacFeedDetailsTests: XCTestCase {
-    func testFeedNameOpensDetailsAndPencilStartsRenameAsSeparateActions() throws {
+    func testFeedNameOpensShowSettingsAndPencilStartsRenameSeparately() throws {
         let source = try WiltedMacHeadless.viewSource("WiltedMacFeedsView.swift")
-        XCTAssertTrue(source.contains("Button { presentedSheet = .details(subscription.id) }"))
+        XCTAssertTrue(source.contains("Button { presentedSheet = .showSettings(subscription.id) }"))
         XCTAssertTrue(source.contains("Button { beginFeedName(subscription) }"))
         XCTAssertTrue(source.contains("wilted-podcast-feed-name-\\(subscription.id)"))
         XCTAssertTrue(source.contains("wilted-podcast-feed-rename-\\(subscription.id)"))
-        XCTAssertFalse(source.contains("Text(subscription.feedURL.host ?? subscription.feedURL.absoluteString)"))
+        XCTAssertTrue(source.contains("WiltedMacShowSettingsView(model: model, board: policyBoard, subscription: subscription)"))
     }
 
     func testBothFeedSheetsShareVisibleDoneCancelAction() throws {
@@ -28,11 +28,11 @@ final class WiltedMacFeedDetailsTests: XCTestCase {
         let done = try XCTUnwrap(sheet.range(of: "Button(\"Done\")")).lowerBound
         let destinationSwitch = try XCTUnwrap(sheet.range(of: "switch sheet")).lowerBound
         XCTAssertLessThan(done, destinationSwitch, "one shared Done action wraps both sheet destinations")
-        XCTAssertTrue(sheet.contains("case let .details(feedID):"))
+        XCTAssertTrue(sheet.contains("case let .showSettings(feedID):"))
         XCTAssertTrue(sheet.contains("case .history:"))
     }
 
-    func testDetailsRenderStoredSourcePublisherFollowedRefreshSettingsAndHistory() async throws {
+    func testShowSettingsKeepsDetailsFactsAndHistoryOnTheSamePage() async throws {
         let model = await WiltedMacHeadless.model(
             self, ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"], suffix: "feed-details"
         )
@@ -42,7 +42,7 @@ final class WiltedMacFeedDetailsTests: XCTestCase {
         await board.reload()
 
         let lines = try recognizedLines(
-            WiltedMacFeedDetailsView(model: model, board: board, subscription: subscription),
+            WiltedMacShowSettingsView(model: model, board: board, subscription: subscription),
             size: CGSize(width: 900, height: 2_000)
         )
         let recognizedText = lines.map(\.text).joined(separator: "\n")
@@ -68,7 +68,9 @@ final class WiltedMacFeedDetailsTests: XCTestCase {
             XCTAssertLessThan(labelLine.bounds.midX, valueLine.bounds.midX, "label stays left of its value: \(rowText)")
         }
         XCTAssertFalse(text.contains("Last refreshed: Last refreshed"), text)
-        XCTAssertTrue(text.contains("Current settings"), text)
+        XCTAssertTrue(text.contains("Remove ads"), text)
+        XCTAssertTrue(text.contains("Default:"), text)
+        XCTAssertTrue(text.contains("Details"), text)
         XCTAssertTrue(text.contains("Episode history"), text)
     }
 
@@ -135,7 +137,7 @@ final class WiltedMacFeedDetailsTests: XCTestCase {
         XCTAssertFalse(board.isLoading)
         let failure = try XCTUnwrap(board.loadFailureMessage, "the failed retry stays visible")
         let details = try WiltedMacHeadless.recognizedText(
-            WiltedMacFeedDetailsView(model: model, board: board, subscription: subscription),
+            WiltedMacShowSettingsView(model: model, board: board, subscription: subscription),
             size: CGSize(width: 900, height: 1_000)
         ).joined(separator: " ")
         // OCR can drop a sentence's closing period, so match the message without it.

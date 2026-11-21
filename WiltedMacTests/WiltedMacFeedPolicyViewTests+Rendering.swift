@@ -176,7 +176,7 @@ extension WiltedMacFeedPolicyViewTests {
         XCTAssertEqual(board.policy(for: subscription.id), committedPolicy)
     }
 
-    /// OCR uses the exact canvas: the shared 24pt margin clips a fixed-width popover's Done control.
+    /// OCR uses the exact canvas so page layout changes do not clip the visible controls.
     func capture<V: View>(_ view: V, _ name: String, width: CGFloat, height: CGFloat) throws -> String {
         let size = CGSize(width: width, height: height)
         var text = ""
@@ -237,9 +237,8 @@ extension WiltedMacFeedPolicyViewTests {
         XCTAssertEqual(board.policy(for: subscription.id).autoPrepare, .useGlobal)
         XCTAssertEqual(board.resolved(for: subscription.id).autoPrepare, true)
 
-        let initialContent = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
-        XCTAssertFalse(initialContent.isAutoPrepareBlocked)
-        let initialText = try capture(initialContent, "prepare-initial", width: 460, height: 700)
+        let initialContent = WiltedMacShowSettingsView(model: board.model, board: board, subscription: subscription)
+        let initialText = try capture(initialContent, "prepare-initial", width: 900, height: 1_600)
         XCTAssertFalse(initialText.contains("Processing is set to Manual"), initialText)
         XCTAssertFalse(initialText.contains("will not prepare automatically"), initialText)
 
@@ -249,9 +248,8 @@ extension WiltedMacFeedPolicyViewTests {
         XCTAssertEqual(board.policy(for: subscription.id).autoPrepare, .on)
         XCTAssertEqual(board.resolved(for: subscription.id).autoPrepare, true)
 
-        let immediateContent = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
-        XCTAssertFalse(immediateContent.isAutoPrepareBlocked)
-        let immediateText = try capture(immediateContent, "prepare-immediate-on", width: 460, height: 700)
+        let immediateContent = WiltedMacShowSettingsView(model: board.model, board: board, subscription: subscription)
+        let immediateText = try capture(immediateContent, "prepare-immediate-on", width: 900, height: 1_600)
         XCTAssertFalse(immediateText.contains("Processing is set to Manual"), immediateText)
         XCTAssertFalse(immediateText.contains("will not prepare automatically"), immediateText)
 
@@ -273,12 +271,11 @@ extension WiltedMacFeedPolicyViewTests {
         XCTAssertEqual(board.policy(for: subscription.id).autoPrepare, .on)
         XCTAssertEqual(board.resolved(for: subscription.id).autoPrepare, true)
 
-        let blockedContent = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
-        XCTAssertTrue(blockedContent.isAutoPrepareBlocked)
+        let blockedContent = WiltedMacShowSettingsView(model: board.model, board: board, subscription: subscription)
         XCTAssertEqual(WiltedAutomationCoordinator.preparationPlan(
             processingPolicy: model.automationSettings.processingPolicy, at: Date()
         ), .skip)
-        let blockedText = try capture(blockedContent, "prepare-manual-blocked", width: 460, height: 700)
+        let blockedText = try capture(blockedContent, "prepare-manual-blocked", width: 900, height: 1_600)
         XCTAssertTrue(blockedText.contains("Processing is set to Manual"), blockedText)
         XCTAssertTrue(blockedText.contains("will not prepare automatically"), blockedText)
         XCTAssertTrue(blockedText.contains("Prepare everything downloaded"), blockedText)
@@ -299,9 +296,8 @@ extension WiltedMacFeedPolicyViewTests {
         XCTAssertTrue(model.automationSettings.prepareEverythingDownloaded)
         XCTAssertEqual(board.resolved(for: subscription.id).autoPrepare, true)
 
-        let manualPreparedContent = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
-        XCTAssertFalse(manualPreparedContent.isAutoPrepareBlocked)
-        let manualPreparedText = try capture(manualPreparedContent, "prepare-manual-prepare-everything", width: 460, height: 700)
+        let manualPreparedContent = WiltedMacShowSettingsView(model: board.model, board: board, subscription: subscription)
+        let manualPreparedText = try capture(manualPreparedContent, "prepare-manual-prepare-everything", width: 900, height: 1_600)
         XCTAssertFalse(manualPreparedText.contains("Processing is set to Manual"), manualPreparedText)
 
         // 5. Non-blocked: Processing is Manual and prepareEverythingDownloaded is Off, but feed Auto prepare is Off
@@ -322,9 +318,8 @@ extension WiltedMacFeedPolicyViewTests {
         XCTAssertEqual(board.policy(for: subscription.id).autoPrepare, .off)
         XCTAssertEqual(board.resolved(for: subscription.id).autoPrepare, false)
 
-        let explicitOffContent = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
-        XCTAssertFalse(explicitOffContent.isAutoPrepareBlocked)
-        let explicitOffText = try capture(explicitOffContent, "prepare-manual-explicit-off", width: 460, height: 700)
+        let explicitOffContent = WiltedMacShowSettingsView(model: board.model, board: board, subscription: subscription)
+        let explicitOffText = try capture(explicitOffContent, "prepare-manual-explicit-off", width: 900, height: 1_600)
         XCTAssertFalse(explicitOffText.contains("Processing is set to Manual"), explicitOffText)
 
         // 6. Non-blocked: Processing is Manual and prepareEverythingDownloaded is Off, feed Auto prepare is Use global (resolves to Off)
@@ -333,9 +328,8 @@ extension WiltedMacFeedPolicyViewTests {
         XCTAssertEqual(board.policy(for: subscription.id).autoPrepare, .useGlobal)
         XCTAssertEqual(board.resolved(for: subscription.id).autoPrepare, false)
 
-        let useGlobalContent = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
-        XCTAssertFalse(useGlobalContent.isAutoPrepareBlocked)
-        let useGlobalText = try capture(useGlobalContent, "prepare-manual-use-global-off", width: 460, height: 700)
+        let useGlobalContent = WiltedMacShowSettingsView(model: board.model, board: board, subscription: subscription)
+        let useGlobalText = try capture(useGlobalContent, "prepare-manual-use-global-off", width: 900, height: 1_600)
         XCTAssertFalse(useGlobalText.contains("Processing is set to Manual"), useGlobalText)
     }
 }

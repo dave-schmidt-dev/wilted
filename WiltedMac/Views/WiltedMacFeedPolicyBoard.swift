@@ -4,8 +4,6 @@ import os
 import WiltedDomain
 import WiltedProducer
 
-// MARK: - Board
-
 /// Per-feed automation policies as the Feeds page needs them, read and written
 /// through the library store.
 ///
@@ -22,7 +20,7 @@ final class WiltedMacFeedPolicyBoard {
 
     let model: WiltedMacModel
     /// Whether a labeller provider key is saved, injected so no test needs the Keychain.
-    private let hasProviderKey: @MainActor () -> Bool
+    let hasProviderKey: @MainActor () -> Bool
     private(set) var policies: [String: FeedAutomationPolicy] = [:]
     private(set) var failedFeedIDs: Set<String> = []
     private(set) var loadState: LoadState = .idle
@@ -72,6 +70,11 @@ final class WiltedMacFeedPolicyBoard {
     init(model: WiltedMacModel, hasProviderKey: (@MainActor () -> Bool)? = nil) {
         self.model = model
         self.hasProviderKey = hasProviderKey ?? { [weak model] in model?.adFinding.hasKey ?? false }
+        refreshAdPreferences()
+    }
+
+    /// Refreshes the page and Settings summary after consent changes in the global confirmation sheet.
+    func refreshAdPreferences() {
         selfPromotionFeedIDs = Set(WiltedMacSelfPromotionPreference(preferences: model.preferences).feedIDs)
         adFreeFeedIDs = Set(WiltedMacAdFreeFeedPreference(preferences: model.preferences).feedIDs)
         confirmedAdFeedIDs = Set(AdLabellerPreferences(preferences: model.preferences).confirmedFeedIDs)
@@ -86,15 +89,6 @@ final class WiltedMacFeedPolicyBoard {
 
     func policy(for feedID: String) -> FeedAutomationPolicy { policies[feedID] ?? FeedAutomationPolicy() }
 
-    /// The feed's choices resolved against the same global defaults admission uses.
-    func resolved(for feedID: String) -> EffectiveFeedAutomationPolicy {
-        policy(for: feedID).resolved(using: model.automationSettings.feedAutomationDefaults)
-    }
-
-    func summary(for feedID: String) -> [WiltedFeedAutomationSummary.Row] {
-        WiltedFeedAutomationSummary.rows(resolved(for: feedID))
-    }
-
     /// Reads every subscription's policy and match rules from the store.
     /// Each feed becomes editable only once its whole read succeeds, and is
     /// published then rather than after every later feed. A failed or
@@ -103,8 +97,7 @@ final class WiltedMacFeedPolicyBoard {
         let reloadID = UUID()
         activeReloadID = reloadID
         loadState = .loading
-        // Settings' confirm sheet writes this set too, so a reload picks its choices up.
-        confirmedAdFeedIDs = Set(AdLabellerPreferences(preferences: model.preferences).confirmedFeedIDs)
+        refreshAdPreferences()
         await settle()
         do {
             guard isActiveReload(reloadID) else { return }
@@ -364,30 +357,14 @@ final class WiltedMacFeedPolicyBoard {
         return true
     }
 
-    /// Where the policy sends this feed's transcripts right now: the owner's ad labeller
-    /// preferences, the injected key presence, and the feed's own title and address.
-    func adRoute(for feedID: String) -> RemoteLabellingRoute {
-        var context = RemoteLabellingContext(
-            preferences: AdLabellerPreferences(preferences: model.preferences),
-            hasKey: hasProviderKey(),
-            counter: LabellerRequestCounter(preferences: model.preferences)
-        )
-        context.adFreeFeedIDs = adFreeFeedIDs
-        return RemoteLabellingPolicy.route(for: adRouteInput(for: feedID), context: context)
-    }
-
-    /// Why this feed is never sent for ad finding, whatever the switches say.
-    func forcedNotSentAdReason(for feedID: String) -> RemoteLabellingNotSentReason? {
-        RemoteLabellingPolicy.forcedNotSentReason(for: adRouteInput(for: feedID))
-    }
-
-    private func adRouteInput(for feedID: String) -> RemoteLabellingInput {
-        let subscription = model.subscriptions.first { $0.id == feedID }
-        return RemoteLabellingInput(
-            feedID: feedID, feedURL: subscription?.feedURL,
-            feedTitle: subscription?.publisherTitle ?? subscription?.title ?? "",
-            customTitle: subscription?.title, audioURL: nil
-        )
+    /// Return to the default without changing an existing refusal or writing a new one.
+    func resetAdFinding(for feedID: String) {
+        guard isLoaded(feedID), !isArticleFeed(feedID) else { return }
+        let preferences = AdLabellerPreferences(preferences: model.preferences)
+        if preferences.isConfirmed(feedID: feedID) {
+            preferences.setConfirmed(feedID: feedID, false)
+        }
+        confirmedAdFeedIDs.remove(feedID)
     }
 
     /// Fills the board without a store, so a preview or snapshot can render a given state.
@@ -404,7 +381,7 @@ final class WiltedMacFeedPolicyBoard {
     /// The feed's saved rules, in order.
     func rules(for feedID: String) -> EpisodeMatchRules { rules[feedID] ?? EpisodeMatchRules() }
 
-    /// The feed's rules editor, kept so a draft survives closing the popover.
+    /// The feed's rules editor, kept so a draft survives closing Show settings.
     func rulesEditor(for feedID: String) -> WiltedMacFeedRulesEditor {
         if let editor = editors[feedID] { return editor }
         let editor = WiltedMacFeedRulesEditor(board: self, feedID: feedID)
@@ -517,44 +494,4 @@ final class WiltedMacFeedPolicyBoard {
         model.startKeptEpisodeWork(feedID: feedID, from: saved, to: policy)
     }
 
-    // MARK: Waiting for space
-
-    /// Episodes the admission planner holds back because the feed is full,
-    /// oldest first. Empty unless the feed resolves to Auto keep with a limit.
-    func waitingEpisodes(forFeed feedID: String) -> [WiltedMacEpisode] {
-        guard isLoaded(feedID) else { return [] }
-        let policy = resolved(for: feedID)
-        guard policy.autoKeep, policy.keptLimit != nil else { return [] }
-        let live = model.episodes.filter { $0.feedID == feedID && $0.removalKind == nil }
-        let kept = Set(model.podcastQueueIDs).intersection(live.map(\.id))
-        let feedRules = rules[feedID] ?? EpisodeMatchRules()
-        let candidates = model.feedsEpisodes.filter { episode in
-            guard episode.feedID == feedID, episode.removalKind == nil, !episode.isPlayed else { return false }
-            // A rule decides its own episodes; only the rest reach the planner.
-            guard case .noMatch? = try? feedRules.evaluate(
-                .init(id: episode.id, title: episode.title, notes: episode.notes ?? "")
-            ) else { return false }
-            return true
-        }
-        let byID = Dictionary(candidates.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        return FeedAdmissionPlanner.plan(
-            candidates: candidates.map { .init(id: $0.id, releaseDate: $0.releasedAt) },
-            keptEpisodeIDs: kept, playingEpisodeID: nil, partHeardEpisodeIDs: [],
-            manualDecisions: [:], policy: policy
-        ).filter { $0.outcome == .wait }.compactMap { byID[$0.candidate.id] }
-    }
-
-    /// The IDs waiting for space across every loaded feed.
-    var waitingEpisodeIDs: Set<String> {
-        Set(policies.keys.flatMap { waitingEpisodes(forFeed: $0).map(\.id) })
-    }
 }
-
-extension WiltedMacFeedPolicyBoard {
-    /// How many of the feed's episodes are kept in Larder right now.
-    func keptCount(forFeed feedID: String) -> Int {
-        let queued = Set(model.podcastQueueIDs)
-        return model.episodes.filter { $0.feedID == feedID && $0.removalKind == nil && queued.contains($0.id) }.count
-    }
-}
-

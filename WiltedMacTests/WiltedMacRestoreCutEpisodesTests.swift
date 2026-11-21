@@ -195,8 +195,8 @@ final class WiltedMacRestoreCutEpisodesTests: XCTestCase {
     // MARK: Wording
 
     func testRestoreButtonTitlesRowLineMenuAndConfirmationWording() {
-        XCTAssertEqual(WiltedMacFeedPolicyContent.restoreCutEpisodesTitle(count: 1), "Restore 1 Cut Episode")
-        XCTAssertEqual(WiltedMacFeedPolicyContent.restoreCutEpisodesTitle(count: 3), "Restore 3 Cut Episodes")
+        XCTAssertEqual(WiltedMacShowSettingsView.restoreCutEpisodesTitle(count: 1), "Restore 1 Cut Episode")
+        XCTAssertEqual(WiltedMacShowSettingsView.restoreCutEpisodesTitle(count: 3), "Restore 3 Cut Episodes")
         XCTAssertEqual(
             WiltedMacPrepareAgainRow(phase: .preparing, restoringFullEpisode: true).label,
             "Restoring the full episode"
@@ -208,7 +208,7 @@ final class WiltedMacRestoreCutEpisodesTests: XCTestCase {
         XCTAssertEqual(
             WiltedMacModel.prepareAgainConfirmationMessage,
             "Wilted downloads the original audio where needed and prepares each episode with the current engine. "
-                + "Shows marked as having no ads get their full episodes back. Your place in each is kept."
+                + "Shows with Remove ads set to Off (Custom) get their full episodes back. Your place in each is kept."
         )
     }
 

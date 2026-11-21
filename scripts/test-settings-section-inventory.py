@@ -49,7 +49,7 @@ class SettingsInventory(unittest.TestCase):
         for name in ("WiltedMacAdFindingSettingsView", "WiltedMacReportsCard", "WiltedMacAdFeedbackCard",
                      "WiltedMacLifetimeStatisticsCard"):
             declarations[name] = source(name)
-        declarations["WiltedMacGlobalFeedDefaultsControls"] = source("WiltedMacFeedPolicyView").split("struct WiltedMacGlobalFeedDefaultsControls")[1]
+        declarations["WiltedMacGlobalFeedDefaultsControls"] = source("WiltedMacGlobalFeedDefaultsControls").split("struct WiltedMacGlobalFeedDefaultsControls")[1]
         declarations["WiltedMacInheritedFeedDefaults"] = source("WiltedMacFeedsComponents").split("struct WiltedMacInheritedFeedDefaults")[1].split("\nstruct ")[0]
 
         inherited = declarations["WiltedMacInheritedFeedDefaults"]
@@ -85,6 +85,93 @@ class SettingsInventory(unittest.TestCase):
         for section, expected in INVENTORY.items():
             with self.subTest(section=section):
                 self.assertCountEqual(expand(parts[section]), expected)
+
+
+class ShowSettingsInventory(unittest.TestCase):
+    def setUp(self):
+        self.page_files = sorted(ROOT.glob("Views/*ShowSettings*.swift"))
+        self.page_files.extend(
+            path for path in ROOT.glob("Views/*.swift")
+            if "struct WiltedMacFeedDetailsSection" in path.read_text() and path not in self.page_files
+        )
+        self.page_source = "\n".join(path.read_text() for path in self.page_files)
+        self.all_view_source = "\n".join(path.read_text() for path in ROOT.glob("Views/*.swift"))
+
+    def assert_page_controls_once(self, identifiers):
+        self.assertTrue(self.page_files, "Show settings page source must be present")
+        self.assertEqual(self.page_source.count('"wilted-show-settings-page-\\(feedID)"'), 1)
+        for identifier in identifiers:
+            with self.subTest(identifier=identifier):
+                self.assertEqual(self.page_source.count(identifier), 1)
+
+    def test_podcast_settings_page_has_each_applicable_control_once(self):
+        self.assert_page_controls_once([
+            '"wilted-feed-policy-auto-keep"',
+            '"wilted-feed-policy-auto-download"',
+            '"wilted-feed-policy-auto-prepare"',
+            '"wilted-feed-policy-kept-limit-mode"',
+            '"wilted-feed-policy-kept-limit"',
+            '"wilted-feed-policy-kept-limit-stepper"',
+            '"wilted-feed-policy-ad-free"',
+            '"wilted-feed-policy-restore-cuts"',
+            '"wilted-feed-policy-remove-self-promotion"',
+            '"wilted-feed-policy-send-for-ad-finding"',
+            '"wilted-show-settings-rename"',
+            '"wilted-feed-details-source-\\(subscription.id)"',
+        ])
+        self.assertEqual(self.all_view_source.count('"wilted-podcast-feed-rename-\\(subscription.id)"'), 1,
+                         "rename remains a single inline Feeds action")
+        self.assertIn("if !isArticle {", self.page_source)
+        type_section = self.page_source.split("private var typeSection:", 1)[1].split("private var newsRow:", 1)[0]
+        self.assertIn("if isArticle && board.isLoaded(feedID) { newsRow }", type_section)
+
+    def test_article_settings_page_has_article_controls_once(self):
+        self.assert_page_controls_once([
+            '"wilted-feed-policy-auto-keep"',
+            '"wilted-feed-policy-auto-prepare"',
+            '"wilted-feed-policy-kept-limit-mode"',
+            '"wilted-feed-policy-kept-limit"',
+            '"wilted-feed-policy-kept-limit-stepper"',
+            '"wilted-feed-policy-news"',
+            '"wilted-show-settings-rename"',
+            '"wilted-feed-details-source-\\(subscription.id)"',
+        ])
+        ads = self.page_source.split("private var adsSection:", 1)[1].split("private var typeSection:", 1)[0]
+        self.assertIn("if board.isLoaded(feedID), !isArticle {", ads)
+        for row in ("removeAdsRow", "restoreCutEpisodesRow", "selfPromotionRow", "sendForAdFindingRow"):
+            self.assertIn(row, ads)
+
+    def test_retired_show_editors_and_accessibility_identifiers_are_gone(self):
+        for retired in (
+            "struct WiltedMacFeedPolicyContent", "struct WiltedMacFeedPolicyButton",
+            "struct WiltedMacFeedDetailsView", '"wilted-mac-feed-details-',
+            '"wilted-feed-policy-button-', '"wilted-feed-policy-done"',
+            '"wilted-ad-finding-sheet-show-', '"wilted-ad-finding-review"',
+        ):
+            with self.subTest(retired=retired):
+                self.assertNotIn(retired, self.all_view_source)
+
+    def test_show_row_reset_uses_its_own_setting_and_feed(self):
+        self.assertIn("reset: { board.reset(setting, for: feedID) }", self.page_source)
+        self.assertIn("private var feedID: String { subscription.id }", self.page_source)
+
+    def test_show_reset_can_only_revoke_consent(self):
+        resets = source("WiltedMacShowSettingsBoard")
+        self.assertNotIn("setSendForAdFinding(", resets)
+        self.assertNotIn("setConfirmed(", resets)
+        board = source("WiltedMacFeedPolicyBoard")
+        revoke = board.split("func resetAdFinding(", 1)[1].split("\n    }", 1)[0]
+        self.assertEqual(re.findall(r"setConfirmed\(feedID: feedID, (\w+)\)", revoke), ["false"])
+        self.assertNotIn("keepBack(", revoke)
+
+    def test_page_orders_sections_like_global_defaults(self):
+        self.assertTrue(self.page_files, "Show settings page source must be present")
+        body = self.page_source.split("var body: some View", 1)[1].split("@ViewBuilder private var renameTitleAccessory", 1)[0]
+        self.assertNotIn("playbackSection", body)
+        positions = [body.index(section) for section in
+                     ("newEpisodesSection", "adsSection", "typeSection",
+                      "WiltedMacFeedDetailsSection(")]
+        self.assertEqual(positions, sorted(positions))
 
 
 INVENTORY = {
@@ -129,18 +216,22 @@ INVENTORY = {
         'wilted-ad-finding-provider-paused',
         'wilted-ad-finding-requests',
         'wilted-ad-finding-help',
+        'wilted-ad-finding-consent-summary',
         'wilted-ad-finding-controls',
         'wilted-ad-finding-key-saved',
         'wilted-ad-finding-key-remove',
         'wilted-ad-finding-key-field',
         'wilted-ad-finding-key-save',
         'wilted-ad-finding-key-message',
-        'wilted-ad-finding-waiting',
-        'wilted-ad-finding-review',
+        'wilted-settings-all-show-\\(subscription.id)',
+        'wilted-settings-all-shows-page',
+        'wilted-settings-all-shows-done',
+        'wilted-settings-all-shows-back',
+        'wilted-feed-sheet-done',
         'wilted-ad-finding-sheet-cancel',
         'wilted-ad-finding-sheet-confirm',
         'wilted-ad-finding-sheet',
-        'wilted-ad-finding-sheet-show-\\(show.feedID)',
+        'wilted-ad-finding-confirm-show-\\(show.feedID)',
         'wilted-ad-feedback-summary',
         'wilted-ad-feedback-failure',
         'wilted-ad-feedback-removed',

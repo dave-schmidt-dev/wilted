@@ -34,6 +34,11 @@ validate_pixel_snapshot_baselines() {
     grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" "$snapshot_test_source" ||
       fail "Mac pixel snapshot test method is missing: $method"
   done
+  for method in testShowSettingsPagePixelBaselines testArticleShowSettingsPixelBaselines; do
+    grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" \
+      "$root/WiltedMacTests/WiltedPixelSnapshotTests+ShowSettings.swift" ||
+      fail "Mac Show settings pixel snapshot test method is missing: $method"
+  done
   grep -Fq 'WiltedMacCompactPlayer(model: model)' "$snapshot_test_source" ||
     fail 'Mac player baselines do not render the shipping compact player'
   for identifier in \
@@ -70,7 +75,7 @@ validate_pixel_snapshot_baselines() {
     "$repo_root/WiltedMacTests/WiltedMacPlaybackJourneyTests.swift" ||
     fail 'Mac persistent compact-player journey selector is missing'
 
-  expected_count=221
+  expected_count=223
   [[ "$(find "$snapshot_dir" -type f -name '*.png' | wc -l | tr -d ' ')" -eq "$expected_count" ]] ||
     fail "Mac pixel baseline count is not $expected_count"
   empty_pngs="$(find "$snapshot_dir" -type f -name '*.png' -size 0c -print)"
@@ -108,7 +113,7 @@ validate_pixel_snapshot_baselines() {
       expected_selectors+="state-$state_id-$variant\n"
     done <<<"$expected_variants"
   done <<<"$expected_state_ids"
-  expected_selectors+=$'mac-shell-library-light\nmac-shell-library-dark\nmac-shell-player-light\nmac-shell-player-dark\nmac-shell-navigation-selection-light\nmac-shell-navigation-selection-dark\nmac-shell-producer-library-light\nmac-shell-producer-library-dark\nmac-shell-producer-url-focus-light\nmac-shell-producer-url-focus-dark\nmac-shell-sidebar-full-light\nmac-shell-sidebar-full-dark\nmac-shell-sidebar-rail-light\nmac-shell-sidebar-rail-dark\nmac-shell-sidebar-counts-light\nmac-shell-sidebar-counts-dark\nmac-shell-toolbar-light\nmac-shell-toolbar-dark\nmac-shell-add-sheet-link-light\nmac-shell-add-sheet-link-dark\nmac-shell-add-sheet-results-light\nmac-shell-add-sheet-results-dark\nmac-shell-add-sheet-followed-light\nmac-shell-add-sheet-followed-dark\nmac-shell-add-sheet-error-light\nmac-shell-add-sheet-error-dark\nmac-shell-add-sheet-import-progress-light\nmac-shell-add-sheet-import-progress-dark\nmac-shell-add-sheet-import-refusal-light\nmac-shell-add-sheet-import-refusal-dark\nmac-shell-feed-policy-article-light\nmac-shell-feed-policy-article-dark\nmac-shell-feeds-article-row-light\nmac-shell-feeds-article-row-dark\nmac-shell-feeds-row-light\nmac-shell-feeds-row-dark\nmac-shell-larder-kind-filter-light\nmac-shell-larder-kind-filter-dark\nmac-shell-larder-real-size-minimum-light\nmac-shell-larder-real-size-minimum-dark\nmac-shell-larder-real-size-full-light\nmac-shell-larder-real-size-full-dark\nmac-shell-larder-book-row-light\nmac-shell-larder-book-row-dark\nmac-shell-player-chapters-light\nmac-shell-player-chapters-dark\nmac-shell-sidebar-playlists-light\nmac-shell-sidebar-playlists-dark\nmac-shell-playlist-manual-light\nmac-shell-playlist-manual-dark\nmac-shell-playlist-rules-light\nmac-shell-playlist-rules-dark\nmac-shell-settings-reports-light\nmac-shell-settings-reports-dark\nmac-shell-player-bulletin-banner-light\nmac-shell-player-bulletin-banner-dark\nmac-shell-larder-report-row-light\nmac-shell-larder-report-row-dark\nmac-shell-now-playing-pane-light\nmac-shell-now-playing-pane-dark\nmac-shell-section-devices-synthetic-rows-light\nmac-shell-direct-downloads-device-menu-light'
+  expected_selectors+=$'mac-shell-library-light\nmac-shell-library-dark\nmac-shell-player-light\nmac-shell-player-dark\nmac-shell-navigation-selection-light\nmac-shell-navigation-selection-dark\nmac-shell-producer-library-light\nmac-shell-producer-library-dark\nmac-shell-producer-url-focus-light\nmac-shell-producer-url-focus-dark\nmac-shell-sidebar-full-light\nmac-shell-sidebar-full-dark\nmac-shell-sidebar-rail-light\nmac-shell-sidebar-rail-dark\nmac-shell-sidebar-counts-light\nmac-shell-sidebar-counts-dark\nmac-shell-toolbar-light\nmac-shell-toolbar-dark\nmac-shell-add-sheet-link-light\nmac-shell-add-sheet-link-dark\nmac-shell-add-sheet-results-light\nmac-shell-add-sheet-results-dark\nmac-shell-add-sheet-followed-light\nmac-shell-add-sheet-followed-dark\nmac-shell-add-sheet-error-light\nmac-shell-add-sheet-error-dark\nmac-shell-add-sheet-import-progress-light\nmac-shell-add-sheet-import-progress-dark\nmac-shell-add-sheet-import-refusal-light\nmac-shell-add-sheet-import-refusal-dark\nmac-shell-show-settings-light\nmac-shell-show-settings-changed-light\nmac-shell-show-settings-article-light\nmac-shell-show-settings-article-dark\nmac-shell-feeds-article-row-light\nmac-shell-feeds-article-row-dark\nmac-shell-feeds-row-light\nmac-shell-feeds-row-dark\nmac-shell-larder-kind-filter-light\nmac-shell-larder-kind-filter-dark\nmac-shell-larder-real-size-minimum-light\nmac-shell-larder-real-size-minimum-dark\nmac-shell-larder-real-size-full-light\nmac-shell-larder-real-size-full-dark\nmac-shell-larder-book-row-light\nmac-shell-larder-book-row-dark\nmac-shell-player-chapters-light\nmac-shell-player-chapters-dark\nmac-shell-sidebar-playlists-light\nmac-shell-sidebar-playlists-dark\nmac-shell-playlist-manual-light\nmac-shell-playlist-manual-dark\nmac-shell-playlist-rules-light\nmac-shell-playlist-rules-dark\nmac-shell-settings-reports-light\nmac-shell-settings-reports-dark\nmac-shell-player-bulletin-banner-light\nmac-shell-player-bulletin-banner-dark\nmac-shell-larder-report-row-light\nmac-shell-larder-report-row-dark\nmac-shell-now-playing-pane-light\nmac-shell-now-playing-pane-dark\nmac-shell-section-devices-synthetic-rows-light\nmac-shell-direct-downloads-device-menu-light'
   local section
   for section in general new-episodes preparing ads reports devices about; do
     expected_selectors+="\nmac-shell-section-$section-light"
@@ -152,8 +157,10 @@ validate_pixel_snapshot_baselines() {
     testMacAddSheetPixelBaselines.mac-shell-add-sheet-import-progress-dark.png \
     testMacAddSheetPixelBaselines.mac-shell-add-sheet-import-refusal-light.png \
     testMacAddSheetPixelBaselines.mac-shell-add-sheet-import-refusal-dark.png \
-    testArticleFeedPolicyPopoverPixelBaselines.mac-shell-feed-policy-article-light.png \
-    testArticleFeedPolicyPopoverPixelBaselines.mac-shell-feed-policy-article-dark.png \
+    testShowSettingsPagePixelBaselines.mac-shell-show-settings-light.png \
+    testShowSettingsPagePixelBaselines.mac-shell-show-settings-changed-light.png \
+    testArticleShowSettingsPixelBaselines.mac-shell-show-settings-article-light.png \
+    testArticleShowSettingsPixelBaselines.mac-shell-show-settings-article-dark.png \
     testArticleFeedInboxRowPixelBaselines.mac-shell-feeds-article-row-light.png \
     testArticleFeedInboxRowPixelBaselines.mac-shell-feeds-article-row-dark.png \
     testLarderKindFilterPixelBaselines.mac-shell-larder-kind-filter-light.png \
@@ -191,6 +198,10 @@ validate_pixel_snapshot_baselines() {
   # here so a silent shrink back to the card canvas cannot pass the gate.
   window_baselines=$'testShippingMacProducerPixelBaselines.mac-shell-producer-library-light.png\ntestShippingMacProducerPixelBaselines.mac-shell-producer-library-dark.png\ntestMacNavigationSelectionPixelBaselines.mac-shell-navigation-selection-light.png\ntestMacNavigationSelectionPixelBaselines.mac-shell-navigation-selection-dark.png'
   window_baselines+=$'\ntestDevicesSettingsWithSyntheticDeviceRowsPixels.mac-shell-section-devices-synthetic-rows-light.png'
+  window_baselines+=$'\ntestShowSettingsPagePixelBaselines.mac-shell-show-settings-light.png'
+  window_baselines+=$'\ntestShowSettingsPagePixelBaselines.mac-shell-show-settings-changed-light.png'
+  window_baselines+=$'\ntestArticleShowSettingsPixelBaselines.mac-shell-show-settings-article-light.png'
+  window_baselines+=$'\ntestArticleShowSettingsPixelBaselines.mac-shell-show-settings-article-dark.png'
   for window_name in \
     testGeneralSettingsPixels.mac-shell-section-general-light.png \
     testNewEpisodesSettingsPixels.mac-shell-section-new-episodes-light.png \
@@ -222,7 +233,6 @@ validate_pixel_snapshot_baselines() {
       testMacSidebarCountsPixelBaselines.mac-shell-sidebar-counts-*.png) expected_size='202 x 260' ;;
       testMacToolbarPixelBaselines.mac-shell-toolbar-*.png) expected_size='224 x 56' ;;
       testMacAddSheetPixelBaselines.mac-shell-add-sheet-*.png) expected_size='520 x 420' ;;
-      testArticleFeedPolicyPopoverPixelBaselines.mac-shell-feed-policy-article-*.png) expected_size='520 x 460' ;;
       testArticleFeedInboxRowPixelBaselines.mac-shell-feeds-article-row-*.png) expected_size='520 x 90' ;;
       testFeedsRowPixelBaselines.mac-shell-feeds-row-*.png) expected_size='760 x 440' ;;
       testLarderKindFilterPixelBaselines.mac-shell-larder-kind-filter-*.png) expected_size='760 x 560' ;;
@@ -245,5 +255,5 @@ validate_pixel_snapshot_baselines() {
     }
   done < <(find "$snapshot_dir" -type f -name '*.png' -print)
   [[ "$bad_pngs" -eq 0 ]] || fail "pixel baselines contain invalid or zero-size images: $bad_pngs"
-  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=69 window_shells=12\n' "$expected_count"
+  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=71 window_shells=16\n' "$expected_count"
 }

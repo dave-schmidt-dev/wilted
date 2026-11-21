@@ -1,17 +1,18 @@
 import SwiftUI
 import XCTest
+import WiltedDomain
 import WiltedProducer
 @testable import WiltedMac
 
-/// The Ad finding card's model and views: the provider key, the global switch,
-/// the confirm sheet that decides which shows are sent, and the waiting count.
+    /// The Ad finding card's model and views: the provider key, global switch,
+    /// and read-only preview before the first online run.
 /// No Keychain and no network: the key store is in memory and the shows invented.
 @MainActor
 final class WiltedMacAdFindingSettingsTests: XCTestCase {
 
     // MARK: Policy
 
-    func testEveryFeedStaysLocalUntilKeySwitchAndListAreConfirmed() throws {
+    func testEveryFeedStaysLocalUntilKeyAndGlobalConfirmationAreConfirmed() throws {
         let publicShow = show("feed-a", "Public Show")
         let shows = [publicShow]
         let (model, preferences, keyStore) = makeModel(shows: { shows })
@@ -77,9 +78,9 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         XCTAssertNil(try keyStore.read())
     }
 
-    // MARK: Waiting shows
+    // MARK: Consent stays explicit
 
-    func testShowSubscribedAfterwardsWaitsAndConfirmingKeepsEarlierShows() throws {
+    func testShowAddedAfterConfirmationStaysLocalUntilItsConsentIsSaved() throws {
         let first = show("feed-a", "First Show")
         let second = show("feed-b", "Second Show")
         var shows = [first, second]
@@ -88,25 +89,18 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         model.saveKey("provider-key-3")
         model.setOnlineFinding(true)
         model.confirm()
-        XCTAssertEqual(model.waitingShowCount, 0)
+        XCTAssertEqual(AdLabellerPreferences(preferences: preferences).confirmedFeedIDs, ["feed-a", "feed-b"])
 
         let late = show("feed-c", "Late Show")
         shows.append(late)
-        XCTAssertEqual(model.waitingShowCount, 1)
         XCTAssertEqual(route(to: late, preferences: preferences, keyStore: keyStore), .notSent(.notConfirmed))
         XCTAssertEqual(route(to: first, preferences: preferences, keyStore: keyStore), .remote,
                        "an earlier confirmed show keeps its route")
 
-        model.reviewWaitingShows()
-        XCTAssertEqual(model.sheetShows.map(\.feedID), ["feed-c"],
-                       "the review sheet lists only the waiting show")
-        XCTAssertEqual(model.sheetSentShows.map(\.feedID), ["feed-c"])
-
-        model.confirm()
-        XCTAssertEqual(model.waitingShowCount, 0)
+        AdLabellerPreferences(preferences: preferences).setConfirmed(feedID: late.feedID, true)
         XCTAssertEqual(route(to: late, preferences: preferences, keyStore: keyStore), .remote)
         XCTAssertEqual(AdLabellerPreferences(preferences: preferences).confirmedFeedIDs.sorted(),
-                       ["feed-a", "feed-b", "feed-c"], "confirming adds to, never replaces, the confirmed set")
+                       ["feed-a", "feed-b", "feed-c"], "a show becomes sendable only after its own consent")
     }
 
     /// A show the owner kept back under the old "Mac only" choice is neither nudged as
@@ -120,7 +114,8 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         preferences.set(["feed-k"], forKey: AdLabellerPreferences.keyPrefix + "confirmedFeedIDs")
         preferences.set(["feed-k"], forKey: legacyKey)
 
-        XCTAssertEqual(model.waitingShows.map(\.feedID), ["feed-a"], "a kept-back show is not waiting for a decision")
+        XCTAssertEqual(AdLabellerPreferences(preferences: preferences).confirmedFeedIDs, [],
+                       "a refusal in both stored sets is not current consent")
 
         model.saveKey("provider-key-5")
         model.setOnlineFinding(true)
@@ -139,28 +134,27 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         XCTAssertNil(preferences.object(forKey: legacyKey), "turning the show on removes it from the stored list")
     }
 
-    /// Regression: a show the owner left unsent in the sheet came back as waiting, and the
-    /// next review offered it as sent by default.
-    func testShowLeftUnsentInTheSheetIsRememberedAndNotOfferedAsSentAgain() throws {
-        let first = show("feed-a", "First Show")
-        let declined = show("feed-d", "Declined Show")
-        var shows = [first, declined]
+    /// A refusal added while the global confirmation is open must still win when confirmed.
+    func testGlobalConfirmPreservesLateRefusalAndLeavesNewShowsOff() throws {
+        let refused = show("feed-a", "Refused Show")
+        let control = show("feed-b", "Public Control")
+        var shows = [refused, control]
         let (model, preferences, keyStore) = makeModel(shows: { shows })
 
         model.saveKey("provider-key-6")
         model.setOnlineFinding(true)
-        model.setSheetSent(false, for: declined)
+        XCTAssertEqual(model.sheetSentShows.map(\.feedID), ["feed-a", "feed-b"])
+        AdLabellerPreferences(preferences: preferences).keepBack(feedID: refused.feedID)
+        let late = show("feed-l", "Late Show")
+        shows.append(late)
+        XCTAssertEqual(model.sheetSentShows.map(\.feedID), ["feed-b"])
+        XCTAssertEqual(model.sheetNotSentShows.map(\.feedID), ["feed-a", "feed-l"])
         model.confirm()
-        XCTAssertEqual(route(to: declined, preferences: preferences, keyStore: keyStore), .notSent(.notConfirmed))
-        XCTAssertEqual(AdLabellerPreferences(preferences: preferences).keptBackFeedIDs, ["feed-d"])
-        XCTAssertEqual(model.waitingShowCount, 0, "a show the owner left unsent is decided, not waiting")
-
-        shows.append(show("feed-l", "Late Show"))
-        model.reviewWaitingShows()
-        XCTAssertEqual(model.sheetShows.map(\.feedID), ["feed-l"], "the review never lists the declined show")
-        model.confirm()
-        XCTAssertEqual(route(to: declined, preferences: preferences, keyStore: keyStore), .notSent(.notConfirmed),
-                       "confirming later shows does not send the declined one")
+        XCTAssertEqual(route(to: refused, preferences: preferences, keyStore: keyStore), .notSent(.notConfirmed))
+        XCTAssertEqual(route(to: control, preferences: preferences, keyStore: keyStore), .remote)
+        XCTAssertEqual(route(to: late, preferences: preferences, keyStore: keyStore), .notSent(.notConfirmed))
+        XCTAssertEqual(AdLabellerPreferences(preferences: preferences).keptBackFeedIDs, ["feed-a"])
+        XCTAssertEqual(AdLabellerPreferences(preferences: preferences).confirmedFeedIDs, ["feed-b"])
     }
 
     /// A show the policy forces not sent is not the owner's choice, so it is not kept back:
@@ -210,8 +204,7 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         XCTAssertEqual(model.forcedNotSentMessage(for: premium),
                        "This show's title sounds private, so it is never sent for ad finding.")
 
-        model.setSheetSent(true, for: premium)
-        XCTAssertFalse(model.sheetSent.contains("feed-p"), "a policy-forced show cannot be toggled to sent")
+        XCTAssertFalse(model.sheetSent.contains("feed-p"), "the read-only preview keeps a policy-forced show local")
 
         model.confirm()
         XCTAssertEqual(model.forcedNotSentReason(for: premium), .privateTitle)
@@ -224,15 +217,21 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
 
     // MARK: Rendering
 
-    func testRenderedCardHidesTheKeyAndTheSheetListsEachShowUnderOneHeading() throws {
-        let publicShow = show("feed-a", "Public Show")
-        let premium = show("feed-p", "Premium Hour")
-        let shows = [publicShow, premium]
-        let (model, _, _) = makeModel(shows: { shows })
-
+    func testRenderedCardHidesTheKeyAndTheGlobalConfirmPreviewsShowsWithoutPerShowToggles() async throws {
+        let appModel = await WiltedMacHeadless.model(
+            self, ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"], suffix: "ad-finding-confirm"
+        )
+        addTeardownBlock { await appModel.close() }
+        let premiumURL = try XCTUnwrap(URL(string: "https://fixtures.example.test/premium.xml"))
+        appModel.subscriptions.append(WiltedMacSubscription(
+            id: "premium-show", title: "Premium Hour", feedURL: premiumURL,
+            episodeCount: 0, subscribedAt: .distantPast, enabled: true
+        ))
+        let model = appModel.adFinding
+        let board = WiltedMacFeedPolicyBoard(model: appModel)
         model.saveKey("fixture-key-ZX9Q7")
         let cardText = try WiltedMacHeadless.recognizedText(
-            WiltedMacAdFindingSettingsView(model: model), size: CGSize(width: 700, height: 600)
+            WiltedMacAdFindingSettingsView(model: appModel, board: board), size: CGSize(width: 700, height: 600)
         ).joined(separator: " ")
         XCTAssertTrue(cardText.contains("Key saved"), cardText)
         XCTAssertTrue(cardText.contains("Find ads with the online labeller"), cardText)
@@ -251,11 +250,16 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         let localHeading = try XCTUnwrap(
             texts.firstIndex { $0.contains("Not sent") }, "not sent heading missing: \(texts)")
         let sheetText = texts.joined(separator: " ")
-        XCTAssertTrue(sheetText.contains("Shows you add later are not sent, and keep their ads, until you turn them on."),
+        XCTAssertTrue(sheetText.contains("Shows you add later are not sent until you turn them on in Show settings."),
                       sheetText)
+        let source = try WiltedMacHeadless.viewSource("WiltedMacAdFindingSettingsView.swift")
+        let confirmStart = try XCTUnwrap(source.range(of: "struct WiltedMacAdFindingConfirmSheet"))
+        let confirmSource = String(source[confirmStart.lowerBound...])
+        XCTAssertFalse(confirmSource.contains("Toggle("), "the global confirmation only previews shows")
+        XCTAssertFalse(confirmSource.contains("wilted-ad-finding-sheet-show-"), confirmSource)
 
         for (title, expectedHeading) in [
-            ("Public Show", "Transcripts will be sent"), ("Premium Hour", "Not sent"),
+            ("Field Notes", "Transcripts will be sent"), ("Premium Hour", "Not sent"),
         ] {
             let index = try XCTUnwrap(
                 texts.firstIndex { $0.contains(title) }, "\(title) missing from the sheet: \(texts)")
@@ -287,6 +291,53 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
 
         labeller.clearProviderPause()
         XCTAssertNil(model.providerPausedSentence)
+    }
+
+    func testAdFindingSummaryCountsConfirmedPodcastsAndExcludesArticleFeeds() async throws {
+        let appModel = await WiltedMacHeadless.model(
+            self, ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"], suffix: "ad-finding-summary"
+        )
+        addTeardownBlock { await appModel.close() }
+        let podcast = try XCTUnwrap(appModel.subscriptions.first)
+        let refusedPodcast = try XCTUnwrap(appModel.subscriptions.first { $0.id != podcast.id })
+        let articleURL = try XCTUnwrap(URL(string: "https://fixtures.example.test/articles.xml"))
+        let articleID = try ItemID.articleFeed(canonicalFeedURL: articleURL)
+        appModel.subscriptions.append(WiltedMacSubscription(
+            id: articleID.rawValue, title: "Articles", feedURL: articleURL,
+            episodeCount: 0, subscribedAt: .distantPast, enabled: true
+        ))
+
+        appModel.preferences.set(
+            [podcast.id, refusedPodcast.id, articleID.rawValue, "outside-library"],
+            forKey: AdLabellerPreferences.keyPrefix + "confirmedFeedIDs"
+        )
+        appModel.preferences.set(
+            [refusedPodcast.id, "outside-library"],
+            forKey: AdLabellerPreferences.keyPrefix + "localOnlyFeedIDs"
+        )
+        let board = WiltedMacFeedPolicyBoard(model: appModel)
+        let text = try WiltedMacHeadless.recognizedText(
+            WiltedMacAdFindingSettingsView(model: appModel, board: board),
+            size: CGSize(width: 900, height: 1_200)
+        ).joined(separator: " ")
+
+        XCTAssertTrue(text.contains("1 of 2 shows allowed for ad finding"), text)
+        XCTAssertTrue(text.contains("All shows"), text)
+    }
+
+    func testAdsSummaryFitsAtSnapshotWidth() async throws {
+        let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-ready"], suffix: "ads-summary-fit")
+        addTeardownBlock { await model.close() }
+        model.selectedNavigation = .settings
+        model.settingsSection = .ads
+        await model.waitForLifetimeStatisticsForTesting()
+        let size = WiltedMacHeadless.windowCanvas
+        let text = try WiltedMacHeadless.recognizedText(
+            WiltedMacRootView(model: model).frame(width: size.width, height: size.height),
+            size: CGSize(width: size.width + 48, height: size.height + 48)
+        ).joined(separator: " ")
+        XCTAssertTrue(text.contains("0 of 0 shows allowed for ad finding"), text)
+        XCTAssertTrue(text.contains("All shows"), text)
     }
 
     // MARK: Helpers

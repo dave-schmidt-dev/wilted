@@ -39,7 +39,7 @@ extension WiltedMacSettingsView {
             preparingCard
         case .ads:
             adRemovalCard
-            WiltedMacAdFindingSettingsView(model: model.adFinding)
+            WiltedMacAdFindingSettingsView(model: model, board: feedPolicyBoard)
             WiltedMacAdFeedbackCard(feedback: model.adFeedback)
         case .reports:
             WiltedMacReportsCard(model: model, location: location)

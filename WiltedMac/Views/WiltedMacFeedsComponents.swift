@@ -470,7 +470,7 @@ struct WiltedMacInheritedFeedDefaults: View {
             $0.label == "Auto download" || $0.label == "Auto prepare"
         }, id: \.label) { row in
             let label = Text(row.label).wiltedFont(.body)
-            let value = Text("\(row.value) · Set in \(row.label == "Auto download" ? "Larder" : "Processing")")
+            let value = Text("\(row.value) · Set in \(row.label == "Auto download" ? "Larder" : "Preparing")")
                 .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             ViewThatFits(in: .horizontal) {

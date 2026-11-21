@@ -209,7 +209,10 @@ extension WiltedMacLarderView {
         switch item {
         case .article(let article):
             WiltedMacArticleRow(model: model, article: article)
-                .contextMenu { WiltedMacAddToPlaylistMenu(model: model, entryID: article.id) }
+                .contextMenu {
+                    WiltedMacAddToPlaylistMenu(model: model, entryID: article.id)
+                    showSettingsAction(feedID: article.feedID)
+                }
         case .episode(let episode), .audiobook(let episode):
             larderRow(
                 episode,

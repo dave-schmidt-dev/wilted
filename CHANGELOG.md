@@ -12,6 +12,7 @@ All notable changes to this project are documented in this file.
 - Retired the standalone manual ad-gold review page and its commands; ad-reference labeling now uses independent model review and adjudication without requiring owner confirmation.
 
 ### Changed
+- Mac Show settings opens from Feeds, a Larder row or Settings > Ads > All shows. Each show lists its defaults and custom choices together. Reset all preserves an existing refusal to send transcripts.
 - **Prepare Again** on the Mac now tries the download of the original again when the podcast server answers with a server error (HTTP 500 to 599): up to three more times, waiting 2, 4 and 8 seconds. Before, one such answer ended the run with "Could not download the original, so nothing changed".
 - Project docs rewritten in plain English with no token growth.
 - README and INVARIANTS cite local evidence and the private Apple guide as paths, not dead links.

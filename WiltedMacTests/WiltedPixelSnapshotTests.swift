@@ -52,7 +52,8 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                 WiltedSnapshotContract.shellName(kind: "sidebar-counts", appearance: appearance),
                 WiltedSnapshotContract.shellName(kind: "toolbar", appearance: appearance)
             ] + ["add-sheet-link", "add-sheet-results", "add-sheet-followed", "add-sheet-error", "add-sheet-import-progress", "add-sheet-import-refusal",
-                "feed-policy-article", "feeds-article-row", "feeds-row",
+                "show-settings-article",
+                "feeds-article-row", "feeds-row",
                 "larder-kind-filter", "larder-real-size-minimum", "larder-real-size-full", "larder-book-row", "player-chapters",
                 "sidebar-playlists", "playlist-manual", "playlist-rules", "settings-reports",
                 "player-bulletin-banner", "larder-report-row", "now-playing-pane"].map {
@@ -65,7 +66,10 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         let deviceNames = ["section-devices-synthetic-rows", "direct-downloads-device-menu"].map {
             WiltedSnapshotContract.shellName(kind: $0, appearance: .light)
         }
-        let names = shellAndStateNames + sectionNames + deviceNames
+        let showSettingsNames = ["show-settings", "show-settings-changed"].map {
+            WiltedSnapshotContract.shellName(kind: $0, appearance: .light)
+        }
+        let names = shellAndStateNames + sectionNames + deviceNames + showSettingsNames
         XCTAssertEqual(names.count, WiltedSnapshotContract.expectedPixelBaselineCount)
         XCTAssertEqual(Set(names).count, names.count)
         XCTAssertTrue(names.allSatisfy { $0.hasPrefix("state-") || $0.hasPrefix("mac-shell-") })

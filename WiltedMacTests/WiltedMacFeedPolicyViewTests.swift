@@ -111,11 +111,10 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
         let board = WiltedMacFeedPolicyBoard(model: fixture.model)
         await board.reload()
         let subscription = try XCTUnwrap(fixture.model.subscriptions.first { $0.id == fixture.feed })
-        let content = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
-        XCTAssertFalse(content.isAutoPrepareBlocked)
+        let content = WiltedMacShowSettingsView(model: fixture.model, board: board, subscription: subscription)
         let shown = try WiltedMacHeadless.recognizedText(
             content,
-            size: CGSize(width: 520, height: 700)
+            size: CGSize(width: 900, height: 1_600)
         ).joined(separator: "\n")
 
         for label in ["Auto keep", "Auto download", "Auto prepare", "Kept limit"] {
@@ -127,7 +126,7 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
         XCTAssertFalse(shown.contains("Processing is set to Manual"), shown)
         XCTAssertTrue(shown.split { $0.isWhitespace }.contains("4"), shown)
         XCTAssertTrue(shown.contains("episodes"), shown)
-        XCTAssertTrue(shown.contains("Use global") || shown.contains("On"), shown)
+        XCTAssertTrue(shown.contains("Same as default") || shown.contains("On"), shown)
     }
 
     func testSettingsShowsTheGlobalDefaultsEveryUseGlobalFeedInherits() async throws {
@@ -230,28 +229,27 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
         XCTAssertEqual(board.waitingEpisodes(forFeed: fixture.feed).map(\.id), [fixture.ids["b"]!])
     }
 
-    func testEveryNewControlCarriesAnAccessibilityLabelNamingTheFeed() throws {
-        let source = try WiltedMacHeadless.viewSource("WiltedMacFeedPolicyView.swift")
+    func testEveryShowSettingControlKeepsItsAccessibleLabelAndFeedEntry() throws {
+        let source = try ["WiltedMacShowSettingsView.swift", "WiltedMacShowSettingsRows.swift"]
+            .map { try WiltedMacHeadless.viewSource($0) }.joined(separator: "\n")
+        for identifier in [
+            "wilted-feed-policy-auto-keep", "wilted-feed-policy-auto-download",
+            "wilted-feed-policy-auto-prepare", "wilted-feed-policy-kept-limit-mode",
+            "wilted-feed-policy-ad-free", "wilted-feed-policy-remove-self-promotion",
+            "wilted-feed-policy-send-for-ad-finding", "wilted-feed-policy-news",
+        ] {
+            XCTAssertTrue(source.contains(identifier), identifier)
+        }
         for label in [
-            "Feed settings for \\(subscription.title)",
-            "Auto keep for \\(subscription.title)",
-            "Auto download for \\(subscription.title)",
-            "Auto prepare for \\(subscription.title)",
-            "Kept limit for \\(subscription.title)",
+            "Auto keep for \\(subscription.title)", "Auto download for \\(subscription.title)",
+            "Auto prepare for \\(subscription.title)", "Kept limit for \\(subscription.title)",
             "Number of episodes kept for \\(subscription.title)",
-            "Close feed settings for \\(subscription.title)",
+            "Remove ads for \\(subscription.title)", "Send \\(subscription.title) for ad finding",
         ] {
             XCTAssertTrue(source.contains("\"\(label)\""), label)
         }
-        // No control is added without a label: every Picker, TextField, Stepper and Button is paired with one.
-        let controls = ["Picker(", "TextField(", "Stepper(", "Button("].reduce(0) {
-            $0 + WiltedMacHeadless.occurrences(of: $1, in: source)
-        }
-        XCTAssertGreaterThan(controls, 0)
-        XCTAssertGreaterThanOrEqual(WiltedMacHeadless.occurrences(of: ".accessibilityLabel(", in: source), controls)
-
         let feeds = try WiltedMacHeadless.viewSource("WiltedMacFeedsView.swift")
-        XCTAssertTrue(feeds.contains("WiltedMacFeedPolicyButton(board: policyBoard, subscription: subscription)"))
+        XCTAssertTrue(feeds.contains("WiltedMacShowSettingsView(model: model, board: policyBoard, subscription: subscription)"))
     }
 
     // MARK: Global Auto keep and kept limit
@@ -294,7 +292,7 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
         )
     }
 
-    func testPopoverAndPagesRenderAtTheMinimumWindowWidthAndWide() async throws {
+    func testShowSettingsPageAndFeedsRenderAtTheMinimumWindowWidthAndWide() async throws {
         let fixture = try await makeFixture(
             policy: FeedAutomationPolicy(autoKeep: .on, keptLimit: .explicit(1)),
             kept: [Spec(guid: "k", day: 0)], undecided: [Spec(guid: "a", day: 1)]
@@ -311,10 +309,12 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
             XCTAssertEqual(feeds.split(separator: "\n").filter { String($0).caseInsensitiveCompare("Waiting for space") == .orderedSame }.count, 1, "\(width): \(feeds)")
             XCTAssertTrue(feeds.contains("never removes"), "\(width): \(feeds)")
         }
-        let popover = try capture(WiltedMacFeedPolicyContent(board: board, subscription: subscription),
-                                  "original-popover", width: 460, height: 700)
-        for text in ["Feed settings", "Kept limit", "episodes", "Done", "Use global (Off)", "Use global (On)"] {
-            XCTAssertTrue(popover.contains(text), "\(text) in \(popover)")
+        let page = try capture(
+            WiltedMacShowSettingsView(model: fixture.model, board: board, subscription: subscription),
+            "show-settings-page", width: 900, height: 2_200
+        )
+        for text in ["New episodes", "Playback", "Ads", "Type", "Details", "Kept limit", "Default:"] {
+            XCTAssertTrue(page.contains(text), "\(text) in \(page)")
         }
         fixture.model.settingsSection = .newEpisodes
         let settings = try WiltedMacHeadless.recognizedText(
@@ -339,23 +339,25 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
     func testGlobalValuesRemainInlineAndExplicitChoicesKeepTheirMeaning() async throws {
         let f = try await makeFixture(); let board = WiltedMacFeedPolicyBoard(model: f.model); await board.reload()
         let subscription = try XCTUnwrap(f.model.subscriptions.first)
-        let content = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
-        let inherited = try capture(content, "inherited", width: 460, height: 700)
-        XCTAssertTrue(inherited.contains("Use global (Off)"), inherited)
-        XCTAssertTrue(inherited.contains("Use global (On)"), inherited)
-        XCTAssertTrue(inherited.contains("Use global (No limit)"), inherited)
+        let content = WiltedMacShowSettingsView(model: board.model, board: board, subscription: subscription)
+        let inherited = try capture(content, "inherited", width: 900, height: 1_600)
+        XCTAssertTrue(inherited.contains("Same as default"), inherited)
+        XCTAssertTrue(inherited.contains("Default: Off"), inherited)
+        XCTAssertTrue(inherited.contains("Default: On"), inherited)
+        XCTAssertTrue(inherited.contains("Default: No limit"), inherited)
         XCTAssertFalse(inherited.contains("Resolved now"), inherited)
         f.model.updateAutomationSettings { $0.settingAutoKeepNewEpisodes(true).settingKeptLimitPerFeed(7) }
         XCTAssertEqual(board.policy(for: f.feed), FeedAutomationPolicy(), "the feed still inherits, not a copied value")
-        let changed = try capture(content, "inherited-changed", width: 460, height: 700)
-        XCTAssertTrue(changed.contains("Use global (7 episodes)"), changed)
+        let changed = try capture(content, "inherited-changed", width: 900, height: 1_600)
+        XCTAssertTrue(changed.contains("Default: 7 episodes"), changed)
         XCTAssertTrue(board.resolved(for: f.feed).autoKeep)
         XCTAssertTrue(board.update(f.feed, autoKeep: .on, autoDownload: .on, autoPrepare: .off, keptLimit: .explicit(3)))
         await board.settle()
-        let explicit = try capture(content, "explicit", width: 460, height: 700)
+        let explicit = try capture(content, "explicit", width: 900, height: 1_600)
         XCTAssertEqual(board.resolved(for: f.feed), .init(autoKeep: true, autoDownload: true, autoPrepare: false, keptLimit: 3))
         XCTAssertTrue(explicit.contains("episodes"), explicit)
-        XCTAssertFalse(explicit.contains("Use global"), explicit)
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Same as default", in: explicit), 1,
+                       "only the unchanged Remove ads choice still inherits")
     }
 
     func testFilledRulesKeepPatternCaptionsAndVisibleEnabledCaption() async throws {
@@ -385,20 +387,20 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
         await editor.task?.value; XCTAssertEqual(f.model.podcastQueueIDs, [], "preview does not apply the proposed Keep")
     }
 
-    func testPopoverStays460AndTheRulesSheetOpensAtLeastAtItsMinimumWithTitleAndDone() async throws {
+    func testShowSettingsAndTheRulesSheetOpenAtTheirMinimumSizes() async throws {
         let f = try await makeFixture(); let board = WiltedMacFeedPolicyBoard(model: f.model); await board.reload()
         let subscription = try XCTUnwrap(f.model.subscriptions.first)
-        let policy = WiltedMacFeedPolicyContent(board: board, subscription: subscription)
-        XCTAssertEqual(NSHostingView(rootView: policy).fittingSize.width, 460, accuracy: 1)
+        let page = WiltedMacShowSettingsView(model: f.model, board: board, subscription: subscription)
+        XCTAssertGreaterThanOrEqual(NSHostingView(rootView: page).fittingSize.width, 720)
         let rules = WiltedMacFeedRulesView(editor: board.rulesEditor(for: f.feed), subscription: subscription, resolved: board.resolved(for: f.feed))
         let opening = NSHostingView(rootView: rules).fittingSize
         XCTAssertGreaterThanOrEqual(opening.width, 720); XCTAssertGreaterThanOrEqual(opening.height, 560)
         let text = try WiltedMacRulesSheetCapture.text(rules, size: CGSize(width: 720, height: 560), name: "rules-controls", in: self)
         XCTAssertTrue(text.contains("Match rules for Policy Feed"), text); XCTAssertTrue(text.contains("Done"), text)
-        XCTAssertFalse(text.contains("Feed settings"), "no page swap back to the popover: \(text)"); await board.rulesEditor(for: f.feed).task?.value
+        XCTAssertFalse(text.contains("Show settings"), "the rules sheet has no page-back control: \(text)"); await board.rulesEditor(for: f.feed).task?.value
     }
 
-    func testDefaultsAndGearExposeTheirActualSourcesAtNarrowAndWideWidths() async throws {
+    func testDefaultsAndShowSettingsExposeTheirActualSourcesAtNarrowAndWideWidths() async throws {
         let f = try await makeFixture(); let board = WiltedMacFeedPolicyBoard(model: f.model); await board.reload()
         f.model.settingsSection = .newEpisodes
         for scale: WiltedTheme.TextScale in [.standard, .large] {
@@ -409,14 +411,12 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
             // settings text once the sidebar narrows, which says nothing about layout.
             let detail = width - WiltedMacShellLayout.sidebarIdealWidth
             let text = try capture(WiltedMacSettingsView(model: f.model), "defaults-\(scale.rawValue)-\(Int(width))", width: detail, height: 900)
-            XCTAssertTrue(text.contains("Set in Larder"), text); XCTAssertTrue(text.contains("Set in Processing"), text)
+            XCTAssertTrue(text.contains("Set in Larder"), text); XCTAssertTrue(text.contains("Set in Preparing"), text)
             }
         }
-        let source = try WiltedMacHeadless.viewSource("WiltedMacFeedPolicyView.swift")
-        XCTAssertTrue(source.contains(".help(\"Feed settings\")"))
-        XCTAssertTrue(source.contains("minWidth: 28, minHeight: 28"))
-        let gear = WiltedMacFeedPolicyButton(board: board, subscription: try XCTUnwrap(f.model.subscriptions.first))
-        _ = try capture(gear, "gear", width: 80, height: 80)
+        let source = try WiltedMacHeadless.viewSource("WiltedMacShowSettingsView.swift")
+        XCTAssertTrue(source.contains("wilted-show-settings-page-\\(feedID)"))
+        XCTAssertTrue(source.contains("accessibilityIdentifier(\"wilted-show-settings-rename\")"))
     }
 
     // MARK: Send this show for ad finding

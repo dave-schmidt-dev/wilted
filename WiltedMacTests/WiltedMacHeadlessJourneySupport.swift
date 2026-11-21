@@ -79,15 +79,16 @@ enum WiltedMacHeadless {
     }
 
     /// Renders `view` offscreen in light mode and returns its bitmap.
-    static func render<V: View>(_ view: V, size: CGSize = windowCanvas) throws -> NSBitmapImageRep {
+    static func render<V: View>(_ view: V, size: CGSize = windowCanvas, scale: Int = 1) throws -> NSBitmapImageRep {
         let hostingView = NSHostingView(
             rootView: view.environment(\.colorScheme, .light).frame(width: size.width, height: size.height))
         hostingView.frame = NSRect(origin: .zero, size: size)
         hostingView.layoutSubtreeIfNeeded()
         let bitmap = try XCTUnwrap(NSBitmapImageRep(
-            bitmapDataPlanes: nil, pixelsWide: Int(size.width), pixelsHigh: Int(size.height),
+            bitmapDataPlanes: nil, pixelsWide: Int(size.width) * scale, pixelsHigh: Int(size.height) * scale,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
             colorSpaceName: .deviceRGB, bitmapFormat: [], bytesPerRow: 0, bitsPerPixel: 0))
+        bitmap.size = size
         hostingView.cacheDisplay(in: hostingView.bounds, to: bitmap)
         return bitmap
     }

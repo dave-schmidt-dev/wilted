@@ -16,6 +16,7 @@ struct WiltedMacArticle: Identifiable, Hashable, Sendable {
     let id: String
     let title: String
     let source: String
+    let feedID: String?
     let url: URL
     let isReady: Bool
     /// Present once audio exists. The library row states how long an article
@@ -36,11 +37,13 @@ struct WiltedMacArticle: Identifiable, Hashable, Sendable {
         durationSeconds: TimeInterval?,
         playbackSeconds: TimeInterval = 0,
         isPlayed: Bool = false,
-        createdAt: Date = .distantPast
+        createdAt: Date = .distantPast,
+        feedID: String? = nil
     ) {
         self.id = id
         self.title = title
         self.source = source
+        self.feedID = feedID
         self.url = url
         self.isReady = isReady
         self.durationSeconds = durationSeconds

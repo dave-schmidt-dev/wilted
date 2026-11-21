@@ -13,10 +13,16 @@ struct WiltedMacSettingsView: View {
     let location: WiltedLocationProvider
     @Environment(\.colorScheme) private var colorScheme
     @State private var choosesCustomMetadataCount = false
+    @State var feedPolicyBoard: WiltedMacFeedPolicyBoard
 
-    init(model: WiltedMacModel, location: WiltedLocationProvider? = nil) {
+    init(
+        model: WiltedMacModel,
+        location: WiltedLocationProvider? = nil,
+        policyBoard: WiltedMacFeedPolicyBoard? = nil
+    ) {
         self.model = model
         self.location = location ?? model.bulletinHub.location
+        _feedPolicyBoard = State(initialValue: policyBoard ?? WiltedMacFeedPolicyBoard(model: model))
     }
 
     var body: some View {
@@ -157,7 +163,7 @@ struct WiltedMacSettingsView: View {
                 automationSectionTitle("Feed defaults")
                 WiltedMacGlobalFeedDefaultsControls(model: model)
                 WiltedMacInheritedFeedDefaults(model: model)
-                Text("Use global follows these defaults. Change one feed from Feed settings in Feeds.")
+                Text("Same as default follows these values. Change a show on its Show settings page.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
