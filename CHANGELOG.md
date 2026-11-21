@@ -12,6 +12,7 @@ All notable changes to this project are documented in this file.
 - Retired the standalone manual ad-gold review page and its commands; ad-reference labeling now uses independent model review and adjudication without requiring owner confirmation.
 
 ### Changed
+- Online ad finding remembers the model ID and thinking level separately for each provider in user defaults, restoring a provider's choices when switched back.
 - Online ad finding uses the chosen provider and key slot at every request, so setting changes take effect immediately without relaunching the app.
 - Mac Show settings opens from Feeds, a Larder row or Settings > Ads > All shows. Each show lists its defaults and custom choices together. Reset all preserves an existing refusal to send transcripts.
 - Reports shows what you need to hear bulletins, where to set up headlines and weather alerts, and a short sample you can play. On the Mac, **Try again** checks the sound output immediately.

@@ -51,7 +51,7 @@ public enum RemoteLabellingNotSent: String, Sendable, Equatable, CaseIterable {
         case .privateToken: "This show's address carries a private token, so it is never sent for ad finding."
         case .privateTitle: "This show's title sounds private, so it is never sent for ad finding."
         case .switchOff: "Online ad finding is off."
-        case .noKey: "The chosen provider is not ready: it needs a saved key or its privacy note accepted."
+        case .noKey: "The chosen provider is not ready: it needs a saved key, a model, or its privacy note accepted."
         case .notConfirmed: "This show is not sent for ad finding. Turn it on in the show's settings."
         }
     }

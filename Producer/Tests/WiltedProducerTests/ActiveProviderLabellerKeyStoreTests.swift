@@ -19,6 +19,9 @@ struct ActiveProviderLabellerKeyStoreTests {
 
         for provider in AdLabellerProvider.allCases {
             preferences.provider = provider
+            if provider == .openRouterKey || provider == .openAIKey {
+                preferences.setModelID("some-model", for: provider)
+            }
 
             // 1. Initial state (unacknowledged, no key saved)
             if provider == .openCodeCLI {
@@ -90,6 +93,7 @@ struct ActiveProviderLabellerKeyStoreTests {
         // Acknowledge non-grandfathered providers so readiness reflects key slot presence
         preferences.acknowledge(.openAIKey)
         preferences.acknowledge(.anthropicKey)
+        preferences.setModelID("gpt-4o", for: .openAIKey)
 
         let keyStore = ActiveProviderKeyStore.inMemory(preferences: preferences)
 
@@ -153,6 +157,7 @@ struct ActiveProviderLabellerKeyStoreTests {
             .opencodeGoKey: "opencode-key",
             .openRouterKey: "router-key",
         ]
+        preferences.setModelID("openrouter-model", for: .openRouterKey)
         let keyStore = ActiveProviderKeyStore(preferences: preferences, inMemoryKeys: initialKeys)
 
         preferences.provider = .opencodeGoKey

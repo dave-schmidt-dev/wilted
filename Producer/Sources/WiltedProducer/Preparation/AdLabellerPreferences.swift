@@ -21,6 +21,8 @@ public struct AdLabellerPreferences: @unchecked Sendable {
     static let providerKey = keyPrefix + "provider"
     static let modelKey = keyPrefix + "modelID"
     static let levelKey = keyPrefix + "level"
+    static let providerModelKeyPrefix = keyPrefix + "providerModel."
+    static let providerLevelKeyPrefix = keyPrefix + "providerLevel."
     static let capKey = keyPrefix + "dailyCap"
     static let waitLimitKey = keyPrefix + "waitLimitSeconds"
     static let useOpenCodeCLIKey = keyPrefix + "useOpenCodeCLI"
@@ -95,22 +97,77 @@ public struct AdLabellerPreferences: @unchecked Sendable {
         Self.update(Self.localOnlyKey, feedID: feedID, present: true, in: preferences)
     }
 
-    /// The provider model ID. A blank stored value falls back to the default.
+    /// The provider model ID for the chosen provider.
     public var modelID: String {
-        get {
-            let stored = preferences.string(forKey: Self.modelKey) ?? ""
-            return stored.isEmpty ? Self.defaultModelID : stored
-        }
-        nonmutating set { preferences.set(newValue, forKey: Self.modelKey) }
+        get { modelID(for: provider) }
+        nonmutating set { setModelID(newValue, for: provider) }
     }
 
-    /// The labelling level. A blank stored value falls back to `low`.
+    /// The labelling level for the chosen provider.
     public var level: String {
-        get {
-            let stored = preferences.string(forKey: Self.levelKey) ?? ""
-            return stored.isEmpty ? Self.defaultLevel : stored
+        get { level(for: provider) }
+        nonmutating set { setLevel(newValue, for: provider) }
+    }
+
+    /// The model ID for a specific provider.
+    public func modelID(for provider: AdLabellerProvider) -> String {
+        let providerKey = Self.providerModelKeyPrefix + provider.rawValue
+        if let stored = preferences.string(forKey: providerKey), !stored.isEmpty {
+            return stored
         }
-        nonmutating set { preferences.set(newValue, forKey: Self.levelKey) }
+        if provider == .opencodeGoKey || provider == .openCodeCLI {
+            if let legacy = preferences.string(forKey: Self.modelKey), !legacy.isEmpty {
+                return legacy
+            }
+        }
+        if let firstModel = AdLabellerModelCatalog.modelsByProvider[provider]?.first?.id {
+            return firstModel
+        }
+        return ""
+    }
+
+    /// Saves the model ID for a specific provider.
+    public func setModelID(_ modelID: String, for provider: AdLabellerProvider) {
+        let providerKey = Self.providerModelKeyPrefix + provider.rawValue
+        preferences.set(modelID, forKey: providerKey)
+    }
+
+    /// The thinking level for a specific provider.
+    public func level(for provider: AdLabellerProvider) -> String {
+        let providerKey = Self.providerLevelKeyPrefix + provider.rawValue
+        if let stored = preferences.string(forKey: providerKey), !stored.isEmpty {
+            return stored
+        }
+        if provider == .opencodeGoKey || provider == .openCodeCLI {
+            if let legacy = preferences.string(forKey: Self.levelKey), !legacy.isEmpty {
+                return legacy
+            }
+        }
+        let model = modelID(for: provider)
+        if model.isEmpty {
+            return "low"
+        }
+        let knownModels = AdLabellerModelCatalog.modelsByProvider[provider] ?? []
+        if let match = knownModels.first(where: { $0.id == model }) {
+            if match.supportedLevels.contains("low") {
+                return "low"
+            }
+            if let firstSupported = match.supportedLevels.first {
+                return firstSupported
+            }
+        }
+        return "low"
+    }
+
+    /// Saves the thinking level for a specific provider.
+    public func setLevel(_ level: String, for provider: AdLabellerProvider) {
+        let providerKey = Self.providerLevelKeyPrefix + provider.rawValue
+        preferences.set(level, forKey: providerKey)
+    }
+
+    /// Whether the chosen provider's model and level choice is valid.
+    public var hasValidChoice: Bool {
+        AdLabellerModelCatalog.isValid(provider: provider, model: modelID, level: level)
     }
 
     /// The most HTTP requests sent per local day. A missing value reads as 60; a stored negative

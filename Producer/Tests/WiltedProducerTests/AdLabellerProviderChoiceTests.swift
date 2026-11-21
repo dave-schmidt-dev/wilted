@@ -165,4 +165,159 @@ struct AdLabellerProviderChoiceTests {
             #expect(decision == .stop(.providerNotAccepted(provider: provider)))
         }
     }
+
+    @Test func perProviderModelAndLevelRoundTrip() {
+        let suite = "test-per-provider-roundtrip-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let prefs = AdLabellerPreferences(preferences: defaults)
+
+        for provider in AdLabellerProvider.allCases {
+            prefs.setModelID("model-\(provider.rawValue)", for: provider)
+            prefs.setLevel("level-\(provider.rawValue)", for: provider)
+        }
+
+        for provider in AdLabellerProvider.allCases {
+            #expect(prefs.modelID(for: provider) == "model-\(provider.rawValue)")
+            #expect(prefs.level(for: provider) == "level-\(provider.rawValue)")
+        }
+    }
+
+    @Test func legacyGlobalValuesReadForOpenCodeProvidersAndIgnoredForOthers() {
+        let suite = "test-legacy-globals-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        defaults.set("legacy-model-global", forKey: "wilted.adLabeller.modelID")
+        defaults.set("legacy-level-global", forKey: "wilted.adLabeller.level")
+
+        let prefs = AdLabellerPreferences(preferences: defaults)
+
+        #expect(prefs.modelID(for: .opencodeGoKey) == "legacy-model-global")
+        #expect(prefs.level(for: .opencodeGoKey) == "legacy-level-global")
+        #expect(prefs.modelID(for: .openCodeCLI) == "legacy-model-global")
+        #expect(prefs.level(for: .openCodeCLI) == "legacy-level-global")
+
+        #expect(prefs.modelID(for: .claudeCodeCLI) == "claude-sonnet-5-5")
+        #expect(prefs.level(for: .claudeCodeCLI) == "low")
+        #expect(prefs.modelID(for: .codexCLI) == "gpt-6.1-terra")
+        #expect(prefs.level(for: .codexCLI) == "low")
+        #expect(prefs.modelID(for: .anthropicKey) == "claude-sonnet-5-5")
+        #expect(prefs.level(for: .anthropicKey) == "low")
+        #expect(prefs.modelID(for: .openRouterKey) == "")
+        #expect(prefs.level(for: .openRouterKey) == "low")
+        #expect(prefs.modelID(for: .openAIKey) == "")
+        #expect(prefs.level(for: .openAIKey) == "low")
+    }
+
+    @Test func defaultModelsAndThinkingLevels() {
+        let suite = "test-defaults-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let prefs = AdLabellerPreferences(preferences: defaults)
+
+        #expect(prefs.modelID(for: .opencodeGoKey) == "deepseek-v4.1-flash")
+        #expect(prefs.level(for: .opencodeGoKey) == "low")
+        #expect(prefs.modelID(for: .openCodeCLI) == "deepseek-v4.1-flash")
+        #expect(prefs.level(for: .openCodeCLI) == "low")
+        #expect(prefs.modelID(for: .claudeCodeCLI) == "claude-sonnet-5-5")
+        #expect(prefs.level(for: .claudeCodeCLI) == "low")
+        #expect(prefs.modelID(for: .codexCLI) == "gpt-6.1-terra")
+        #expect(prefs.level(for: .codexCLI) == "low")
+        #expect(prefs.modelID(for: .anthropicKey) == "claude-sonnet-5-5")
+        #expect(prefs.level(for: .anthropicKey) == "low")
+        #expect(prefs.modelID(for: .openRouterKey) == "")
+        #expect(prefs.level(for: .openRouterKey) == "low")
+        #expect(prefs.modelID(for: .openAIKey) == "")
+        #expect(prefs.level(for: .openAIKey) == "low")
+    }
+
+    @Test func openAIAndOpenRouterBlankModelMeansNotReadyAndNotValid() {
+        let suite = "test-blank-model-not-ready-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let prefs = AdLabellerPreferences(preferences: defaults)
+        let keyStore = ActiveProviderKeyStore.inMemory(preferences: prefs, initialKeys: [
+            .openAIKey: "sk-openai-key",
+            .openRouterKey: "sk-router-key",
+        ])
+
+        prefs.acknowledge(.openAIKey)
+        prefs.acknowledge(.openRouterKey)
+
+        prefs.provider = .openAIKey
+        #expect(prefs.modelID == "")
+        #expect(!prefs.hasValidChoice)
+        #expect(!keyStore.hasKey())
+        #expect(!keyStore.isReady(provider: .openAIKey))
+
+        prefs.provider = .openRouterKey
+        #expect(prefs.modelID == "")
+        #expect(!prefs.hasValidChoice)
+        #expect(!keyStore.hasKey())
+        #expect(!keyStore.isReady(provider: .openRouterKey))
+
+        prefs.setModelID("gpt-4o", for: .openAIKey)
+        prefs.provider = .openAIKey
+        #expect(prefs.hasValidChoice)
+        #expect(keyStore.hasKey())
+        #expect(keyStore.isReady(provider: .openAIKey))
+    }
+
+    @Test func switchingProvidersKeepsEachChoiceAndPipelineFacingPropertiesFollow() {
+        let suite = "test-switching-keeps-choice-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let prefs = AdLabellerPreferences(preferences: defaults)
+
+        prefs.provider = .opencodeGoKey
+        prefs.modelID = "deepseek-v4-pro"
+        prefs.level = "high"
+
+        prefs.provider = .claudeCodeCLI
+        prefs.modelID = "claude-opus-5-5"
+        prefs.level = "max"
+
+        prefs.provider = .openAIKey
+        prefs.modelID = "gpt-4o"
+        prefs.level = "medium"
+
+        #expect(prefs.modelID == "gpt-4o")
+        #expect(prefs.level == "medium")
+
+        prefs.provider = .claudeCodeCLI
+        #expect(prefs.modelID == "claude-opus-5-5")
+        #expect(prefs.level == "max")
+
+        prefs.provider = .opencodeGoKey
+        #expect(prefs.modelID == "deepseek-v4-pro")
+        #expect(prefs.level == "high")
+    }
+
+    @Test func unsupportedLevelForKnownModelIsInvalid() {
+        let suite = "test-invalid-level-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let prefs = AdLabellerPreferences(preferences: defaults)
+        prefs.provider = .claudeCodeCLI
+        prefs.modelID = "claude-sonnet-5-5"
+        prefs.level = "unsupported-level"
+
+        #expect(!prefs.hasValidChoice)
+        #expect(!AdLabellerModelCatalog.isValid(provider: .claudeCodeCLI, model: prefs.modelID, level: prefs.level))
+
+        let keyStore = ActiveProviderKeyStore.inMemory(preferences: prefs)
+        prefs.acknowledge(.claudeCodeCLI)
+        #expect(!keyStore.hasKey())
+        #expect(!keyStore.isReady(provider: .claudeCodeCLI))
+
+        prefs.level = "high"
+        #expect(prefs.hasValidChoice)
+        #expect(keyStore.hasKey())
+        #expect(keyStore.isReady(provider: .claudeCodeCLI))
+    }
 }
