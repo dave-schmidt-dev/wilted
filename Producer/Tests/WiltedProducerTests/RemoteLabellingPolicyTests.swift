@@ -113,7 +113,7 @@ struct RemoteLabellingPolicyTests {
             .privateTitle: ("not-sent-private-title",
                             "This show's title sounds private, so it is never sent for ad finding."),
             .switchOff: ("not-sent-switch-off", "Online ad finding is off."),
-            .noKey: ("not-sent-no-key", "No provider key is saved."),
+            .noKey: ("not-sent-no-key", "The chosen provider has no key saved."),
             .notConfirmed: ("not-sent-not-confirmed",
                             "This show is not sent for ad finding. Turn it on in the show's settings."),
             .adRemovalOff: nil,

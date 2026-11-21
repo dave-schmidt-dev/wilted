@@ -270,7 +270,10 @@ final class WiltedMacModel {
     /// The listener's ad-removal feedback and its review inbox (`WiltedMacModel+AdFeedback`).
     /// The ad labeller's provider key: the Keychain in the real app, memory under tests and fixtures.
     @ObservationIgnored lazy var adLabellerKeyStore: any LabellerKeyStoring =
-        (fixtureMode || Self.hostsTests) ? InMemoryLabellerKeyStore() : KeychainLabellerKeyStore()
+        ActiveProviderKeyStore(
+            preferences: AdLabellerPreferences(preferences: preferences),
+            inMemory: fixtureMode || Self.hostsTests
+        )
     /// Settings' Ad finding card. It reads the key store once, so views ask it, not the Keychain.
     @ObservationIgnored lazy var adFinding = WiltedMacAdFindingSettings(
         preferences: preferences, keyStore: adLabellerKeyStore,
