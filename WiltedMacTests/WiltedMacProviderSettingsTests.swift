@@ -243,17 +243,10 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
         XCTAssertEqual(anthropicRow.kind, "Key")
         XCTAssertEqual(anthropicRow.status, "No key saved")
 
-        // Key saved without acknowledgement for provider requiring acknowledgement
         try? keyStore.slot(for: .anthropicKey).save("sk-ant-test")
-        let anthropicKeySavedRow = try XCTUnwrap(settings.rows.first(where: { $0.id == .anthropicKey }))
-        XCTAssertEqual(anthropicKeySavedRow.status, "Key saved, privacy note not accepted yet")
-
-        // Acknowledge Anthropic
-        settings.acknowledge(.anthropicKey)
         let anthropicReadyRow = try XCTUnwrap(settings.rows.first(where: { $0.id == .anthropicKey }))
         XCTAssertEqual(anthropicReadyRow.status, "Ready")
 
-        // Grandfathered provider (.opencodeGoKey) doesn't require acknowledgement
         try? keyStore.slot(for: .opencodeGoKey).save("sk-open-test")
         let openCodeGoReadyRow = try XCTUnwrap(settings.rows.first(where: { $0.id == .opencodeGoKey }))
         XCTAssertEqual(openCodeGoReadyRow.status, "Ready")
@@ -317,25 +310,6 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
         XCTAssertFalse(keyStore.slot(for: .anthropicKey).hasKey())
     }
 
-    // MARK: - Acknowledgement Lifecycle
-
-    func testAcknowledgeAndRevokeAffectReadiness() {
-        let (settings, _, keyStore, _) = makeSettings()
-
-        // Anthropic requires acknowledgement
-        try? keyStore.slot(for: .anthropicKey).save("sk-key-test")
-        XCTAssertFalse(settings.rows.first(where: { $0.id == .anthropicKey })?.isAcknowledged ?? true)
-        XCTAssertTrue(settings.rows.first(where: { $0.id == .anthropicKey })?.needsAcknowledgement ?? false)
-
-        settings.acknowledge(.anthropicKey)
-        XCTAssertTrue(settings.rows.first(where: { $0.id == .anthropicKey })?.isAcknowledged ?? false)
-        XCTAssertFalse(settings.rows.first(where: { $0.id == .anthropicKey })?.needsAcknowledgement ?? true)
-
-        settings.revokeAcknowledgement(.anthropicKey)
-        XCTAssertFalse(settings.rows.first(where: { $0.id == .anthropicKey })?.isAcknowledged ?? true)
-        XCTAssertTrue(settings.rows.first(where: { $0.id == .anthropicKey })?.needsAcknowledgement ?? false)
-    }
-
     // MARK: - Check Constraints & Concurrency
 
     func testCheckRunsOnlyForCommandLineProvidersAndIgnoresConcurrentCall() async {
@@ -380,17 +354,11 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
         settings.setModel("anthropic/claude-3.5-sonnet")
         XCTAssertEqual(settings.readinessLine, "No key saved. Add one in Providers.")
 
-        // Priority 3: Needs acknowledgement
         try? keyStore.slot(for: .openRouterKey).save("sk-openrouter-key")
-        XCTAssertEqual(settings.readinessLine, "Accept OpenRouter's privacy note in Providers.")
-
-        // Acknowledge -> reaches Priority 5 (Ready)
-        settings.acknowledge(.openRouterKey)
         XCTAssertEqual(settings.readinessLine, "Ready: OpenRouter · anthropic/claude-3.5-sonnet · Low")
 
-        // Priority 4: Command-line provider not found or not signed in per last check (if checked)
+        // Priority 3: Command-line provider not found or not signed in per last check (if checked)
         settings.setProvider(.claudeCodeCLI)
-        settings.acknowledge(.claudeCodeCLI)
 
         // Before check: falls through to Ready
         XCTAssertEqual(settings.readinessLine, "Ready: Claude Code · Claude Sonnet 5.5 · Low")
@@ -410,46 +378,9 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
         await settings.check(.claudeCodeCLI)
         XCTAssertEqual(settings.readinessLine, "Service timeout")
 
-        // When checked and ready -> Priority 5
+        // When checked and ready -> Priority 4
         mockCheck.setStatus(.ready, for: .claudeCodeCLI)
         await settings.check(.claudeCodeCLI)
         XCTAssertEqual(settings.readinessLine, "Ready: Claude Code · Claude Sonnet 5.5 · Low")
-    }
-
-    // MARK: - Privacy Note
-
-    func testPrivacyNoteContentAndURLs() {
-        let (settings, _, _, _) = makeSettings()
-
-        let noteSends = "Wilted sends the transcript of an allowed show's episode and the show's name, nothing else: no audio, no feed address, no episode title."
-
-        for provider in AdLabellerProvider.allCases {
-            let note = settings.privacyNote(for: provider)
-            XCTAssertEqual(note.sends, noteSends)
-            XCTAssertFalse(note.theirTerms.isEmpty)
-        }
-
-        XCTAssertEqual(
-            settings.privacyNote(for: .openAIKey).policyURL,
-            URL(string: "https://openai.com/policies/privacy-policy")
-        )
-        XCTAssertEqual(
-            settings.privacyNote(for: .codexCLI).policyURL,
-            URL(string: "https://openai.com/policies/privacy-policy")
-        )
-        XCTAssertEqual(
-            settings.privacyNote(for: .anthropicKey).policyURL,
-            URL(string: "https://www.anthropic.com/legal/privacy")
-        )
-        XCTAssertEqual(
-            settings.privacyNote(for: .claudeCodeCLI).policyURL,
-            URL(string: "https://www.anthropic.com/legal/privacy")
-        )
-        XCTAssertEqual(
-            settings.privacyNote(for: .openRouterKey).policyURL,
-            URL(string: "https://openrouter.ai/privacy")
-        )
-        XCTAssertNil(settings.privacyNote(for: .opencodeGoKey).policyURL)
-        XCTAssertNil(settings.privacyNote(for: .openCodeCLI).policyURL)
     }
 }

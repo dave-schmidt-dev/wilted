@@ -2,7 +2,7 @@ import SwiftUI
 import WiltedProducer
 
 /// The Providers section in Settings: cards for command-line tools and key providers,
-/// readiness checks, key storage and removal, and transcript privacy acknowledgements.
+/// readiness checks, and key storage and removal.
 struct WiltedMacProvidersSettingsView: View {
     private let appModel: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
@@ -18,7 +18,7 @@ struct WiltedMacProvidersSettingsView: View {
     private var help: WiltedMacHelpContent {
         WiltedMacHelpContent(
             title: "Providers",
-            text: "Pick where ad finding is sent. Subscription tools need no key. Nothing is sent to a provider until you accept its privacy note."
+            text: "Pick where ad finding is sent. Subscription tools need no key."
         )
     }
 
@@ -132,40 +132,6 @@ private struct WiltedMacProviderCard: View {
                                     .fixedSize(horizontal: false, vertical: true)
                                     .accessibilityIdentifier("wilted-providers-key-message-\(row.provider.rawValue)")
                             }
-                        }
-                    }
-                }
-
-                if row.provider.requiresAcknowledgement {
-                    Divider()
-                    let note = providers.privacyNote(for: row.provider)
-                    VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                        Text(note.sends)
-                            .wiltedFont(.utility)
-                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text(note.theirTerms)
-                            .wiltedFont(.utility)
-                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                            .fixedSize(horizontal: false, vertical: true)
-                        if let url = note.policyURL {
-                            Link("Privacy policy", destination: url)
-                                .wiltedFont(.utility)
-                                .accessibilityIdentifier("wilted-providers-privacy-link-\(row.provider.rawValue)")
-                        }
-                    }
-                    HStack {
-                        Spacer()
-                        if row.isAcknowledged {
-                            Button("Withdraw") {
-                                providers.revokeAcknowledgement(row.provider)
-                            }
-                            .accessibilityIdentifier("wilted-providers-ack-withdraw-\(row.provider.rawValue)")
-                        } else {
-                            Button("I understand, allow transcripts to go to \(row.name)") {
-                                providers.acknowledge(row.provider)
-                            }
-                            .accessibilityIdentifier("wilted-providers-ack-confirm-\(row.provider.rawValue)")
                         }
                     }
                 }

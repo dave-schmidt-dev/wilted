@@ -23,17 +23,9 @@ struct ActiveProviderLabellerKeyStoreTests {
                 preferences.setModelID("some-model", for: provider)
             }
 
-            // 1. Initial state (unacknowledged, no key saved)
-            if provider == .openCodeCLI {
-                // Grandfathered CLI tool: needs no key and needs no acknowledgement
-                #expect(keyStore.hasKey(), "\(provider) is grandfathered CLI and should be ready initially")
-                #expect(keyStore.isReady(provider: provider))
-                #expect(!keyStore.savedKeyPresent())
-            } else {
-                #expect(!keyStore.hasKey(), "\(provider) should not be ready initially")
-                #expect(!keyStore.isReady(provider: provider))
-                #expect(!keyStore.savedKeyPresent())
-            }
+            #expect(keyStore.hasKey() == !provider.requiresSavedKey)
+            #expect(keyStore.isReady(provider: provider) == !provider.requiresSavedKey)
+            #expect(!keyStore.savedKeyPresent())
 
             if provider.requiresSavedKey {
                 // Save a key for this provider
@@ -41,28 +33,8 @@ struct ActiveProviderLabellerKeyStoreTests {
                 #expect(keyStore.savedKeyPresent(), "\(provider) should report saved key present after save")
                 #expect(try keyStore.read() == "key-for-\(provider.rawValue)")
 
-                if provider.requiresAcknowledgement {
-                    // Has key, but still unacknowledged -> not ready
-                    #expect(!keyStore.hasKey(), "\(provider) requires acknowledgement and should not be ready with key alone")
-                    #expect(!keyStore.isReady(provider: provider))
-
-                    // Acknowledge -> now ready!
-                    preferences.acknowledge(provider)
-                    #expect(keyStore.hasKey(), "\(provider) should be ready with key and acknowledgement")
-                    #expect(keyStore.isReady(provider: provider))
-
-                    // Revoke acknowledgement -> not ready again
-                    preferences.revokeAcknowledgement(provider)
-                    #expect(!keyStore.hasKey(), "\(provider) should not be ready after revoking acknowledgement")
-                    #expect(!keyStore.isReady(provider: provider))
-
-                    // Re-acknowledge for remaining tests
-                    preferences.acknowledge(provider)
-                } else {
-                    // Grandfathered key provider (opencodeGoKey): ready as soon as key is saved
-                    #expect(keyStore.hasKey(), "\(provider) should be ready after saving key")
-                    #expect(keyStore.isReady(provider: provider))
-                }
+                #expect(keyStore.hasKey())
+                #expect(keyStore.isReady(provider: provider))
 
                 // Remove the key
                 try keyStore.remove()
@@ -70,29 +42,26 @@ struct ActiveProviderLabellerKeyStoreTests {
                 #expect(!keyStore.isReady(provider: provider))
                 #expect(!keyStore.savedKeyPresent())
                 #expect(try keyStore.read() == nil)
-            } else if provider.requiresAcknowledgement {
-                // Non-grandfathered CLI provider (claudeCodeCLI, codexCLI): needs acknowledgement
-                #expect(!keyStore.hasKey(), "\(provider) should not be ready while unacknowledged")
-                #expect(!keyStore.isReady(provider: provider))
-
-                preferences.acknowledge(provider)
-                #expect(keyStore.hasKey(), "\(provider) should be ready after acknowledgement")
-                #expect(keyStore.isReady(provider: provider))
-
-                preferences.revokeAcknowledgement(provider)
-                #expect(!keyStore.hasKey(), "\(provider) should not be ready after revoking acknowledgement")
-                #expect(!keyStore.isReady(provider: provider))
             }
         }
+    }
+
+    @Test func savedKeyAndValidModelMakeProviderReadyImmediately() throws {
+        let suite = "test-provider-ready-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let preferences = AdLabellerPreferences(preferences: defaults)
+        preferences.provider = .openAIKey
+        preferences.setModelID("gpt-4o", for: .openAIKey)
+        let keyStore = ActiveProviderKeyStore.inMemory(preferences: preferences)
+        try keyStore.save("test-key")
+        #expect(keyStore.isReady(provider: .openAIKey))
     }
 
     @Test func slotIsolationAcrossProviders() throws {
         let (defaults, preferences) = makePreferences()
         defer { defaults.removePersistentDomain(forName: defaults.description) }
 
-        // Acknowledge non-grandfathered providers so readiness reflects key slot presence
-        preferences.acknowledge(.openAIKey)
-        preferences.acknowledge(.anthropicKey)
         preferences.setModelID("gpt-4o", for: .openAIKey)
 
         let keyStore = ActiveProviderKeyStore.inMemory(preferences: preferences)
@@ -122,7 +91,7 @@ struct ActiveProviderLabellerKeyStoreTests {
         #expect(keyStore.isReady(provider: .openAIKey))
         #expect(try keyStore.read() == "sk-openai-12345")
 
-        // Switch to OpenCode CLI: hasKey is true (no key required, grandfathered), read is nil
+        // Switch to OpenCode CLI: hasKey is true (no key required), read is nil
         preferences.provider = .openCodeCLI
         #expect(keyStore.hasKey())
         #expect(keyStore.isReady(provider: .openCodeCLI))
@@ -145,13 +114,6 @@ struct ActiveProviderLabellerKeyStoreTests {
     @Test func preloadedInMemorySlotsTruthTable() throws {
         let (defaults, preferences) = makePreferences()
         defer { defaults.removePersistentDomain(forName: defaults.description) }
-
-        // Acknowledge providers to check key-slot presence readiness
-        preferences.acknowledge(.openRouterKey)
-        preferences.acknowledge(.openAIKey)
-        preferences.acknowledge(.anthropicKey)
-        preferences.acknowledge(.claudeCodeCLI)
-        preferences.acknowledge(.codexCLI)
 
         let initialKeys: [AdLabellerProvider: String] = [
             .opencodeGoKey: "opencode-key",

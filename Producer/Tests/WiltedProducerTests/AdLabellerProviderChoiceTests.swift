@@ -101,71 +101,6 @@ struct AdLabellerProviderChoiceTests {
         #expect(labellerFailure.reasonSentence == "The OpenCode command-line tool is not installed or not usable on this Mac.")
     }
 
-    @Test func acknowledgementTruthTableAcrossAllSevenProviders() {
-        let suite = "test-acknowledgement-\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { defaults.removePersistentDomain(forName: suite) }
-
-        let prefs = AdLabellerPreferences(preferences: defaults)
-
-        // Expected requirement per provider:
-        // Grandfathered: opencodeGoKey, openCodeCLI -> false
-        // Requires acknowledgement: claudeCodeCLI, codexCLI, openRouterKey, openAIKey, anthropicKey -> true
-        let expectedRequiresAck: [AdLabellerProvider: Bool] = [
-            .opencodeGoKey: false,
-            .openCodeCLI: false,
-            .claudeCodeCLI: true,
-            .codexCLI: true,
-            .openRouterKey: true,
-            .openAIKey: true,
-            .anthropicKey: true,
-        ]
-
-        #expect(Set(expectedRequiresAck.keys) == Set(AdLabellerProvider.allCases))
-        #expect(AdLabellerProvider.allCases.count == 7)
-
-        for (provider, requiresAck) in expectedRequiresAck {
-            #expect(provider.requiresAcknowledgement == requiresAck, "\(provider) requiresAcknowledgement")
-
-            // 1. Initial state (nothing stored)
-            if requiresAck {
-                #expect(!prefs.isAcknowledged(provider), "\(provider) should initially be unacknowledged")
-            } else {
-                #expect(prefs.isAcknowledged(provider), "\(provider) is grandfathered and should always read as acknowledged")
-            }
-
-            // 2. Acknowledge
-            prefs.acknowledge(provider)
-            #expect(prefs.isAcknowledged(provider), "\(provider) should be acknowledged after acknowledge()")
-
-            // 3. Revoke acknowledgement
-            prefs.revokeAcknowledgement(provider)
-            if requiresAck {
-                #expect(!prefs.isAcknowledged(provider), "\(provider) should not be acknowledged after revokeAcknowledgement()")
-            } else {
-                #expect(prefs.isAcknowledged(provider), "\(provider) is grandfathered and must still read as acknowledged after revoke")
-            }
-        }
-    }
-
-    @Test func providerNotAcceptedSentencesAndRetryPolicyStop() {
-        for provider in AdLabellerProvider.allCases {
-            let failure = LabellerFailure.providerNotAccepted(provider: provider)
-            #expect(failure.kind == "provider-not-accepted")
-            #expect(failure.reasonSentence == "\(provider.displayName) has not been turned on in Settings, so nothing was sent.")
-
-            let stopReason = LabellerStopReason.providerNotAccepted(provider: provider)
-            #expect(stopReason.kind == "provider-not-accepted")
-            #expect(stopReason.sentence { _ in "" } == "\(provider.displayName) has not been turned on in Settings, so nothing was sent.")
-
-            let now = Date()
-            let decision = LabellerRetryPolicy.decide(
-                LabellerRetryInput(trigger: .failure(failure), now: now, waitLimit: 3600)
-            )
-            #expect(decision == .stop(.providerNotAccepted(provider: provider)))
-        }
-    }
-
     @Test func perProviderModelAndLevelRoundTrip() {
         let suite = "test-per-provider-roundtrip-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -244,9 +179,6 @@ struct AdLabellerProviderChoiceTests {
             .openRouterKey: "sk-router-key",
         ])
 
-        prefs.acknowledge(.openAIKey)
-        prefs.acknowledge(.openRouterKey)
-
         prefs.provider = .openAIKey
         #expect(prefs.modelID == "")
         #expect(!prefs.hasValidChoice)
@@ -311,7 +243,6 @@ struct AdLabellerProviderChoiceTests {
         #expect(!AdLabellerModelCatalog.isValid(provider: .claudeCodeCLI, model: prefs.modelID, level: prefs.level))
 
         let keyStore = ActiveProviderKeyStore.inMemory(preferences: prefs)
-        prefs.acknowledge(.claudeCodeCLI)
         #expect(!keyStore.hasKey())
         #expect(!keyStore.isReady(provider: .claudeCodeCLI))
 

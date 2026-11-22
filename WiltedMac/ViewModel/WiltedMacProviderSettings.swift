@@ -17,7 +17,7 @@ extension AdLabellerModelCatalog.ModelInfo: @retroactive Identifiable, @retroact
 // MARK: - ViewModel
 
 /// The Provider settings card's model: provider choices, per-provider model and
-/// thinking level, command-line tool readiness check, saved keys, and privacy notes.
+/// thinking level, command-line tool readiness check, and saved keys.
 @MainActor @Observable
 public final class WiltedMacProviderSettings {
 
@@ -28,8 +28,6 @@ public final class WiltedMacProviderSettings {
         public let name: String
         public let kind: String
         public let hasSavedKey: Bool
-        public let isAcknowledged: Bool
-        public let needsAcknowledgement: Bool
         public let status: String
         public let isChosen: Bool
 
@@ -38,8 +36,6 @@ public final class WiltedMacProviderSettings {
             name: String,
             kind: String,
             hasSavedKey: Bool,
-            isAcknowledged: Bool,
-            needsAcknowledgement: Bool,
             status: String,
             isChosen: Bool
         ) {
@@ -47,23 +43,8 @@ public final class WiltedMacProviderSettings {
             self.name = name
             self.kind = kind
             self.hasSavedKey = hasSavedKey
-            self.isAcknowledged = isAcknowledged
-            self.needsAcknowledgement = needsAcknowledgement
             self.status = status
             self.isChosen = isChosen
-        }
-    }
-
-    /// Fixed plain privacy note for a provider.
-    public struct PrivacyNote: Equatable, Sendable {
-        public let sends: String
-        public let theirTerms: String
-        public let policyURL: URL?
-
-        public init(sends: String, theirTerms: String, policyURL: URL?) {
-            self.sends = sends
-            self.theirTerms = theirTerms
-            self.policyURL = policyURL
         }
     }
 
@@ -214,19 +195,11 @@ public final class WiltedMacProviderSettings {
     private func row(for targetProvider: AdLabellerProvider) -> Row {
         let kind = targetProvider.requiresSavedKey ? "Key" : "Command-line tool"
         let hasSaved = targetProvider.requiresSavedKey ? keyStore.savedKeyPresent(for: targetProvider) : false
-        let isAck = labeller.isAcknowledged(targetProvider)
-        let needsAck = targetProvider.requiresAcknowledgement && !isAck
         let isChosen = targetProvider == provider
 
         let statusText: String
         if targetProvider.requiresSavedKey {
-            if !hasSaved {
-                statusText = "No key saved"
-            } else if needsAck {
-                statusText = "Key saved, privacy note not accepted yet"
-            } else {
-                statusText = "Ready"
-            }
+            statusText = hasSaved ? "Ready" : "No key saved"
         } else {
             if runningChecks.contains(targetProvider) {
                 statusText = "Checking..."
@@ -251,8 +224,6 @@ public final class WiltedMacProviderSettings {
             name: targetProvider.displayName,
             kind: kind,
             hasSavedKey: hasSaved,
-            isAcknowledged: isAck,
-            needsAcknowledgement: needsAck,
             status: statusText,
             isChosen: isChosen
         )
@@ -280,16 +251,6 @@ public final class WiltedMacProviderSettings {
         revision += 1
     }
 
-    public func acknowledge(_ provider: AdLabellerProvider) {
-        labeller.acknowledge(provider)
-        revision += 1
-    }
-
-    public func revokeAcknowledgement(_ provider: AdLabellerProvider) {
-        labeller.revokeAcknowledgement(provider)
-        revision += 1
-    }
-
     public func check(_ provider: AdLabellerProvider) async {
         guard !provider.requiresSavedKey else { return }
         guard !runningChecks.contains(provider) else { return }
@@ -298,28 +259,6 @@ public final class WiltedMacProviderSettings {
 
         let result = await checkProvider(provider)
         commandLineStatuses[provider] = result
-    }
-
-    // MARK: - Privacy Note
-
-    public func privacyNote(for provider: AdLabellerProvider) -> PrivacyNote {
-        let sends = "Wilted sends the transcript of an allowed show's episode and the show's name, nothing else: no audio, no feed address, no episode title."
-        let name = providerTermsName(for: provider)
-        let terms = "What \(name) keeps or trains on is set by \(name)'s own terms, not by Wilted."
-
-        let url: URL?
-        switch provider {
-        case .openAIKey, .codexCLI:
-            url = URL(string: "https://openai.com/policies/privacy-policy")
-        case .anthropicKey, .claudeCodeCLI:
-            url = URL(string: "https://www.anthropic.com/legal/privacy")
-        case .openRouterKey:
-            url = URL(string: "https://openrouter.ai/privacy")
-        case .opencodeGoKey, .openCodeCLI:
-            url = nil
-        }
-
-        return PrivacyNote(sends: sends, theirTerms: terms, policyURL: url)
     }
 
     // MARK: - Readiness Line
@@ -336,12 +275,7 @@ public final class WiltedMacProviderSettings {
             return "No key saved. Add one in Providers."
         }
 
-        // Priority 3: Needs acknowledgement
-        if provider.requiresAcknowledgement && !labeller.isAcknowledged(provider) {
-            return "Accept \(provider.displayName)'s privacy note in Providers."
-        }
-
-        // Priority 4: Command-line provider not found or not signed in per last check (if checked)
+        // Priority 3: Command-line provider not found or not signed in per last check (if checked)
         if !provider.requiresSavedKey, let checkStatus = commandLineStatuses[provider] {
             switch checkStatus {
             case .notFound:
@@ -355,7 +289,7 @@ public final class WiltedMacProviderSettings {
             }
         }
 
-        // Priority 5: Ready
+        // Priority 4: Ready
         let modelDisplay = modelDisplayNameOrID
         let levelText = levelLabel(level)
         return "Ready: \(provider.displayName) · \(modelDisplay) · \(levelText)"
@@ -373,22 +307,5 @@ public final class WiltedMacProviderSettings {
             return match.supportedLevels
         }
         return ["low", "medium", "high"]
-    }
-
-    private func providerTermsName(for provider: AdLabellerProvider) -> String {
-        switch provider {
-        case .opencodeGoKey, .openCodeCLI:
-            return "OpenCode"
-        case .claudeCodeCLI:
-            return "Claude Code"
-        case .codexCLI:
-            return "Codex"
-        case .openRouterKey:
-            return "OpenRouter"
-        case .openAIKey:
-            return "OpenAI"
-        case .anthropicKey:
-            return "Anthropic"
-        }
     }
 }

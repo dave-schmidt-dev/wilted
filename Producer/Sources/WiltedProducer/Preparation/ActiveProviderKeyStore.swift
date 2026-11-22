@@ -62,16 +62,13 @@ public struct ActiveProviderKeyStore: LabellerKeyStoring, @unchecked Sendable {
         try currentSlot().remove()
     }
 
-    /// Returns `true` when the chosen provider is ready (key-present for key providers,
-    /// acknowledged if required, and has a valid model and level).
+    /// Returns `true` when the chosen provider is ready to send.
     public func hasKey() -> Bool {
         isReady(provider: preferences.provider)
     }
 
-    /// Whether `provider` is ready: key-present (for key providers), acknowledged if required,
-    /// and its configured model and level are valid in the catalog.
+    /// Readiness requires a valid model and level, plus a saved key for key providers.
     public func isReady(provider: AdLabellerProvider) -> Bool {
-        guard preferences.isAcknowledged(provider) else { return false }
         guard AdLabellerModelCatalog.isValid(
             provider: provider,
             model: preferences.modelID(for: provider),

@@ -26,7 +26,6 @@ public struct AdLabellerPreferences: @unchecked Sendable {
     static let capKey = keyPrefix + "dailyCap"
     static let waitLimitKey = keyPrefix + "waitLimitSeconds"
     static let useOpenCodeCLIKey = keyPrefix + "useOpenCodeCLI"
-    static let acknowledgedProvidersKey = keyPrefix + "acknowledgedProviders"
     static let pauseCountKey = keyPrefix + "providerPauseCount"
     static let pausedSinceKey = keyPrefix + "providerPausedSince"
     /// Consecutive wait-limit stops on temporary failures after which the provider counts as paused.
@@ -200,32 +199,6 @@ public struct AdLabellerPreferences: @unchecked Sendable {
 
     /// Consecutive tickets that ended at the wait limit on temporary provider failures.
     public var providerPauseCount: Int { max(0, preferences.integer(forKey: Self.pauseCountKey)) }
-
-    /// Whether the owner has acknowledged the privacy note for this provider.
-    /// Providers that do not require acknowledgement always read as acknowledged.
-    public func isAcknowledged(_ provider: AdLabellerProvider) -> Bool {
-        guard provider.requiresAcknowledgement else { return true }
-        let acknowledged = Set(preferences.stringArray(forKey: Self.acknowledgedProvidersKey) ?? [])
-        return acknowledged.contains(provider.rawValue)
-    }
-
-    /// Records acknowledgement of the privacy note for this provider.
-    public func acknowledge(_ provider: AdLabellerProvider) {
-        var acknowledged = Set((preferences.stringArray(forKey: Self.acknowledgedProvidersKey) ?? []).filter { !$0.isEmpty })
-        acknowledged.insert(provider.rawValue)
-        preferences.set(acknowledged.sorted(), forKey: Self.acknowledgedProvidersKey)
-    }
-
-    /// Revokes acknowledgement of the privacy note for this provider.
-    public func revokeAcknowledgement(_ provider: AdLabellerProvider) {
-        var acknowledged = Set((preferences.stringArray(forKey: Self.acknowledgedProvidersKey) ?? []).filter { !$0.isEmpty })
-        acknowledged.remove(provider.rawValue)
-        if acknowledged.isEmpty {
-            preferences.removeObject(forKey: Self.acknowledgedProvidersKey)
-        } else {
-            preferences.set(acknowledged.sorted(), forKey: Self.acknowledgedProvidersKey)
-        }
-    }
 
     /// When the provider was paused: the third wait-limit stop in a row. Nil while it answers.
     public var providerPausedSince: Date? { preferences.object(forKey: Self.pausedSinceKey) as? Date }
