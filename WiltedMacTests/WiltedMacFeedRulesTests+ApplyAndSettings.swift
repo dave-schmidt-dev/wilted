@@ -82,13 +82,38 @@ extension WiltedMacFeedRulesTests {
             }
         )
         XCTAssertEqual(result.counts.totalChanges, 4, "five were planned and one Keep was refused")
-        XCTAssertEqual(result.counts.keeps, 2, "the refused Keep is not in the Keep count")
+        XCTAssertEqual(result.counts.keeps, 1, "the refused Keep is not in the Keep count; only \"c\" is a plain Keep (\"e\" counts as a Skip-to-Keep)")
         let undo = try XCTUnwrap(result.undo)
         XCTAssertNil(undo.applied[a], "the refused Keep is not offered an Undo")
         XCTAssertNil(undo.prior[a])
         let after = try await fixture.decisions()
         XCTAssertEqual(after[fixture.id("a")]?.decision, .skip)
         XCTAssertEqual(after[fixture.id("a")]?.source, .manual, "the owner's decision stands")
+    }
+
+    /// The owner Keeps an episode after Apply has read the decisions but before it writes. The store
+    /// refuses the rule Skip, so Apply neither counts it nor offers to undo it, and the owner's choice
+    /// stands. "b" is planned as a rule Skip.
+    func testApplyDoesNotCountOrUndoASkipTheStoreRefusedAtCommit() async throws {
+        let fixture = try await makeFixture(mixed)
+        let b = try ItemID(rawValue: fixture.id("b"))
+        let result = try await fixture.model.applyFeedRules(
+            feedID: fixture.feedID.rawValue, rules: fixture.editor.rules, progress: { _, _ in },
+            beforeWriteForTesting: {
+                try? await fixture.store.save(episodeDecision: EpisodeDecisionRecord(
+                    episodeID: b, decision: .keep, source: .manual, decidedAt: Timestamp(Date())
+                ))
+            }
+        )
+        XCTAssertEqual(result.counts.totalChanges, 4, "five were planned and one Skip was refused")
+        let undo = try XCTUnwrap(result.undo)
+        XCTAssertNil(undo.applied[b], "the refused Skip is not offered an Undo")
+        XCTAssertNil(undo.prior[b])
+        let after = try await fixture.decisions()
+        XCTAssertEqual(after[fixture.id("b")]?.decision, .keep)
+        XCTAssertEqual(after[fixture.id("b")]?.source, .manual, "the owner's decision stands")
+        let row = try XCTUnwrap(fixture.model.episodes.first { $0.id == b.rawValue })
+        XCTAssertNil(row.removalKind, "it was not retired")
     }
 
     /// Playback begins after Apply's last check and before its write. A skip would delete the audio,
