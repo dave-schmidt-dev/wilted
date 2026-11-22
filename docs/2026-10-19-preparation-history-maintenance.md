@@ -1,7 +1,6 @@
-# Preparation history: bounded maintenance reads and a retention proposal
+# Preparation history: bounded maintenance reads and retention
 
-Task 7. Status: bounded reads implemented (no rows deleted beyond today's
-behaviour); retention (pruning) is a proposal for David to decide.
+Task 7. Bounded invalidation reads and bootstrap retention are implemented.
 
 ## Terms
 
@@ -30,10 +29,8 @@ behaviour); retention (pruning) is a proposal for David to decide.
 
 Follow-up read gaps corrected separately on 2026-10-20, without pruning or a schema change:
 
-- `preparationRuns(limit:)` / `allPreparationRunSummaries` already decode every journal
-  row before applying the display limit. Bootstrap now explicitly requests all runs
-  through the existing API, so more than 200 newer terminal runs cannot hide a live one.
-  Prep's default display limit remains 200; no additional journal scan was introduced.
+- Bootstrap uses the uncapped recovery snapshot, so more than 200 newer terminal runs
+  cannot hide a live one. Retention shares that snapshot. Prep's display limit remains 200.
 - `latestPreparationTimeline(for:revisionID:)` keeps its newest-64-row fast path. On a
   miss it fetches the exact current outcome and reuses the bounded Ready-generation
   lookup below, retaining revision matching and legacy recent-history behavior.
@@ -112,10 +109,12 @@ loop already pays. Making the storage cost item-bounded needs an index on
   visited. Today such an item (a legacy run that failed before any download) could
   receive a forced-redownload marker for an episode with nothing downloaded.
 
-## Retention proposal (David decides; not implemented)
+## Retention proposal (implemented with N=3, no age cap, no index)
 
-Pruning would run at bootstrap, after `invalidateStalePodcastPreparations`, per item,
-using the same bounded reads.
+Mac bootstrap prunes after the invalidation or pending-marker pass and before closing
+interrupted runs. It reuses the complete run snapshot that interrupted-run recovery
+already requires. Retention adds no journal fetch to bootstrap. The existing
+`preparationMaintenanceRowsRead` counter measures bounded invalidation reads. The separate recovery snapshot still scales with total history.
 
 **Always keep**
 
@@ -128,12 +127,5 @@ using the same bounded reads.
 **Prune candidates**
 
 - Terminal generations older than both the Ready-proving and the newest generation,
-  keeping the newest **N** failed generations so Prep still shows recent failures.
-- Heartbeat rows (`#heartbeat`) of any terminal generation other than the two kept.
-
-**Decisions needed**
-
-1. Whether to prune at all, and the value of N (suggest 3).
-2. Whether Prep history may lose runs older than N failures per item.
-3. Whether an age cap (for example 90 days) should also apply to failed generations.
-4. Whether to add the `requestID` index (schema version) so storage cost is bounded too.
+  keeping the newest **three** failed generations so Prep still shows recent failures.
+- Heartbeat rows (`#heartbeat`) of other terminal generations, except where an always-keep rule applies.

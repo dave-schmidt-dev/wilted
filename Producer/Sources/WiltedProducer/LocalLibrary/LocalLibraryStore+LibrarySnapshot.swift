@@ -12,7 +12,7 @@ extension LocalLibraryStore {
     public func preparationRuns(limit: Int = 200) throws -> [PreparationRunSummary] {
         guard limit > 0 else { return [] }
         let context = ModelContext(container)
-        if limit == Int.max { return try allPreparationRunSummaries(in: context) }
+        if limit == Int.max { return try preparationRunSnapshot(in: context).runs }
         return try preparationRunSummaries(limit: limit, in: context)
     }
 
@@ -23,10 +23,13 @@ extension LocalLibraryStore {
     /// evidence (the Larder projection) reads this directly instead of
     /// passing an unbounded `limit`, which would otherwise make the display
     /// cap's own default meaningless as a contract.
-    private func allPreparationRunSummaries(in context: ModelContext) throws -> [PreparationRunSummary] {
+    func preparationRunSnapshot(in context: ModelContext) throws -> (
+        records: [LocalLibrarySchemaV3Models.PreparationRecord], runs: [PreparationRunSummary]
+    ) {
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>())
         let decoder = JSONDecoder()
         var byRequest: [String: [PreparationJournalEntry]] = [:]
-        for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>()) {
+        for record in records {
             // Pipeline invalidation markers are durable scheduling state, not
             // preparation attempts. Keeping them out of run history also
             // prevents bootstrap from closing a pending marker as an
@@ -40,8 +43,8 @@ extension LocalLibraryStore {
                 PreparationJournalEntry(id: record.id, itemID: itemID, requestID: record.requestID, status: status)
             )
         }
-        return byRequest.values.compactMap(preparationRunSummary)
-            .sorted(by: preparationRunSummaryPrecedes)
+        let runs = byRequest.values.compactMap(preparationRunSummary).sorted(by: preparationRunSummaryPrecedes)
+        return (records, runs)
     }
 
     /// The canonical projection from event rows to one complete run summary.
@@ -102,7 +105,7 @@ extension LocalLibraryStore {
         /// timestamp -- what distinguishes a retired row from a dismissed one
         /// once both survive as episode rows.
         public let removalKindByEpisode: [ItemID: PodcastEpisodeRemovalKind]
-        /// Every recorded preparation run, uncapped -- see `allPreparationRunSummaries`.
+        /// Every recorded preparation run, uncapped -- see `preparationRunSnapshot`.
         public let preparationRuns: [PreparationRunSummary]
         /// Followed article feeds, by title. Not in `feeds`, which holds podcast feeds only.
         public let articleFeeds: [ArticleFeed]
@@ -221,7 +224,7 @@ extension LocalLibraryStore {
         var preparationRuns: [PreparationRunSummary] = []
         if profile == .full {
             podcastLibrarySnapshotFetchCount += 1
-            preparationRuns = try allPreparationRunSummaries(in: context)
+            preparationRuns = try preparationRunSnapshot(in: context).runs
         }
 
         podcastLibrarySnapshotFetchCount += 1

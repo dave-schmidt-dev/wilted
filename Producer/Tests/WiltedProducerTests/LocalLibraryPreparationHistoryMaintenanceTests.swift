@@ -6,7 +6,7 @@ import WiltedDomain
 @testable import WiltedProducer
 
 extension LocalLibraryStoreTests {
-    private struct PreparationHistoryFixture {
+    struct PreparationHistoryFixture {
         let store: LocalLibraryStore
         let url: URL
         let itemID: ItemID
@@ -41,7 +41,7 @@ extension LocalLibraryStoreTests {
             mediaURL: mediaURL, bytes: bytes, hash: hash, base: base)
     }
 
-    private func makePreparationHistoryStore(
+    func makePreparationHistoryStore(
         _ name: String, fingerprint: String = "ready-pipeline", producedAtOffset: TimeInterval = 1
     ) async throws -> PreparationHistoryFixture {
         let fixture = try await makePreparationHistoryDownload(name)
@@ -55,7 +55,7 @@ extension LocalLibraryStoreTests {
         return fixture
     }
 
-    private func insertPreparation(
+    func insertPreparation(
         _ context: ModelContext, id: String, itemID: ItemID, requestID: String,
         stage: PreparationStage, at date: Date, attempt: PreparationAttemptIdentity?,
         evidence: PreparationEvidence? = nil, terminal: PreparationTerminalResult? = nil,
@@ -67,7 +67,7 @@ extension LocalLibraryStoreTests {
             id: id, itemID: itemID, requestID: requestID, status: status)))
     }
 
-    private func preparationHistoryRowCount(
+    func preparationHistoryRowCount(
         in container: ModelContainer, requestID: String
     ) throws -> Int {
         try ModelContext(container).fetchCount(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
