@@ -130,7 +130,11 @@ nothing is pruned for that episode. That covers a journal row that cannot be dec
 invalid item ID, a terminal row whose generation does not match its stored generation, a newest
 revision that has a media URL but fails validation, a Ready revision with no current outcome, and a
 ticket with an invalid counter (a ticket that has not started, with no attempts, is normal and
-does not block). Other episodes are pruned as usual.
+does not block). A row that names an episode in any way, by its item ID, its request ID, its
+revision or its ticket key, is checked against the others, and a contradiction blocks every episode it
+names: a journal run whose rows name more than one episode, a current outcome whose revision row has
+no owner or belongs to another episode, a running ticket with no attempt, and a ticket that disagrees
+with its own durable key. Other, unrelated episodes are pruned as usual.
 
 **Prune candidates**
 
