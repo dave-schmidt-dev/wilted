@@ -66,6 +66,10 @@ public struct ClaudeCodeCLILabellerSender: LabellerSending {
             // The tool finds its sign-in through the real home; a private home reads as signed out.
             // The owner's global instruction files are switched off instead.
             "HOME": realHomeDirectory.path,
+            // The sign-in lives in the login keychain under the account name, which the tool takes
+            // from these. Without them it reports "Not logged in" although the owner is signed in.
+            "USER": realHomeDirectory.lastPathComponent,
+            "LOGNAME": realHomeDirectory.lastPathComponent,
             "PATH": "/usr/bin:/bin",
             "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1"
         ]

@@ -156,6 +156,23 @@ struct CodexCLILabellerSenderTests {
         #expect(!parsed.hasError)
     }
 
+    /// The events the installed tool really prints (captured from `codex exec --json`): the answer is
+    /// `item.text` on an `agent_message`, and a non-fatal warning item carries a `message` that is not the answer.
+    @Test func parserReadsTheToolsOwnAgentMessageEvent() {
+        let jsonl = """
+            {"type":"thread.started","thread_id":"t1"}
+            {"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata not found."}}
+            {"type":"turn.started"}
+            {"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"OK"}}
+            {"type":"turn.completed","usage":{"input_tokens":14611,"cached_input_tokens":12032,"output_tokens":5,"reasoning_output_tokens":0}}
+            """
+        let parsed = CodexCLILabellerSender.parse(output: Data(jsonl.utf8))
+        #expect(parsed.text == "OK")
+        #expect(!parsed.hasError)
+        #expect(parsed.usage.promptTokens == 14611)
+        #expect(parsed.usage.completionTokens == 5)
+    }
+
     @Test func nonZeroExitWithNoOutputIsTemporary() async throws {
         let fixture = try Fixture(status: 1)
         await #expect(throws: LabellerFailure.temporary) { try await run(fixture.sender()) }

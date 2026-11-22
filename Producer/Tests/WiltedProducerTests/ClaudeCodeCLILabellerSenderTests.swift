@@ -107,6 +107,8 @@ struct ClaudeCodeCLILabellerSenderTests {
         let real = fixture.directory.appendingPathComponent("realhome")
         #expect(environment == [
             "HOME": real.path,
+            "USER": "realhome",
+            "LOGNAME": "realhome",
             "PATH": "/usr/bin:/bin",
             "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1"
         ])

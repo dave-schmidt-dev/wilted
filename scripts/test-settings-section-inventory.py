@@ -257,6 +257,7 @@ INVENTORY = {
     ],
     "providers": [
         'wilted-providers-heading-cli',
+        'wilted-providers-check-all',
         'wilted-providers-help',
         'wilted-providers-heading-keys',
         'wilted-providers-page',

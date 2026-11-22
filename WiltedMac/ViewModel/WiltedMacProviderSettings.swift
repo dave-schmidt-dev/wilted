@@ -261,6 +261,19 @@ public final class WiltedMacProviderSettings {
         commandLineStatuses[provider] = result
     }
 
+    /// Checks every command-line tool at once, so one press refreshes all their statuses.
+    public func checkAll() async {
+        let tools = AdLabellerProvider.allCases.filter { !$0.requiresSavedKey }
+        await withTaskGroup(of: Void.self) { group in
+            for tool in tools {
+                group.addTask { await self.check(tool) }
+            }
+        }
+    }
+
+    /// Whether any command-line check is still running.
+    public var isCheckingAny: Bool { !runningChecks.isEmpty }
+
     // MARK: - Readiness Line
 
     public var readinessLine: String {

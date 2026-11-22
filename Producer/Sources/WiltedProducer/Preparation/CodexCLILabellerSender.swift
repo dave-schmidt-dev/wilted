@@ -182,6 +182,9 @@ public struct CodexCLILabellerSender: LabellerSending {
                     }
                 } else if let contentStr = item["content"] as? String {
                     parsed.text += contentStr
+                } else if item["type"] as? String == "agent_message", let itemText = item["text"] as? String {
+                    // The tool's own event: {"type":"item.completed","item":{"type":"agent_message","text":...}}.
+                    parsed.text += itemText
                 }
             }
         } else if parsed.errorType == nil {

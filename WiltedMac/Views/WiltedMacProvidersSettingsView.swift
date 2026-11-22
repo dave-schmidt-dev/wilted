@@ -38,6 +38,11 @@ struct WiltedMacProvidersSettingsView: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-providers-heading-cli")
                 Spacer()
+                Button("Check all") {
+                    Task { await providers.checkAll() }
+                }
+                .disabled(providers.isCheckingAny)
+                .accessibilityIdentifier("wilted-providers-check-all")
                 WiltedMacHelpButton(content: help, identifier: "wilted-providers-help")
             }
 

@@ -341,6 +341,19 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
         XCTAssertEqual(settings.rows.first(where: { $0.id == .openCodeCLI })?.status, "Ready")
     }
 
+    func testCheckAllChecksEveryCommandLineToolOnceAndNoKeyProvider() async {
+        let (settings, _, _, mockCheck) = makeSettings()
+        mockCheck.setStatus(.notSignedIn, for: .claudeCodeCLI)
+
+        await settings.checkAll()
+
+        XCTAssertEqual(Set(mockCheck.invocations), [.openCodeCLI, .claudeCodeCLI, .codexCLI])
+        XCTAssertEqual(mockCheck.invocationCount, 3)
+        XCTAssertFalse(settings.isCheckingAny)
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .openCodeCLI })?.status, "Ready")
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .claudeCodeCLI })?.status, "Not signed in")
+    }
+
     // MARK: - ReadinessLine Priority
 
     func testReadinessLinePriority() async {
