@@ -5,7 +5,6 @@ import WiltedDomain
 
 struct LabelledPolicyDigestInForceTests {
     private let feedURL = URL(string: "https://feeds.example.invalid/show.xml")!
-    private let audioURL = URL(string: "https://cdn.example.invalid/e1.mp3")!
     private let feedID: String
 
     init() {
@@ -35,9 +34,7 @@ struct LabelledPolicyDigestInForceTests {
         if localOnly { defaults.set([feedID], forKey: AdLabellerPreferences.keyPrefix + "localOnlyFeedIDs") }
         if adFree { defaults.set([feedID], forKey: AdLabellerPreferences.adFreeFeedsKey) }
         let policy = PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: !adFree)
-        let input = RemoteLabellingInput(
-            feedID: feedID, feedURL: feedURL, feedTitle: "Invented Garden Show",
-            customTitle: nil, audioURL: audioURL, removeAds: policy.removeAds)
+        let input = RemoteLabellingInput(feedID: feedID, removeAds: policy.removeAds)
         _ = hasKey
         return (preferences, input, policy)
     }
@@ -71,16 +68,12 @@ struct LabelledPolicyDigestInForceTests {
         #expect(first != afterLevel)
     }
 
-    /// One setting for each not-sent reason, plus the stored "Mac only" list.
+    /// Each owner-controlled reason, plus the stored "Mac only" list.
     enum NotSentSetup: String, CaseIterable, Sendable {
-        case unknownAddress, signInDetails, privateToken, privateTitle, switchOff, noKey, notConfirmed, macOnly
+        case switchOff, noKey, notConfirmed, macOnly
 
         var reason: RemoteLabellingNotSent {
             switch self {
-            case .unknownAddress: .unknownAddress
-            case .signInDetails: .signInDetails
-            case .privateToken: .privateToken
-            case .privateTitle: .privateTitle
             case .switchOff: .switchOff
             case .noKey: .noKey
             case .notConfirmed, .macOnly: .notConfirmed
@@ -89,20 +82,13 @@ struct LabelledPolicyDigestInForceTests {
     }
 
     @Test(arguments: NotSentSetup.allCases)
-    func everyNotSentReasonYieldsNil(setup: NotSentSetup) {
+    func everyOwnerControlledNotSentReasonYieldsNil(setup: NotSentSetup) {
         let (defaults, name) = defaults()
         defer { defaults.removePersistentDomain(forName: name) }
         let (preferences, configured, policy) = configure(
             defaults, enabled: setup != .switchOff, confirmed: setup != .notConfirmed,
             hasKey: setup != .noKey, localOnly: setup == .macOnly)
-        var input = configured
-        switch setup {
-        case .unknownAddress: input.feedURL = nil
-        case .signInDetails: input.feedURL = URL(string: "https://feeds.example.invalid/show.xml?auth=invented")
-        case .privateToken: input.feedURL = URL(string: "https://feeds.example.invalid/a1b2c3d4e5f6a7b8c9d0e1f2a3b4/show.xml")
-        case .privateTitle: input.feedTitle = "Invented Members Show"
-        case .switchOff, .noKey, .notConfirmed, .macOnly: break
-        }
+        let input = configured
         let hasKey = setup != .noKey
         let context = RemoteLabellingContext(
             preferences: preferences, hasKey: hasKey, counter: LabellerRequestCounter(preferences: defaults))
@@ -152,16 +138,4 @@ struct LabelledPolicyDigestInForceTests {
         #expect(LabelledPolicyDigestInForce.isStale(recordedDigest: "a", digestInForce: "b"))
     }
 
-    @Test func credentialedAudioForcesLocal() {
-        let (defaults, name) = defaults()
-        defer { defaults.removePersistentDomain(forName: name) }
-        let (preferences, _, policy) = configure(defaults)
-        let input = RemoteLabellingInput(
-            feedID: feedID, feedURL: feedURL, feedTitle: "Invented Garden Show",
-            customTitle: nil,
-            audioURL: URL(string: "https://cdn.example.invalid/e1.mp3?token=secret-token-value"),
-            removeAds: true)
-        #expect(LabelledPolicyDigestInForce.digest(
-            policy: policy, input: input, preferences: preferences, hasKey: true) == nil)
-    }
 }

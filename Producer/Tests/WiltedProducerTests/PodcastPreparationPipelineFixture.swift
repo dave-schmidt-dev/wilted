@@ -32,9 +32,7 @@ struct Fixture {
     let sender: MarkedCueLabellerSender?
     private let defaultsName: String?
 
-    /// The publisher's title every fixture saves by default: free of every word
-    /// the private-title check refuses, as the feed and audio addresses are
-    /// free of sign-in details and token-like parts.
+    /// The publisher's title every fixture saves by default.
     static let labelledShowTitle = "Invented Garden Show"
     /// The feed address every fixture saves by default.
     static let feedAddress = "https://feeds.example.test/show.xml"
@@ -51,7 +49,7 @@ struct Fixture {
     }
 
     /// `feedAddress` and `showTitle` set the saved feed; a nil `showTitle`
-    /// saves no feed record, so the show's address is unknown.
+    /// saves no feed record.
     init(installDownload: Bool = true, publishesTranscript: Bool = false, transcriptStatusCode: Int = 200,
          labelled: Bool = false, feedAddress: String = Fixture.feedAddress,
          showTitle: String? = Fixture.labelledShowTitle,

@@ -19,8 +19,6 @@ final class WiltedMacAdFindingSettings {
         /// The name the app shows: the owner's own when they renamed the show.
         let title: String
         let feedURL: URL?
-        /// The publisher's title, when it differs from `title`.
-        var publisherTitle: String? = nil
         var id: String { feedID }
     }
 
@@ -124,37 +122,18 @@ final class WiltedMacAdFindingSettings {
     /// Current eligible shows covered by the global confirmation.
     var sheetSentShows: [Show] {
         let refusals = Set(labeller.keptBackFeedIDs)
-        return shows.filter {
-            sheetSent.contains($0.feedID) && !refusals.contains($0.feedID)
-                && forcedNotSentReason(for: $0) == nil
-        }
+        return shows.filter { sheetSent.contains($0.feedID) && !refusals.contains($0.feedID) }
     }
 
     /// Current shows left out of the confirmation, including subscriptions added after it opened.
     var sheetNotSentShows: [Show] {
         let refusals = Set(labeller.keptBackFeedIDs)
-        return shows.filter {
-            !sheetSent.contains($0.feedID) || refusals.contains($0.feedID)
-                || forcedNotSentReason(for: $0) != nil
-        }
+        return shows.filter { !sheetSent.contains($0.feedID) || refusals.contains($0.feedID) }
     }
 
     func confirmationNotSentMessage(for show: Show) -> String {
-        if let reason = forcedNotSentMessage(for: show) { return reason }
         if labeller.keptBackFeedIDs.contains(show.feedID) { return "Kept local" }
         return "Not included in this confirmation"
-    }
-
-    /// Why the policy excludes this show from remote labelling; nil when eligible.
-    func forcedNotSentReason(for show: Show) -> RemoteLabellingNotSentReason? {
-        RemoteLabellingPolicy.forcedNotSentReason(for: RemoteLabellingInput(
-            feedID: show.feedID, feedURL: show.feedURL, feedTitle: show.publisherTitle ?? show.title,
-            customTitle: show.title, audioURL: nil))
-    }
-
-    /// The forced reason in plain words for the settings page.
-    func forcedNotSentMessage(for show: Show) -> String? {
-        forcedNotSentReason(for: show)?.forcedNotSentMessage
     }
 
     /// Confirms the eligible shows previewed when the owner enabled the global switch.
@@ -164,9 +143,7 @@ final class WiltedMacAdFindingSettings {
         let currentRefusals = Set(labeller.keptBackFeedIDs)
         let currentShowsByID = Dictionary(shows.map { ($0.feedID, $0) }, uniquingKeysWith: { first, _ in first })
         for feedID in sheetSent {
-            guard let show = currentShowsByID[feedID],
-                  forcedNotSentReason(for: show) == nil,
-                  !currentRefusals.contains(feedID) else { continue }
+            guard currentShowsByID[feedID] != nil, !currentRefusals.contains(feedID) else { continue }
             labeller.setConfirmed(feedID: feedID, true)
         }
         isOnlineFindingOn = true
@@ -181,12 +158,9 @@ final class WiltedMacAdFindingSettings {
     }
 
     private func openConfirmSheet(for shows: [Show]) {
-        // A show starts sent unless the policy forces it not sent or the owner
-        // kept it back.
+        // A show starts sent unless the owner kept it back.
         let keptBack = Set(labeller.keptBackFeedIDs)
-        sheetSent = Set(shows
-            .filter { forcedNotSentReason(for: $0) == nil && !keptBack.contains($0.feedID) }
-            .map(\.feedID))
+        sheetSent = Set(shows.filter { !keptBack.contains($0.feedID) }.map(\.feedID))
         isConfirming = true
     }
 

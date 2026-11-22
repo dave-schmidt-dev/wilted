@@ -27,40 +27,24 @@ extension WiltedMacFeedPolicyViewTests {
         return (model, board, WiltedMacShowSettingsView(model: model, board: board, subscription: subscription), feedID)
     }
 
-    func testForcedLocalShowRendersTheSwitchOffDisabledAndItsReason() throws {
-        // A token-like feed address: the policy keeps this show not sent whatever the owner's switch says.
+    func testPremiumShowWithTokenAddressCanBeSentWhenConfirmed() throws {
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/ledger.xml?feed=a1b2c3d4e5f6g7h8i9j0k1l2"))
         let fixture = try sendForAdFindingFixture(
-            feedURL: feedURL, title: "The Night Ledger", suffix: "local-only-forced", hasKey: true
+            feedURL: feedURL, title: "The Night Ledger Premium", suffix: "premium-confirmed", hasKey: true
         )
         let labeller = AdLabellerPreferences(preferences: fixture.model.preferences)
         labeller.isEnabled = true
         labeller.setConfirmed(feedID: fixture.feedID, true)
 
-        XCTAssertEqual(fixture.board.adRoute(for: fixture.feedID), .notSent(.tokenLikeFeedURL))
-        XCTAssertFalse(fixture.board.sendsForAdFinding(fixture.feedID), "a forced show renders the switch off")
-        XCTAssertEqual(
-            fixture.board.forcedNotSentAdReason(for: fixture.feedID)?.forcedNotSentMessage,
-            "This show's address carries a private token, so it is never sent for ad finding."
-        )
-        let source = try WiltedMacHeadless.viewSource("WiltedMacShowSettingsView.swift")
-        XCTAssertTrue(source.contains("forcedNotSentAdsReason == nil && board.sendsForAdFinding(feedID)"),
-                      "the switch reads off when the policy forces not sent")
-        XCTAssertTrue(source.contains(".disabled(forcedNotSentAdsReason != nil)"),
-                      "the switch cannot be toggled while the policy forces not sent")
-        XCTAssertTrue(source.contains("Send this show for ad finding"))
-        XCTAssertTrue(source.contains(".accessibilityIdentifier(\"wilted-feed-policy-send-for-ad-finding\")"))
-        XCTAssertTrue(source.contains(".accessibilityIdentifier(\"wilted-feed-policy-ad-route\")"))
+        XCTAssertEqual(fixture.board.adRoute(for: fixture.feedID), .remote)
+        XCTAssertTrue(fixture.board.sendsForAdFinding(fixture.feedID))
 
         let shown = try WiltedMacHeadless.showSectionText(fixture.content, .ads).joined(separator: " ")
         XCTAssertTrue(shown.contains("Send this show for ad finding"), shown)
-        XCTAssertTrue(shown.contains("private token"), shown)
-        XCTAssertTrue(shown.contains("so it is never sent for"), shown)
-        XCTAssertTrue(shown.contains("Not sent"), shown)
-        XCTAssertFalse(shown.contains("When on, this show's transcripts go to the labelling provider"),
-                       "the reason replaces the ordinary caption: \(shown)")
+        XCTAssertTrue(shown.contains("Transcripts are sent to the labelling provider"), shown)
+        XCTAssertFalse(shown.contains("Not sent"), shown)
         let header = try WiltedMacHeadless.recognizedText(fixture.content, size: CGSize(width: 800, height: 620))
-        XCTAssertTrue(header.joined(separator: " ").contains("The Night Ledger"), "\(header)")
+        XCTAssertTrue(header.joined(separator: " ").contains("The Night Ledger Premium"), "\(header)")
     }
 
     func testUnconfirmedShowRendersTheWaitingLineBesideTheOrdinaryCaption() throws {
@@ -72,7 +56,6 @@ extension WiltedMacFeedPolicyViewTests {
         labeller.isEnabled = true
 
         XCTAssertEqual(fixture.board.adRoute(for: fixture.feedID), .notSent(.notConfirmed))
-        XCTAssertNil(fixture.board.forcedNotSentAdReason(for: fixture.feedID))
         XCTAssertFalse(fixture.board.sendsForAdFinding(fixture.feedID))
 
         let shown = try WiltedMacHeadless.showSectionText(fixture.content, .ads).joined(separator: " ")
@@ -92,7 +75,6 @@ extension WiltedMacFeedPolicyViewTests {
         XCTAssertTrue(fixture.board.setSendForAdFinding(true, for: fixture.feedID))
 
         XCTAssertEqual(fixture.board.adRoute(for: fixture.feedID), .remote)
-        XCTAssertNil(fixture.board.forcedNotSentAdReason(for: fixture.feedID))
         XCTAssertTrue(fixture.board.sendsForAdFinding(fixture.feedID))
 
         let shown = try WiltedMacHeadless.showSectionText(fixture.content, .ads).joined(separator: " ")

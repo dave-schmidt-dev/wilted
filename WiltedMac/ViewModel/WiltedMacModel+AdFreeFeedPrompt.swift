@@ -16,18 +16,33 @@ struct WiltedMacAdFreeFeedPrompt: Identifiable, Equatable {
 
 extension WiltedMacModel {
 #if canImport(WiltedProducer)
-    /// True when the labelling policy would force the show local for a private title,
-    /// token-like feed address, or credentialed address — not for an unknown address alone.
-    static func looksAdFree(title: String, feedURL: URL?, feedID: String) -> Bool {
-        let reason = RemoteLabellingPolicy.forcedNotSentReason(for: RemoteLabellingInput(
-            feedID: feedID, feedURL: feedURL, feedTitle: title, customTitle: nil, audioURL: nil
-        ))
-        switch reason {
-        case .privateTitle, .tokenLikeFeedURL, .credentialedURL:
-            return true
-        case .switchOff, .noKey, .notConfirmed, .adRemovalOff, .dailyCapReached,
-             .unknownFeedURL, .none:
-            return false
+    /// True when the show's title or address resembles a feed that may already be ad-free.
+    static func looksAdFree(title: String, feedURL: URL?) -> Bool {
+        guard let feedURL else { return false }
+        return hasAdFreeTitle(title) || hasCredentialedAddress(feedURL) || hasTokenLikeAddress(feedURL)
+    }
+
+    private static func hasAdFreeTitle(_ title: String) -> Bool {
+        let pattern = #"\b(premium|private|subscribers?|patrons?|members?|plus|ad[- ]free)\b"#
+        return title.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    private static func hasCredentialedAddress(_ url: URL) -> Bool {
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return true }
+        if parts.user != nil || parts.password != nil { return true }
+        let credentialKeys: Set<String> = ["token", "auth", "key", "sig", "signature"]
+        return (parts.queryItems ?? []).contains { credentialKeys.contains($0.name.lowercased()) }
+    }
+
+    private static func hasTokenLikeAddress(_ url: URL) -> Bool {
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return true }
+        var candidates = parts.path.split(separator: "/").map(String.init)
+        candidates += (parts.queryItems ?? []).flatMap { [$0.name, $0.value ?? ""] }
+        return candidates.contains { part in
+            if part.count >= 64 { return true }
+            return part.split(whereSeparator: { $0 == "-" || $0 == "_" || $0 == "." }).contains { run in
+                run.count >= 24 && run.contains(where: \.isLetter) && run.contains(where: \.isNumber)
+            }
         }
     }
 
@@ -39,7 +54,7 @@ extension WiltedMacModel {
         if try await store.subscription(for: feed.itemID) != nil { return }
         let preference = WiltedMacAdFreeFeedPreference(preferences: preferences)
         if preference.isAdFree(feedID: feedID) { return }
-        guard Self.looksAdFree(title: feed.title, feedURL: feed.canonicalURL, feedID: feedID) else {
+        guard Self.looksAdFree(title: feed.title, feedURL: feed.canonicalURL) else {
             return
         }
 

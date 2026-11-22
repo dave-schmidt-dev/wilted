@@ -157,63 +157,7 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         XCTAssertEqual(AdLabellerPreferences(preferences: preferences).confirmedFeedIDs, ["feed-b"])
     }
 
-    /// A show the policy forces not sent is not the owner's choice, so it is not kept back:
-    /// once the reason is gone it waits for a decision like any new show.
-    func testPolicyForcedShowLeftUnsentIsNotRecordedAsKeptBack() throws {
-        let publicShow = show("feed-a", "Public Show")
-        let premium = show("feed-p", "Premium Hour")
-        let (model, preferences, _) = makeModel(shows: { [publicShow, premium] })
-
-        model.saveKey("provider-key-7")
-        model.setOnlineFinding(true)
-        model.confirm()
-        XCTAssertEqual(AdLabellerPreferences(preferences: preferences).keptBackFeedIDs, [])
-    }
-
-    // MARK: Forced-local shows
-
-    /// Regression: Settings judged only the custom name, so a renamed paid feed looked sendable.
-    func testRenamedShowIsForcedLocalByEitherName() throws {
-        let hidden = WiltedMacAdFindingSettings.Show(
-            feedID: "feed-h", title: "Media Hour",
-            feedURL: URL(string: "https://feeds.example.test/feed-h.xml"), publisherTitle: "Media Hour (Premium Feed)")
-        let named = WiltedMacAdFindingSettings.Show(
-            feedID: "feed-n", title: "Garden (ad-free)",
-            feedURL: URL(string: "https://feeds.example.test/feed-n.xml"), publisherTitle: "Garden Hour")
-        let plain = WiltedMacAdFindingSettings.Show(
-            feedID: "feed-q", title: "Nickname",
-            feedURL: URL(string: "https://feeds.example.test/feed-q.xml"), publisherTitle: "Garden Hour")
-        let (model, _, _) = makeModel(shows: { [hidden, named, plain] })
-        XCTAssertEqual(model.forcedNotSentReason(for: hidden), .privateTitle)
-        XCTAssertEqual(model.forcedNotSentReason(for: named), .privateTitle)
-        XCTAssertNil(model.forcedNotSentReason(for: plain))
-    }
-
-    func testPolicyForcedShowCannotBeMovedToSent() throws {
-        let publicShow = show("feed-a", "Public Show")
-        let premium = show("feed-p", "Premium Hour")
-        let shows = [publicShow, premium]
-        let (model, preferences, keyStore) = makeModel(shows: { shows })
-
-        model.saveKey("provider-key-4")
-        model.setOnlineFinding(true)
-        XCTAssertTrue(model.isConfirming)
-        XCTAssertEqual(model.sheetSentShows.map(\.feedID), ["feed-a"],
-                       "a forced show does not start as sent")
-        XCTAssertEqual(model.sheetNotSentShows.map(\.feedID), ["feed-p"])
-        XCTAssertEqual(model.forcedNotSentMessage(for: premium),
-                       "This show's title sounds private, so it is never sent for ad finding.")
-
-        XCTAssertFalse(model.sheetSent.contains("feed-p"), "the read-only preview keeps a policy-forced show local")
-
-        model.confirm()
-        XCTAssertEqual(model.forcedNotSentReason(for: premium), .privateTitle)
-        // The policy answers the private reason before notConfirmed, so a private
-        // show names why it is never sent whatever the owner's switches say.
-        XCTAssertEqual(route(to: premium, preferences: preferences, keyStore: keyStore), .notSent(.privateTitle))
-        XCTAssertEqual(route(to: publicShow, preferences: preferences, keyStore: keyStore), .remote)
-        XCTAssertEqual(AdLabellerPreferences(preferences: preferences).confirmedFeedIDs, ["feed-a"])
-    }
+    // MARK: Confirmation sheet
 
     // MARK: Rendering
 
@@ -259,7 +203,7 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         XCTAssertFalse(confirmSource.contains("wilted-ad-finding-sheet-show-"), confirmSource)
 
         for (title, expectedHeading) in [
-            ("Field Notes", "Transcripts will be sent"), ("Premium Hour", "Not sent"),
+            ("Field Notes", "Transcripts will be sent"), ("Premium Hour", "Transcripts will be sent"),
         ] {
             let index = try XCTUnwrap(
                 texts.firstIndex { $0.contains(title) }, "\(title) missing from the sheet: \(texts)")
@@ -350,7 +294,7 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         return (model, preferences, keyStore)
     }
 
-    /// An invented public show whose address carries no credentials or tokens.
+    /// An invented show with a stable HTTPS address.
     private func show(_ feedID: String, _ title: String) -> WiltedMacAdFindingSettings.Show {
         WiltedMacAdFindingSettings.Show(
             feedID: feedID, title: title,
@@ -365,7 +309,7 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
     ) -> RemoteLabellingRoute {
         RemoteLabellingPolicy.route(
             for: RemoteLabellingInput(
-                feedID: show.feedID, feedURL: show.feedURL, feedTitle: show.title, audioURL: nil),
+                feedID: show.feedID),
             context: RemoteLabellingContext(
                 preferences: AdLabellerPreferences(preferences: preferences),
                 hasKey: keyStore.hasKey(),

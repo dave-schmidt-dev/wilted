@@ -166,33 +166,13 @@ extension PodcastPreparationPipeline {
         )
     }
 
-    /// What the gate knows about this episode's show. A feed or rename the library cannot
-    /// read leaves the address unknown, so a read failure is never sent.
-    private func labellingInput(
-        episode: PodcastEpisode,
-        policy: PodcastPreparationPolicySnapshot
-    ) async -> RemoteLabellingInput {
-        var feed: PodcastFeed?
-        var customTitle: String?
-        do {
-            feed = try await store.podcastFeed(for: episode.feedID)
-            customTitle = try await store.subscription(for: episode.feedID)?.displayName
-        } catch {
-            feed = nil
-            customTitle = nil
-        }
-        return RemoteLabellingInput(
-            feedID: episode.feedID.rawValue, feedURL: feed?.canonicalURL, feedTitle: feed?.title ?? "",
-            customTitle: customTitle, audioURL: episode.enclosureURL, removeAds: policy.removeAds)
-    }
-
     /// Evaluates the gate once for an attempt and fixes the provenance it will run under.
     /// Without labelling services the switch reads as off, so nothing can enter the labelled path.
     func labelledAttemptRoute(
         episode: PodcastEpisode,
         policy: PodcastPreparationPolicySnapshot
     ) async -> LabelledAttemptRoute {
-        let input = await labellingInput(episode: episode, policy: policy)
+        let input = RemoteLabellingInput(feedID: episode.feedID.rawValue, removeAds: policy.removeAds)
         let context = labelling.map {
             RemoteLabellingContext(preferences: $0.preferences, hasKey: $0.keyStore.hasKey(), counter: $0.counter)
         } ?? Self.labellingNotSetUp

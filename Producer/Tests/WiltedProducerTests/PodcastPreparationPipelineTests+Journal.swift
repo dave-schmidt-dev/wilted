@@ -159,15 +159,10 @@ extension PodcastPreparationPipelineTests {
     /// One way a show with ad removal on is not sent for ad finding. Each
     /// labelled fixture would go online but for this one reason.
     enum NotSentShow: String, CaseIterable, Sendable {
-        case unknownAddress, signInDetails, privateToken, privateTitle, ownersPrivateName
         case switchOff, noLabellingServices, noKey, notConfirmed, macOnly
 
         var reason: RemoteLabellingNotSent {
             switch self {
-            case .unknownAddress: .unknownAddress
-            case .signInDetails: .signInDetails
-            case .privateToken: .privateToken
-            case .privateTitle, .ownersPrivateName: .privateTitle
             case .switchOff, .noLabellingServices: .switchOff
             case .noKey: .noKey
             case .notConfirmed, .macOnly: .notConfirmed
@@ -176,25 +171,14 @@ extension PodcastPreparationPipelineTests {
 
         func fixture() async throws -> Fixture {
             switch self {
-            case .unknownAddress: return try await Fixture(labelled: true, showTitle: nil)
-            case .signInDetails:
-                return try await Fixture(labelled: true, feedAddress: "https://feeds.example.test/show.xml?auth=invented")
-            case .privateToken:
-                return try await Fixture(
-                    labelled: true, feedAddress: "https://feeds.example.test/a1b2c3d4e5f6a7b8c9d0e1f2a3b4/show.xml")
-            case .privateTitle: return try await Fixture(labelled: true, showTitle: "Invented Members Show")
             case .noLabellingServices: return try await Fixture()
-            case .ownersPrivateName, .switchOff, .noKey, .notConfirmed, .macOnly: break
+            case .switchOff, .noKey, .notConfirmed, .macOnly: break
             }
             let fixture = try await Fixture(labelled: true)
             do {
                 let services = try #require(fixture.labelling)
                 let feedID = try #require(try await fixture.store.podcastEpisode(for: fixture.episodeID)).feedID
                 switch self {
-                case .ownersPrivateName:
-                    try await fixture.store.save(subscription: PodcastSubscription(
-                        feedID: feedID, subscribedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000)),
-                        displayName: "Garden Plus"))
                 case .switchOff: services.preferences.isEnabled = false
                 case .noKey: try services.keyStore.remove()
                 case .notConfirmed: services.preferences.setConfirmed(feedID: feedID.rawValue, false)
@@ -273,7 +257,7 @@ extension PodcastPreparationPipelineTests {
 
     /// Ad removal off, or a show marked as having no ads, is the plain path
     /// whatever else would have kept the show from being sent.
-    @Test(arguments: [NotSentShow.switchOff, .noKey, .notConfirmed, .privateTitle], [false, true])
+    @Test(arguments: [NotSentShow.switchOff, .noKey, .notConfirmed], [false, true])
     func adRemovalOffOrAnAdFreeShowStaysPlain(show: NotSentShow, adFree: Bool) async throws {
         let fixture = try await show.fixture()
         defer { fixture.remove() }
@@ -297,14 +281,4 @@ extension PodcastPreparationPipelineTests {
         #expect(fixture.sender?.requestCount == 0)
     }
 
-    /// A private show names its private reason, not a setting the owner could change.
-    @Test func anUnconfirmedShowWithAPrivateTitleNamesItsTitle() async throws {
-        let fixture = try await NotSentShow.privateTitle.fixture()
-        defer { fixture.remove() }
-        let feedID = try #require(try await fixture.store.podcastEpisode(for: fixture.episodeID)).feedID
-        try #require(fixture.labelling).preferences.setConfirmed(feedID: feedID.rawValue, false)
-        let result = try await fixture.pipeline(Self.plainWorker(fixture)).prepare(episodeID: fixture.episodeID)
-        #expect(result.warning == RemoteLabellingNotSent.privateTitle.warning)
-        #expect(result.warning?.contains("Turn it on") == false)
-    }
 }

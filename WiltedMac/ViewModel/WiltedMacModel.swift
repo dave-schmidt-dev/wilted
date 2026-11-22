@@ -276,7 +276,7 @@ final class WiltedMacModel {
         preferences: preferences, keyStore: adLabellerKeyStore,
         shows: { [weak self] in
             self?.subscriptions.map {
-                WiltedMacAdFindingSettings.Show(feedID: $0.id, title: $0.title, feedURL: $0.feedURL, publisherTitle: $0.publisherTitle)
+                WiltedMacAdFindingSettings.Show(feedID: $0.id, title: $0.title, feedURL: $0.feedURL)
             } ?? []
         })
     @ObservationIgnored lazy var adFeedback = WiltedMacAdFeedbackController(inbox: WiltedMacAdFeedbackInbox(

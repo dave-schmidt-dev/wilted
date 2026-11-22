@@ -6,26 +6,23 @@ import WiltedProducer
 
 @MainActor
 final class WiltedMacAdFreeFeedPromptTests: XCTestCase {
-    func testLooksAdFreeMatchesPrivateTitlesTokenAddressesAndCredentialedQuery() throws {
-        let feedID = "feed-test"
+    func testLooksAdFreeMatchesPaidTitlesTokenAddressesAndCredentialedQuery() throws {
         XCTAssertTrue(WiltedMacModel.looksAdFree(
-            title: "Garden Hour Plus", feedURL: URL(string: "https://feeds.example.test/garden.xml"), feedID: feedID
+            title: "Garden Hour Plus", feedURL: URL(string: "https://feeds.example.test/garden.xml")
         ))
         XCTAssertTrue(WiltedMacModel.looksAdFree(
-            title: "Garden Hour Premium", feedURL: URL(string: "https://feeds.example.test/garden.xml"), feedID: feedID
-        ))
-        XCTAssertTrue(WiltedMacModel.looksAdFree(
-            title: "Garden Hour",
-            feedURL: URL(string: "https://feeds.example.test/f/9a8b7c6d5e4f3a2b1c0d9e8f7a6b/rss"),
-            feedID: feedID
+            title: "Garden Hour Premium", feedURL: URL(string: "https://feeds.example.test/garden.xml")
         ))
         XCTAssertTrue(WiltedMacModel.looksAdFree(
             title: "Garden Hour",
-            feedURL: URL(string: "https://feeds.example.test/garden.xml?token=secret"),
-            feedID: feedID
+            feedURL: URL(string: "https://feeds.example.test/f/9a8b7c6d5e4f3a2b1c0d9e8f7a6b/rss")
+        ))
+        XCTAssertTrue(WiltedMacModel.looksAdFree(
+            title: "Garden Hour",
+            feedURL: URL(string: "https://feeds.example.test/garden.xml?token=secret")
         ))
         XCTAssertFalse(WiltedMacModel.looksAdFree(
-            title: "Garden Hour", feedURL: URL(string: "https://feeds.example.test/garden.xml"), feedID: feedID
+            title: "Garden Hour", feedURL: URL(string: "https://feeds.example.test/garden.xml")
         ))
     }
 

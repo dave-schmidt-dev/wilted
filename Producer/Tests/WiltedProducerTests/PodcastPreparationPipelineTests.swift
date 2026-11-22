@@ -16,10 +16,6 @@ struct PodcastPreparationPipelineTests {
         let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let episode = try #require(try await fixture.store.podcastEpisode(for: fixture.episodeID))
-        let feed = try #require(try await fixture.store.podcastFeed(for: episode.feedID))
-        #expect(RemoteLabellingPolicy.forcedNotSentReason(for: RemoteLabellingInput(
-            feedID: episode.feedID.rawValue, feedURL: feed.canonicalURL, feedTitle: feed.title,
-            audioURL: episode.enclosureURL)) == nil)
         let worker = WorkerStub(response: Fixture.cuttingStubResponse(), writesCutAudio: Fixture.cuttingAudio)
         let pipeline = fixture.pipeline(worker)
         let policy = PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: true)
@@ -42,6 +38,32 @@ struct PodcastPreparationPipelineTests {
             for: fixture.episodeID, revisionID: result.revision.revisionID))
         #expect(outcome.policyDigest == PodcastPreparationPipeline.policyDigest(
             policy, labelled: fixture.labelledProvenance))
+    }
+
+    @Test func confirmedPremiumShowWithCredentialedTokenAddressesIsSent() async throws {
+        let fixture = try await Fixture(
+            labelled: true,
+            feedAddress: "https://feeds.example.test/a1b2c3d4e5f6a7b8c9d0e1f2a3b4/show.xml?auth=feed-login",
+            showTitle: "Premium Garden Show",
+            enclosureAddress: "https://listener:invented@cdn.example.test/e1.mp3?sig=audio-login")
+        defer { fixture.remove() }
+
+        let episode = try #require(try await fixture.store.podcastEpisode(for: fixture.episodeID))
+        let worker = WorkerStub(response: Fixture.cuttingStubResponse(), writesCutAudio: Fixture.cuttingAudio)
+        let pipeline = fixture.pipeline(worker)
+        let policy = PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: true)
+
+        let route = await pipeline.labelledAttemptRoute(episode: episode, policy: policy)
+        #expect(route.routing == .remote)
+        #expect(route.notSent == nil)
+
+        let result = try await pipeline.prepare(episodeID: fixture.episodeID, policy: policy)
+        let requests = try await worker.allRequests().map {
+            try #require(try JSONSerialization.jsonObject(with: $0) as? [String: Any])
+        }
+        #expect(requests.map { $0["adStage"] as? String } == ["transcript", "cut"])
+        #expect(fixture.sender?.requestCount == 1)
+        #expect(result.adRemovalOutcome == "cut")
     }
 
     /// A labelled test that leaves a labeller cue file behind fails at teardown.
