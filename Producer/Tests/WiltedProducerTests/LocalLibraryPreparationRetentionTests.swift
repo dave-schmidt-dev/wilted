@@ -5,7 +5,7 @@ import WiltedDomain
 @testable import WiltedProducer
 
 extension LocalLibraryStoreTests {
-    private func makeRetentionRun(
+    func makeRetentionRun(
         itemID: ItemID, requestID: String, sequence: Int,
         outcome: PreparationOutcome?, revisionID: RevisionID? = nil, evidence: PreparationEvidence? = nil
     ) throws -> PreparationRunSummary {
@@ -81,7 +81,7 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(removals, Set(older + heartbeats))
     }
 
-    private func addRetentionHistory(
+    func addRetentionHistory(
         to fixture: PreparationHistoryFixture, olderFailedGenerationCount: Int, newerFailedGenerationCount: Int
     ) async throws -> (
         readyAttempt: PreparationAttemptIdentity, openAttempt: PreparationAttemptIdentity, newestAttempt: PreparationAttemptIdentity
@@ -110,7 +110,7 @@ extension LocalLibraryStoreTests {
                     PreparationAttemptIdentity(requestSequence: newestSequence, attemptCount: 1))
     }
 
-    private func preparationHistoryIDs(in fixture: PreparationHistoryFixture) throws -> Set<String> {
+    func preparationHistoryIDs(in fixture: PreparationHistoryFixture) throws -> Set<String> {
         Set(try ModelContext(fixture.store.container)
             .fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>())
             .map(\.id))

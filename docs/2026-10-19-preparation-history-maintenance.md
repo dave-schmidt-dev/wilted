@@ -124,6 +124,14 @@ already requires. Retention adds no journal fetch to bootstrap. The existing
 4. Invalidation markers (`podcast-invalidation|`, `podcast-reset-preparation|`).
 5. Legacy unbound rows for an item whose Ready revision has no bound proof.
 
+**Fail closed.** Pruning reads its protection from four places: the journal, the newest revision,
+the current outcome and the work ticket. If any input for an episode cannot be read or validated,
+nothing is pruned for that episode. That covers a journal row that cannot be decoded or has an
+invalid item ID, a terminal row whose generation does not match its stored generation, a newest
+revision that has a media URL but fails validation, a Ready revision with no current outcome, and a
+ticket with an invalid counter (a ticket that has not started, with no attempts, is normal and
+does not block). Other episodes are pruned as usual.
+
 **Prune candidates**
 
 - Terminal generations older than both the Ready-proving and the newest generation,

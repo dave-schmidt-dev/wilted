@@ -26,6 +26,18 @@ extension LocalLibraryStore {
     func preparationRunSnapshot(in context: ModelContext) throws -> (
         records: [LocalLibrarySchemaV3Models.PreparationRecord], runs: [PreparationRunSummary]
     ) {
+        let snapshot = try preparationRunSnapshotChecked(in: context)
+        return (snapshot.records, snapshot.runs)
+    }
+
+    /// `preparationRunSnapshot` that also hands back the journal rows it could not read (an
+    /// undecodable status or an invalid item ID), so a caller that must not act on a partial
+    /// picture can see what is missing from it.
+    func preparationRunSnapshotChecked(in context: ModelContext) throws -> (
+        records: [LocalLibrarySchemaV3Models.PreparationRecord], runs: [PreparationRunSummary],
+        unreadable: [LocalLibrarySchemaV3Models.PreparationRecord]
+    ) {
+        var unreadable: [LocalLibrarySchemaV3Models.PreparationRecord] = []
         let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>())
         let decoder = JSONDecoder()
         var byRequest: [String: [PreparationJournalEntry]] = [:]
@@ -38,13 +50,16 @@ extension LocalLibraryStore {
                   !record.requestID.hasPrefix(Self.resetPreparationRequestPrefix) else { continue }
             preparationJournalDecodeAttemptCount += 1
             guard let status = try? decoder.decode(PreparationStatus.self, from: record.statusData),
-                  let itemID = try? ItemID(rawValue: record.itemID) else { continue }
+                  let itemID = try? ItemID(rawValue: record.itemID) else {
+                unreadable.append(record)
+                continue
+            }
             byRequest[record.requestID + (status.attempt.map { "|" + $0.key } ?? ""), default: []].append(
                 PreparationJournalEntry(id: record.id, itemID: itemID, requestID: record.requestID, status: status)
             )
         }
         let runs = byRequest.values.compactMap(preparationRunSummary).sorted(by: preparationRunSummaryPrecedes)
-        return (records, runs)
+        return (records, runs, unreadable)
     }
 
     /// The canonical projection from event rows to one complete run summary.
