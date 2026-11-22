@@ -171,18 +171,18 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(try preparationHistoryIDs(in: fixture), after, "a second pass deletes nothing")
     }
 
-    func testPreparationRetentionKeepsLegacyRowsWithoutBoundReadyProof() async throws {
+    func testPreparationRetentionKeepsLegacyRowsWhenTheReadyProofIsUnbound() async throws {
         let fixture = try await makePreparationHistoryStore("retention-legacy")
         defer { try? FileManager.default.removeItem(at: fixture.url.deletingLastPathComponent()) }
         _ = try await addRetentionHistory(to: fixture,
             olderFailedGenerationCount: 0, newerFailedGenerationCount: 8)
-        let result = try PreparationTerminalResult(outcome: .failed,
-            error: ProducerError(code: .failed, message: "legacy", retryable: true))
+        // The Ready proof is a legacy success carrying no generation: found, but unbound.
+        let result = try PreparationTerminalResult(outcome: .succeeded, revisionID: fixture.revision.revisionID)
         let context = ModelContext(fixture.store.container)
         try insertPreparation(context, id: fixture.requestID + "|extracting#1", itemID: fixture.itemID,
             requestID: fixture.requestID, stage: .extracting, at: fixture.base, attempt: nil)
         try insertPreparation(context, id: fixture.requestID + "|terminal", itemID: fixture.itemID,
-            requestID: fixture.requestID, stage: .failed, at: fixture.base.addingTimeInterval(1),
+            requestID: fixture.requestID, stage: .completed, at: fixture.base.addingTimeInterval(1),
             attempt: nil, terminal: result)
         let readyPrefix = fixture.requestID + "|generation-1-1|"
         for row in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
@@ -196,8 +196,11 @@ extension LocalLibraryStoreTests {
         let after = try preparationHistoryIDs(in: fixture)
         XCTAssertTrue(after.contains(fixture.requestID + "|extracting#1"))
         XCTAssertTrue(after.contains(fixture.requestID + "|terminal"))
-        XCTAssertFalse(after.contains { $0.hasPrefix(fixture.requestID + "|generation-3-1|") },
-            "the older bound failure would be pruned without the legacy protection")
+        // The legacy success is the oldest run and the proof, so every bound failure is newer than it:
+        // each keeps its start and terminal rows and only its heartbeat is pruned. (With no proof found
+        // at all, nothing is pruned: see the fail-closed tests.)
+        XCTAssertTrue(after.contains(fixture.requestID + "|generation-3-1|terminal"))
+        XCTAssertFalse(after.contains(fixture.requestID + "|generation-3-1|extracting#heartbeat"))
         XCTAssertNotEqual(after, before)
     }
 

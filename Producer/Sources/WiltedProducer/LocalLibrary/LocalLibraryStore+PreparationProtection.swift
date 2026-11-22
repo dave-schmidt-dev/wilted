@@ -46,6 +46,57 @@ struct PreparationProtection {
         for outcome in outcomes {
             let owners = revisionOwners[outcome.revisionID] ?? []
             if owners != [outcome.episodeID] { blocked.formUnion(owners); block(outcome.episodeID) }
+            // The row's key and its fields must name the same episode and revision.
+            if outcome.id != outcome.episodeID + "|" + outcome.revisionID {
+                block(outcome.episodeID, outcome.id.split(separator: "|", maxSplits: 1).first.map(String.init))
+            }
+        }
+    }
+
+    /// What retention may do for one episode.
+    enum Proof: Equatable {
+        /// No positive proof either way: leave the history whole.
+        case skip
+        /// Shown never to have been prepared: only failed history exists.
+        case neverPrepared
+        /// A Ready revision with a current outcome and the succeeded run that produced it.
+        case ready(RevisionID)
+    }
+
+    /// Episodes with any sign of a finished preparation: a revision row, a current outcome, or a run
+    /// that ended with a revision, wherever it is filed. "Never prepared" needs all of these absent.
+    static func preparedEpisodes(
+        runs: [PreparationRunSummary],
+        outcomes: [LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord],
+        revisionOwners: [String: Set<String>]
+    ) -> Set<String> {
+        var prepared = Set(revisionOwners.values.joined())
+        prepared.formUnion(outcomes.map(\.episodeID))
+        for run in runs where run.entries.contains(where: { $0.status.terminalResult?.revisionID != nil }) {
+            prepared.formUnion(run.entries.map(\.itemID.rawValue))
+            if let named = podcastItemID(fromRequestID: run.requestID) { prepared.insert(named) }
+        }
+        return prepared
+    }
+
+    /// Decides, from positive evidence only, how much of one episode's history may be pruned.
+    static func proof(
+        for episode: String, history: [PreparationRunSummary], prepared: Set<String>,
+        ready: StoredAudioRevision?, currentOutcomes: Set<String>
+    ) -> Proof {
+        guard let ready else { return prepared.contains(episode) ? .skip : .neverPrepared }
+        let revision = ready.revision.revisionID
+        guard currentOutcomes.contains(episode + "|" + revision.rawValue),
+              history.contains(where: { proves($0, revision) }) else { return .skip }
+        return .ready(revision)
+    }
+
+    /// A run proves a revision only if it ended in success, and every terminal event it holds says so.
+    private static func proves(_ run: PreparationRunSummary, _ revision: RevisionID) -> Bool {
+        guard run.outcome == .succeeded else { return false }
+        let terminals = run.entries.filter(\.status.terminal)
+        return !terminals.isEmpty && terminals.allSatisfy {
+            $0.status.terminalResult?.outcome == .succeeded && $0.status.terminalResult?.revisionID == revision
         }
     }
 

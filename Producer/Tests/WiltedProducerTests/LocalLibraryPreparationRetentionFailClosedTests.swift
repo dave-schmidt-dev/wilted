@@ -123,6 +123,64 @@ extension LocalLibraryStoreTests {
         }
     }
 
+    // Pruning needs positive proof. An episode with a Ready revision is pruned only when the succeeded
+    // run that produced it is found in its own history, whole and uncontradicted; one that looks
+    // never-prepared is pruned only when no row anywhere shows it was prepared.
+
+    func testRetentionPrunesNothingWhenTheReadyProofRunIsMissingFromTheJournal() async throws {
+        try await prunesNothing("retention-proof-missing") { fixture, context in
+            let prefix = fixture.requestID + "|generation-6-1|"
+            for row in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
+                predicate: #Predicate { $0.id.starts(with: prefix) })) { context.delete(row) }
+        }
+    }
+
+    func testRetentionPrunesNothingWhenTheReadyTerminalLosesItsRequestID() async throws {
+        try await prunesNothing("retention-proof-request-damaged") { fixture, context in
+            let row = try journalRow(fixture.requestID + "|generation-6-1|terminal", in: context)
+            row.requestID = "damaged-" + row.requestID
+        }
+    }
+
+    func testRetentionPrunesNothingWhenALaterFailureContradictsTheReadySuccess() async throws {
+        try await prunesNothing("retention-proof-contradicted") { fixture, context in
+            let attempt = try PreparationAttemptIdentity(requestSequence: 6, attemptCount: 1)
+            let failure = try PreparationTerminalResult(
+                outcome: .failed, error: ProducerError(code: .failed, message: "late", retryable: true))
+            try insertPreparation(
+                context, id: fixture.requestID + "|generation-6-1|terminal-late", itemID: fixture.itemID,
+                requestID: fixture.requestID, stage: .failed, at: fixture.base.addingTimeInterval(5_000),
+                attempt: attempt, terminal: failure)
+        }
+    }
+
+    func testRetentionPrunesNothingWhenTheCurrentOutcomeSurvivesButItsRevisionLostItsMedia() async throws {
+        try await prunesNothing("retention-media-lost") { fixture, context in
+            for row in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
+            where row.itemID == fixture.itemID.rawValue { row.mediaURL = nil }
+        }
+    }
+
+    func testRetentionPrunesNothingWhenAnOutcomeKeyNamesAnotherEpisodeThanItsFields() async throws {
+        try await prunesNothing("retention-outcome-key") { _, context in
+            for row in try context.fetch(
+                FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>()) {
+                row.id = "someone-else|" + row.revisionID
+            }
+        }
+    }
+
+    func testRetentionPrunesNothingWhenASucceededRunExistsButNoRevisionDoes() async throws {
+        try await prunesNothing("retention-never-prepared-not-proven") { fixture, context in
+            for row in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
+            where row.itemID == fixture.itemID.rawValue { context.delete(row) }
+            for row in try context.fetch(
+                FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>()) {
+                context.delete(row)
+            }
+        }
+    }
+
     /// A damaged episode stops pruning for itself and for the episode its rows name, and no further:
     /// an unrelated healthy episode is still pruned.
     func testAReadyTerminalNamingAnotherEpisodeBlocksBothButLeavesAHealthyEpisodePruned() async throws {

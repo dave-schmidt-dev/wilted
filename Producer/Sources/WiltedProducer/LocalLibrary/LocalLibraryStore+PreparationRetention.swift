@@ -33,19 +33,26 @@ extension LocalLibraryStore {
         protection.readJournal(unreadable: unreadableRows, runs: runs)
         protection.readOutcomes(outcomes, revisionOwners: revisionOwners)
         protection.readTickets(tickets)
-        let blocked = protection.blocked
-        let ticketAttempts = protection.ticketAttempts
+        let prepared = PreparationProtection.preparedEpisodes(
+            runs: runs, outcomes: outcomes, revisionOwners: revisionOwners)
 
+        // An episode is pruned only on positive proof: either its Ready proof is found and consistent,
+        // or it is shown never to have been prepared. Anything else leaves its history whole.
         var removals = Set<String>()
-        for (item, history) in histories where !blocked.contains(item.rawValue) {
-            let revision = ready[item.rawValue]?.revisionID
-            let currentRevision = revision.flatMap { currentOutcomes.contains(item.rawValue + "|" + $0.rawValue) ? $0 : nil }
-            // A ready revision with no readable current outcome cannot be matched to the success
-            // that proves it, so that history is left whole.
-            if revision != nil, currentRevision == nil { continue }
-            removals.formUnion(Self.prunablePreparationIDs(
-                in: history, hasReadyRevision: revision != nil, currentRevision: currentRevision,
-                ticket: ticketAttempts[item.rawValue]))
+        for (item, history) in histories where !protection.blocked.contains(item.rawValue) {
+            switch PreparationProtection.proof(
+                for: item.rawValue, history: history, prepared: prepared,
+                ready: ready[item.rawValue], currentOutcomes: currentOutcomes) {
+            case .skip: continue
+            case .neverPrepared:
+                removals.formUnion(Self.prunablePreparationIDs(
+                    in: history, hasReadyRevision: false, currentRevision: nil,
+                    ticket: protection.ticketAttempts[item.rawValue]))
+            case let .ready(revision):
+                removals.formUnion(Self.prunablePreparationIDs(
+                    in: history, hasReadyRevision: true, currentRevision: revision,
+                    ticket: protection.ticketAttempts[item.rawValue]))
+            }
         }
         if !removals.isEmpty {
             for record in records where removals.contains(record.id) { context.delete(record) }

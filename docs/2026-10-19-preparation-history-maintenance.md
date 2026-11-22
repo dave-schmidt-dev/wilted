@@ -136,6 +136,14 @@ names: a journal run whose rows name more than one episode, a current outcome wh
 no owner or belongs to another episode, a running ticket with no attempt, and a ticket that disagrees
 with its own durable key. Other, unrelated episodes are pruned as usual.
 
+**Positive proof.** Even with every input readable, an episode is pruned only on proof found, never
+on proof missing. With a Ready revision, its current outcome must be keyed to the same episode and
+revision, and its own history must hold the succeeded run that produced it, with every terminal row
+in that run agreeing (a later failure in the same generation, or a success filed under a damaged
+request ID, means no proof). Without a Ready revision, the episode counts as never prepared only if
+no revision row, current outcome or succeeded run anywhere shows otherwise (a revision that lost its
+media URL still counts as prepared). Otherwise the episode is skipped whole.
+
 **Prune candidates**
 
 - Terminal generations older than both the Ready-proving and the newest generation,
