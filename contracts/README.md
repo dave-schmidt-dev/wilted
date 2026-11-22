@@ -22,6 +22,9 @@ Unknown operations fail closed.
 Run:
 
 ```sh
-swift scripts/validate-contract-fixtures.swift contracts/fixtures
+build_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/contract-validator.XXXXXX")"
+trap 'rm -rf "$build_dir"' EXIT
+bash scripts/build-contract-validator.sh validate-contract-fixtures.swift "$build_dir/validator"
+"$build_dir/validator" contracts/fixtures
 bash tests/test-contract-fixtures.sh
 ```

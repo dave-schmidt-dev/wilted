@@ -2,35 +2,6 @@
 
 import Foundation
 
-enum ContractError: Error, CustomStringConvertible {
-    case invalid(String)
-    var description: String { if case .invalid(let message) = self { return message }; return "invalid contract" }
-}
-
-typealias JSON = [String: Any]
-
-func fail(_ message: String) throws -> Never { throw ContractError.invalid(message) }
-func object(_ value: Any?, _ path: String) throws -> JSON {
-    guard let value = value as? JSON else { try fail("\(path) must be an object") }
-    return value
-}
-func nonEmptyString(_ value: Any?, _ path: String) throws -> String {
-    guard let value = value as? String, !value.isEmpty else { try fail("\(path) must be a non-empty string") }
-    return value
-}
-func bool(_ value: Any?, _ path: String) throws -> Bool {
-    guard let value = value as? NSNumber, String(cString: value.objCType) == "c" else { try fail("\(path) must be a boolean") }
-    return value.boolValue
-}
-func number(_ value: Any?, _ path: String) throws -> Double {
-    guard let value = value as? NSNumber, String(cString: value.objCType) != "c" else { try fail("\(path) must be a number") }
-    return value.doubleValue
-}
-func integer(_ value: Any?, _ path: String) throws -> Int {
-    let value = try number(value, path)
-    guard value.isFinite, value.rounded() == value else { try fail("\(path) must be an integer") }
-    return Int(value)
-}
 func stringArray(_ value: Any?, _ path: String) throws -> [String] {
     guard let values = value as? [Any] else { try fail("\(path) must be an array") }
     return try values.enumerated().map { try nonEmptyString($0.element, "\(path)[\($0.offset)]") }
@@ -49,32 +20,6 @@ func oneOf(_ value: String, _ values: Set<String>, _ path: String) throws {
 func nullableString(_ value: Any?, _ path: String) throws {
     if value is NSNull { return }
     _ = try nonEmptyString(value, path)
-}
-
-let timestampPattern = try! NSRegularExpression(pattern: #"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$"#)
-let timestampFormatter: ISO8601DateFormatter = {
-    let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f
-}()
-let timestampFormatterNoFraction: ISO8601DateFormatter = {
-    let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime]; return f
-}()
-func validateTimestamps(_ value: Any, _ path: String = "fixture") throws {
-    if let value = value as? JSON {
-        for key in value.keys.sorted() {
-            let child = value[key]!
-            if (key.hasSuffix("At") || key.hasSuffix("Time")) && !(child is NSNull) {
-                let timestamp = try nonEmptyString(child, "\(path).\(key)")
-                let range = NSRange(timestamp.startIndex..<timestamp.endIndex, in: timestamp)
-                guard timestampPattern.firstMatch(in: timestamp, range: range) != nil,
-                      timestampFormatter.date(from: timestamp) != nil || timestampFormatterNoFraction.date(from: timestamp) != nil else {
-                    try fail("\(path).\(key) must be UTC ISO 8601 ending in Z")
-                }
-            }
-            try validateTimestamps(child, "\(path).\(key)")
-        }
-    } else if let values = value as? [Any] {
-        for (index, child) in values.enumerated() { try validateTimestamps(child, "\(path)[\(index)]") }
-    }
 }
 
 let expectedTypeNames: Set<String> = [
@@ -271,7 +216,7 @@ func validateFixture(_ fixture: JSON, _ path: String) throws -> (String, String)
     _ = try nonEmptyString(fixture["description"], "\(path).description")
     let input = try object(fixture["input"], "\(path).input")
     let expected = try object(fixture["expected"], "\(path).expected")
-    try validateTimestamps(fixture)
+    try validateTimestamps(fixture, stringPolicy: .nonEmptyString)
 
     switch operation {
     case "publishDecode":

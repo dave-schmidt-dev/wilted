@@ -10,6 +10,11 @@ fi
 root_dir="$(cd "$(dirname "$0")/.." && pwd)"
 fixture_dir="$root_dir/contracts/fixtures"
 validator="$root_dir/scripts/validate-contract-fixtures.swift"
+tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/contract-fixtures.XXXXXX")"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+validator_binary="$tmp_dir/validate-contract-fixtures"
+bash "$root_dir/scripts/build-contract-validator.sh" "$validator" "$validator_binary"
 
 fixture_count="$(find "$fixture_dir" -type f -name '*.json' | wc -l | tr -d ' ')"
 if [[ ! "$fixture_count" =~ ^[1-9][0-9]*$ ]]; then
@@ -17,7 +22,7 @@ if [[ ! "$fixture_count" =~ ^[1-9][0-9]*$ ]]; then
   exit 1
 fi
 
-output="$(swift "$validator" "$fixture_dir")"
+output="$("$validator_binary" "$fixture_dir")"
 printf '%s\n' "$output"
 
 reported_count="$(printf '%s\n' "$output" | sed -n 's/^Validated \([1-9][0-9]*\) fixture cases$/\1/p')"

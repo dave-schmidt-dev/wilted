@@ -10,20 +10,23 @@ fi
 root_dir="$(cd "$(dirname "$0")/.." && pwd)"
 schema="$root_dir/contracts/domain/schema.json"
 fixtures="$root_dir/contracts/fixtures"
-
-# The domain gate must agree with the existing executable fixture gate.
-bash "$root_dir/tests/test-contract-fixtures.sh"
-swift "$root_dir/scripts/validate-domain-contract.swift" "$schema" "$fixtures"
-
-# Unknown operations are contractual errors and must fail closed.
 source "$root_dir/scripts/lib/test-temp-state.sh"
 tmp_dir="$(mktemp -d "${TMPDIR:?TMPDIR must be set}/wilted-domain-contract.XXXXXX")"; wilted_temp_mark_owned "$tmp_dir"
 trap 'rm -rf "$tmp_dir"' EXIT
+
+domain_validator="$tmp_dir/validate-domain-contract"
+bash "$root_dir/scripts/build-contract-validator.sh" "$root_dir/scripts/validate-domain-contract.swift" "$domain_validator"
+
+# The domain gate must agree with the existing executable fixture gate.
+bash "$root_dir/tests/test-contract-fixtures.sh"
+"$domain_validator" "$schema" "$fixtures"
+
+# Unknown operations are contractual errors and must fail closed.
 cp -R "$fixtures" "$tmp_dir/fixtures"
 mutated="$tmp_dir/fixtures/01-publish-decode.json"
 sed -i.bak 's/"operation": "publishDecode"/"operation": "unknownOperation"/' "$mutated"
 rm -f "$mutated.bak"
-if swift "$root_dir/scripts/validate-domain-contract.swift" "$schema" "$tmp_dir/fixtures" >/dev/null 2>&1; then
+if "$domain_validator" "$schema" "$tmp_dir/fixtures" >/dev/null 2>&1; then
     echo "error: domain validator accepted an unknown operation" >&2
     exit 1
 fi
@@ -34,7 +37,7 @@ cp -R "$fixtures" "$tmp_dir/field-fixtures"
 field_mutated="$tmp_dir/field-fixtures/01-publish-decode.json"
 sed -i.bak 's/"title": "Alpha"/"title": "Alpha", "unexpectedField": true/' "$field_mutated"
 rm -f "$field_mutated.bak"
-if swift "$root_dir/scripts/validate-domain-contract.swift" "$schema" "$tmp_dir/field-fixtures" >/dev/null 2>&1; then
+if "$domain_validator" "$schema" "$tmp_dir/field-fixtures" >/dev/null 2>&1; then
     echo "error: domain validator accepted an unknown field" >&2
     exit 1
 fi
@@ -45,7 +48,7 @@ readiness_schema="$tmp_dir/readiness-schema.json"
 cp "$schema" "$readiness_schema"
 sed -i.bak 's/"values": \["ready"\]/"values": ["preparing"]/' "$readiness_schema"
 rm -f "$readiness_schema.bak"
-if swift "$root_dir/scripts/validate-domain-contract.swift" "$readiness_schema" "$fixtures" >/dev/null 2>&1; then
+if "$domain_validator" "$readiness_schema" "$fixtures" >/dev/null 2>&1; then
     echo "error: domain validator accepted non-ready revision readiness" >&2
     exit 1
 fi
@@ -56,7 +59,7 @@ stream_schema="$tmp_dir/stream-schema.json"
 cp "$schema" "$stream_schema"
 sed -i.bak 's/"terminalCount": "exactlyOne"/"terminalCount": "atMostOne"/g' "$stream_schema"
 rm -f "$stream_schema.bak"
-if swift "$root_dir/scripts/validate-domain-contract.swift" "$stream_schema" "$fixtures" >/dev/null 2>&1; then
+if "$domain_validator" "$stream_schema" "$fixtures" >/dev/null 2>&1; then
     echo "error: domain validator accepted a non-exact terminal count" >&2
     exit 1
 fi
@@ -67,7 +70,7 @@ naming_schema="$tmp_dir/naming-schema.json"
 cp "$schema" "$naming_schema"
 sed -i.bak 's/"publishedTime": {"type"/"publishedAt": {"type"/' "$naming_schema"
 rm -f "$naming_schema.bak"
-if swift "$root_dir/scripts/validate-domain-contract.swift" "$naming_schema" "$fixtures" >/dev/null 2>&1; then
+if "$domain_validator" "$naming_schema" "$fixtures" >/dev/null 2>&1; then
     echo "error: domain validator accepted non-authoritative publishedAt naming" >&2
     exit 1
 fi
@@ -79,7 +82,7 @@ cp -R "$fixtures" "$timeout_fixtures"
 timeout_mutated="$timeout_fixtures/16-timeout-terminal-error.json"
 sed -i.bak 's/"terminalErrorCode": "timedOut"/"terminalErrorCode": "failed"/' "$timeout_mutated"
 rm -f "$timeout_mutated.bak"
-if swift "$root_dir/scripts/validate-domain-contract.swift" "$schema" "$timeout_fixtures" >/dev/null 2>&1; then
+if "$domain_validator" "$schema" "$timeout_fixtures" >/dev/null 2>&1; then
     echo "error: domain validator accepted a non-timedOut timeout terminal error" >&2
     exit 1
 fi
