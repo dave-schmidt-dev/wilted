@@ -7,6 +7,24 @@ import WiltedProducer
 
 @MainActor
 final class WiltedMacFeedDecisionTests: XCTestCase {
+    func testUndoBulkSkipRestoresOnlyEpisodesChangedByThisSkip() async throws {
+        let fixture = try await makeFixture(count: 3, queueIndexes: [])
+        addTeardownBlock { await fixture.model.close() }
+        let model = fixture.model
+        model.skipFeedEpisode(fixture.episodes[0])
+        await drainDecisionWriters(model)
+        model.decideFeedEpisodes(.skip, episodes: fixture.episodes, offerUndo: true)
+        await drainDecisionWriters(model)
+        XCTAssertEqual(model.undoToast.current?.message, "Skipped 2 episodes")
+        XCTAssertEqual(model.undoToast.current?.subjects, Set(fixture.episodes.dropFirst().map(\.id)))
+        model.undoToast.undoCurrent()
+        await drainDecisionWriters(model)
+        for (index, id) in fixture.itemIDs.enumerated() {
+            let removal = try await fixture.store.removalKind(for: id)
+            XCTAssertEqual(removal, index == 0 ? .retired : nil)
+        }
+    }
+
     func testLocalFeedChoicesAdvancePastFutureChoiceAndSameClockKeepWhileDatedIntentLoses() async throws {
         let fixture = try await makeFixture(count: 1, queueIndexes: [])
         addTeardownBlock { await fixture.model.close() }
@@ -499,12 +517,12 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
         XCTAssertEqual(result.episodeRecordFetchCount, 1)
     }
 
-    private func drainDecisionWriters(_ model: WiltedMacModel) async {
+    func drainDecisionWriters(_ model: WiltedMacModel) async {
         let writers = Array(model.subscriptionWriteTasks.values)
         for writer in writers { await writer.value }
     }
 
-    private func makeFixture(
+    func makeFixture(
         count: Int, queueIndexes: [Int],
         transportFactory: WiltedMacPodcastDownloadTransportFactory? = nil,
         validatorFactory: WiltedMacPodcastMediaValidatorFactory? = nil
@@ -569,7 +587,7 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
     }
 }
 
-private struct FeedDecisionFixture {
+struct FeedDecisionFixture {
     let model: WiltedMacModel
     let store: LocalLibraryStore
     let directory: URL

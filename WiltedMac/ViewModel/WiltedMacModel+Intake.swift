@@ -336,10 +336,10 @@ extension WiltedMacModel {
     /// cut and the transcript all stay where they are and only the row leaves
     /// the waiting lists. Reversible exclusion is Task 2.8's bar; this keeps
     /// the records alive until that lands.
-    func skipFeedEpisode(_ episode: WiltedMacEpisode) {
+    func skipFeedEpisode(_ episode: WiltedMacEpisode, offerUndo: Bool = false) {
 #if canImport(WiltedProducer)
         undoableSkip = nil
-        decideFeedEpisodes(.skip, episodes: [episode])
+        decideFeedEpisodes(.skip, episodes: [episode], offerUndo: offerUndo)
 #endif
     }
 

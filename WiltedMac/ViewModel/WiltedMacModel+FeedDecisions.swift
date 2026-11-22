@@ -7,15 +7,16 @@ import WiltedProducer
 
 extension WiltedMacModel {
 #if canImport(WiltedProducer)
-    enum FeedDecision { case keep, skip, restore }
+    enum FeedDecision: Equatable { case keep, skip, restore, undoSkip(SoftSkipRecord) }
 
     /// Captures the visible order before the task starts. The task is entered
     /// in the same finite-writer ledger that model close already drains.
-    func decideFeedEpisodes(_ decision: FeedDecision, episodes candidates: [WiltedMacEpisode], at: Timestamp? = nil) {
+    func decideFeedEpisodes(_ decision: FeedDecision, episodes candidates: [WiltedMacEpisode], at: Timestamp? = nil, offerUndo: Bool = false) {
         let captured = uniqueFeedDecisionEpisodes(candidates)
         let ids = captured.map(\.id)
         guard !ids.isEmpty, pendingFeedDecisionIDs.isDisjoint(with: ids), !isClosingTemporaryState else { return }
-        if decision == .skip {
+        // A Skip that offers Undo withdraws the waiting preparation only once its window closes.
+        if decision == .skip, !offerUndo {
             for id in ids { withdrawPreparationRequest(for: id) }
         }
         pendingFeedDecisionIDs.formUnion(ids)
@@ -38,7 +39,7 @@ extension WiltedMacModel {
                 self.settleFeedDecision(captured.map(\.id), committed: [])
                 return
             }
-            await self.commitFeedDecision(decision, captured: captured, at: at)
+            await self.commitFeedDecision(decision, captured: captured, at: at, offerUndo: offerUndo)
         }
         // This synchronous insertion precedes the task body's first await.
         subscriptionWriteTasks[token] = task
@@ -50,7 +51,7 @@ extension WiltedMacModel {
         return candidates.filter { seen.insert($0.id).inserted }
     }
 
-    private func commitFeedDecision(_ decision: FeedDecision, captured: [WiltedMacEpisode], at: Timestamp?) async {
+    private func commitFeedDecision(_ decision: FeedDecision, captured: [WiltedMacEpisode], at: Timestamp?, offerUndo: Bool) async {
         guard let store else { settleFeedDecision(captured.map(\.id), committed: []); return }
         let ids = captured.compactMap { try? ItemID(rawValue: $0.id) }
         guard ids.count == captured.count else { settleFeedDecision(captured.map(\.id), committed: []); return }
@@ -84,7 +85,8 @@ extension WiltedMacModel {
                 podcastOperationMessage = decisionMessage("Kept", changed: changed.count, accepted: accepted.count, unresolved: outcome.unresolved.count)
             case .skip:
                 let retiredAt = originatedAt
-                let result = try await store.retireEpisodes(ids, at: retiredAt, asOwnerChoice: true)
+                let result = try await store.retireEpisodes(
+                    ids, at: retiredAt, asOwnerChoice: true, deferringMediaDeletion: offerUndo)
                 let changed = Set(result.committed.map(\.rawValue))
                 let accepted = changed.union(result.alreadyAtTarget.map(\.rawValue))
                 // The originating owner choice committed atomically with group retirement.
@@ -96,10 +98,27 @@ extension WiltedMacModel {
                 applyRetirement(to: accepted, at: retirementTimes)
                 settleFeedDecision(captured.map(\.id), committed: accepted)
                 podcastOperationMessage = decisionMessage("Skipped", changed: changed.count, accepted: accepted.count, unresolved: result.unresolved.count)
-                // A retirement frees a kept slot: let the feed's oldest waiting episode in.
-                if !changed.isEmpty {
-                    await releaseWaitingEpisodes(feedIDs: Set(captured.filter { changed.contains($0.id) }.compactMap(\.feedID)))
+                let feedIDs = Set(captured.filter { changed.contains($0.id) }.compactMap(\.feedID))
+                if offerUndo, !changed.isEmpty {
+                    // Undo covers every episode this Skip retired, linked ones included, and puts each
+                    // back exactly as it was; a member someone has acted on since is left alone.
+                    if result.unresolved.isEmpty { podcastOperationMessage = nil }
+                    offerSoftSkipUndo(
+                        SoftSkipRecord(retiredAt: retiredAt, committed: result.committed,
+                                       alreadyAtTarget: result.alreadyAtTarget, prior: result.priorDecisions),
+                        rows: captured, changed: changed.count
+                    )
+                } else if !changed.isEmpty {
+                    // A retirement frees a kept slot: let the feed's oldest waiting episode in.
+                    await releaseWaitingEpisodes(feedIDs: feedIDs)
                 }
+            case let .undoSkip(record):
+                let restored = try await commitUndoSoftSkip(record, rows: captured, store: store)
+                guard !isClosingTemporaryState, !Task.isCancelled else { return }
+                settleFeedDecision(captured.map(\.id), committed: restored)
+                podcastOperationMessage = restored.isEmpty
+                    ? "Nothing to undo: those episodes changed since."
+                    : "Restored \(restored.count) episode\(restored.count == 1 ? "" : "s")."
             case .restore:
                 let result = try await store.restoreEpisodes(ids, at: at?.date)
                 let changed = Set(result.committed.map(\.rawValue))

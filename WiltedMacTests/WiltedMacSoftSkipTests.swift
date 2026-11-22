@@ -1,0 +1,158 @@
+import XCTest
+import WiltedDomain
+import WiltedProducer
+@testable import WiltedMac
+
+/// Skip from Feeds with Undo: the audio stays until the offer ends, Undo gives the episode back whole,
+/// an Undo that is no longer the latest word does nothing, and a playlist that is still saving keeps
+/// its removal's offer open.
+@MainActor
+extension WiltedMacFeedDecisionTests {
+    /// Puts a downloaded copy of the episode on disk and in the library, with listening history.
+    private func seedDownloadedEpisode(_ fixture: FeedDecisionFixture) async throws -> URL {
+        let itemID = fixture.itemIDs[0]
+        let mediaURL = fixture.directory.appendingPathComponent("soft-skip.m4a")
+        let contentHash = "sha256:" + String(repeating: "b", count: 64)
+        let revisionID = try RevisionID(rawValue: "rev-" + String(repeating: "b", count: 64))
+        try Data("audio".utf8).write(to: mediaURL)
+        try await fixture.store.finalizePodcastDownload(
+            revision: try AudioRevision(itemID: itemID, revisionID: revisionID, durationSeconds: 12,
+                                        byteCount: 5, contentHash: contentHash, mediaType: "audio/mpeg",
+                                        createdAt: fixture.createdAt, schemaVersion: 3),
+            mediaURL: mediaURL,
+            download: try PodcastDownload(episodeID: itemID, status: .completed, bytesReceived: 5,
+                                          expectedByteCount: 5, localURL: mediaURL, contentHash: contentHash,
+                                          updatedAt: fixture.createdAt)
+        )
+        try await fixture.store.saveListening(PodcastListeningState(
+            episodeID: itemID, completedAt: fixture.createdAt, lastRevisionID: revisionID, updatedAt: fixture.createdAt
+        ))
+        return mediaURL
+    }
+
+    func testASkipWithUndoKeepsTheAudioUntilTheOfferEndsThenDeletesIt() async throws {
+        let fixture = try await makeFixture(count: 1, queueIndexes: [])
+        addTeardownBlock { await fixture.model.close() }
+        let mediaURL = try await seedDownloadedEpisode(fixture)
+
+        fixture.model.skipFeedEpisode(fixture.episodes[0], offerUndo: true)
+        await drainDecisionWriters(fixture.model)
+        XCTAssertNotNil(fixture.model.undoToast.current, "the Skip offers Undo")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: mediaURL.path), "the audio waits out the window")
+        let during = try await fixture.store.revisions(for: fixture.itemIDs[0])
+        XCTAssertEqual(during.count, 1)
+
+        fixture.model.undoToast.withdrawAll()
+        await drainDecisionWriters(fixture.model)
+        for _ in 0..<200 where FileManager.default.fileExists(atPath: mediaURL.path) {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mediaURL.path), "closing the offer reclaims the audio")
+        let after = try await fixture.store.revisions(for: fixture.itemIDs[0])
+        XCTAssertEqual(after.count, 0)
+    }
+
+    func testUndoGivesTheEpisodeBackWithItsAudioHistoryAndNoNewKeep() async throws {
+        let fixture = try await makeFixture(count: 1, queueIndexes: [])
+        addTeardownBlock { await fixture.model.close() }
+        let itemID = fixture.itemIDs[0]
+        let mediaURL = try await seedDownloadedEpisode(fixture)
+
+        fixture.model.skipFeedEpisode(fixture.episodes[0], offerUndo: true)
+        await drainDecisionWriters(fixture.model)
+        fixture.model.undoToast.undoCurrent()
+        await drainDecisionWriters(fixture.model)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: mediaURL.path))
+        let listening = try await fixture.store.listeningState(for: itemID)
+        XCTAssertEqual(listening?.completedAt, fixture.createdAt, "the listening history is untouched")
+        let decision = try await fixture.store.episodeDecision(for: itemID)
+        XCTAssertNil(decision, "Undo puts back the missing decision; it does not write a manual Keep")
+        XCTAssertTrue(fixture.model.skippedFeedEpisodes.isEmpty)
+        XCTAssertNil(fixture.model.undoToast.current)
+    }
+
+    func testUndoingASkipOfALinkedPairRestoresBothEpisodes() async throws {
+        let fixture = try await makeFixture(count: 2, queueIndexes: [])
+        addTeardownBlock { await fixture.model.close() }
+        let (a, b) = (fixture.itemIDs[0], fixture.itemIDs[1])
+        let preview = try await fixture.store.previewEpisodeAssociation(
+            confirming: PodcastEpisodePairConfirmation(
+                confirmationID: UUID(), feedID: fixture.feedID, first: a, second: b, confirmedAt: fixture.createdAt),
+            representativeID: a)
+        _ = try await fixture.store.applyEpisodeAssociation(preview, at: fixture.createdAt)
+        await fixture.model.reloadLibraryRows()
+
+        fixture.model.skipFeedEpisode(try XCTUnwrap(fixture.model.episodes.first { $0.id == a.rawValue }), offerUndo: true)
+        await drainDecisionWriters(fixture.model)
+        let removedA = try await fixture.store.removalKind(for: a)
+        let removedB = try await fixture.store.removalKind(for: b)
+        XCTAssertNotNil(removedA)
+        XCTAssertNotNil(removedB)
+
+        fixture.model.undoToast.undoCurrent()
+        await drainDecisionWriters(fixture.model)
+
+        let backA = try await fixture.store.removalKind(for: a)
+        let backB = try await fixture.store.removalKind(for: b)
+        XCTAssertNil(backA)
+        XCTAssertNil(backB, "the linked twin comes back with the row that was skipped")
+    }
+
+    func testAnOlderUndoDoesNothingAfterANewerSkip() async throws {
+        let fixture = try await makeFixture(count: 1, queueIndexes: [])
+        addTeardownBlock { await fixture.model.close() }
+        let itemID = fixture.itemIDs[0]
+
+        fixture.model.skipFeedEpisode(fixture.episodes[0], offerUndo: true)
+        await drainDecisionWriters(fixture.model)
+        let first = try XCTUnwrap(fixture.model.undoToast.current)
+
+        // The owner brings it back and skips it again: a newer Skip, with its own offer.
+        fixture.model.restoreSkippedFeedEpisode(try XCTUnwrap(fixture.model.skippedFeedEpisodes.first))
+        await drainDecisionWriters(fixture.model)
+        let restored = try XCTUnwrap(fixture.model.episodes.first { $0.id == itemID.rawValue })
+        try await Task.sleep(nanoseconds: 20_000_000)
+        fixture.model.skipFeedEpisode(restored, offerUndo: true)
+        await drainDecisionWriters(fixture.model)
+
+        fixture.model.undoToast.undo(first.id)
+        await drainDecisionWriters(fixture.model)
+        let decision = try await fixture.store.episodeDecision(for: itemID)
+        XCTAssertEqual(decision?.decision, .skip, "the newer Skip stands")
+        XCTAssertEqual(decision?.source, .manual)
+    }
+}
+
+@MainActor
+extension WiltedMacPlaylistTests {
+    func testUndoingAPlaylistRemovalWhileItIsSavingKeepsTheOfferThenRestores() async throws {
+        let f = try await fixture("busy-undo", count: 3)
+        let model = f.model
+        let playlist = try await created(model, .manual, "Busy")
+        for id in f.ids { await model.addToPlaylist(playlist.id, entryID: id.rawValue) }
+        let raw = f.ids.map(\.rawValue)
+        await model.removeFromPlaylist(playlist.id, entryID: raw[1])
+        XCTAssertNotNil(model.undoToast.current)
+
+        let gate = PlaylistWriteGate()
+        WiltedMacModel.playlistWriteHookForTesting = { try await gate.wait() }
+        defer { WiltedMacModel.playlistWriteHookForTesting = nil }
+        let rename = Task { await model.renamePlaylist(playlist.id, to: "Renamed") }
+        for _ in 0..<600 where gate.entered < 1 { try await Task.sleep(nanoseconds: 5_000_000) }
+        XCTAssertEqual(gate.entered, 1)
+
+        model.undoToast.undoCurrent()
+        XCTAssertNotNil(model.undoToast.current, "a busy playlist does not consume the Undo")
+        XCTAssertEqual(model.playlists.entryIDs[playlist.id], [raw[0], raw[2]])
+
+        gate.release()
+        await rename.value
+        model.undoToast.undoCurrent()
+        for _ in 0..<600 where model.playlists.entryIDs[playlist.id] != raw {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(model.playlists.entryIDs[playlist.id], raw)
+        XCTAssertNil(model.undoToast.current)
+    }
+}

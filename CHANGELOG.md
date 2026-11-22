@@ -4,6 +4,9 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- **Skip** with Undo on the Mac now keeps the episode's audio until the Undo window closes, and Undo puts back exactly what was there: the same earlier decision, the same audio and listening history, not a new Keep. An Undo that is no longer the latest word on an episode (you kept or skipped it again since) does nothing, and a toast past its time does nothing. Undoing a Skip of one episode from a linked pair now puts back both, as the toast says; before, it reported done without restoring anything. Undoing a playlist removal puts the entry back in its old place without reviving dismissed items, and a playlist that is still saving keeps the Undo offer open instead of using it up. A quit inside the window is closed out at the next launch. Clearing a skipped episode's audio never deletes an episode that is playing (it waits for the next launch), unsubscribing one feed no longer ends the Undo offer or clears the audio for episodes skipped from other feeds, and hovering the toast after its time is up no longer brings it back.
+
 ## [0.7.1] - 2026-11-22
 
 Every build installed since 0.6.0 was labelled 0.7.0, and no 0.7.0 section was ever written, so this section holds everything since 0.6.0. From this release on, each push and install raises the version.

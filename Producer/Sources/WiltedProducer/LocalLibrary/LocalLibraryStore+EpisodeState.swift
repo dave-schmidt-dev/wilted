@@ -26,6 +26,10 @@ public struct PodcastEpisodeBatchResult: Sendable {
     public let saveCount: Int
     /// Explicit Restore already committed fresh owner Keep with these receipt members.
     public var atomicOwnerDecisionIDs: [ItemID] = []
+    /// Each owner-skipped member's decision as it stood just before this Skip wrote its own: `nil`
+    /// means it had none. Read in the same transaction as the write, so a soft Skip's Undo can put
+    /// back exactly what was there. A member whose stored decision cannot be read is left out.
+    public var priorDecisions: [ItemID: EpisodeDecisionRecord?] = [:]
 }
 
 extension LocalLibraryStore {
@@ -78,7 +82,13 @@ extension LocalLibraryStore {
     /// journal stay, so Restore and history work; the restored episode has no
     /// download or ready revision and reads as not downloaded.
     /// Explicit group choices are guarded before mutation and retain all backing media.
-    public func retireEpisodes(_ requested: [ItemID], at retiredAt: Timestamp = Timestamp(Date()), asOwnerChoice: Bool = false) throws -> PodcastEpisodeBatchResult {
+    ///
+    /// With `deferringMediaDeletion` the media records and files stay until the caller closes a
+    /// soft Skip through `finalizeSoftSkip`, so `undoSoftSkip` can give the episode back whole.
+    public func retireEpisodes(
+        _ requested: [ItemID], at retiredAt: Timestamp = Timestamp(Date()), asOwnerChoice: Bool = false,
+        deferringMediaDeletion: Bool = false
+    ) throws -> PodcastEpisodeBatchResult {
         let context = ModelContext(container)
         context.autosaveEnabled = false
         defer { if context.hasChanges { context.rollback() } }
@@ -117,11 +127,13 @@ extension LocalLibraryStore {
             committed.append(id)
         }
         var mediaRecordFetchCount = 0
+        var priorDecisions: [ItemID: EpisodeDecisionRecord?] = [:]
         if !committed.isEmpty {
-            let doomed = Set(committed.map(\.rawValue)).subtracting(retainsMedia)
+            let doomed = deferringMediaDeletion ? [] : Set(committed.map(\.rawValue)).subtracting(retainsMedia)
             mediaRecordFetchCount = doomed.isEmpty ? 0 : 3
             let doomedMedia = doomed.isEmpty ? [] : try Self.deleteMediaRecords(forEpisodesWithIDs: doomed, in: context)
             if asOwnerChoice {
+                priorDecisions = Self.priorDecisions(of: committed + alreadyAtTarget, lookup: lookup)
                 for id in committed + alreadyAtTarget {
                     Self.stageRetirementManualDecision(id, at: retiredAt, lookup: lookup, in: context)
                 }
@@ -129,6 +141,7 @@ extension LocalLibraryStore {
             try context.save()
             deleteMediaIfUnreferenced(doomedMedia)
         } else if asOwnerChoice {
+            priorDecisions = Self.priorDecisions(of: alreadyAtTarget, lookup: lookup)
             for id in alreadyAtTarget {
                 Self.stageRetirementManualDecision(id, at: retiredAt, lookup: lookup, in: context)
             }
@@ -138,7 +151,8 @@ extension LocalLibraryStore {
             committed: committed, alreadyAtTarget: alreadyAtTarget, unresolved: unresolved,
             retiredAtByID: retiredAtByID,
             episodeRecordFetchCount: 1, listeningRecordFetchCount: 0,
-            mediaRecordFetchCount: mediaRecordFetchCount, saveCount: committed.isEmpty ? 0 : 1
+            mediaRecordFetchCount: mediaRecordFetchCount, saveCount: committed.isEmpty ? 0 : 1,
+            priorDecisions: priorDecisions
         )
     }
 

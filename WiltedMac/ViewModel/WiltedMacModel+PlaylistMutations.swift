@@ -198,13 +198,37 @@ extension WiltedMacModel {
         playlists.entryIDs[playlistID] = optimistic
         do {
             try await Self.playlistWriteHookForTesting?()
-            try await store.removePlaylistEntry(playlistID: playlistID, entryID: entryID)
+            let place = try await store.removePlaylistEntryRememberingPlace(playlistID: playlistID, entryID: entryID)
+            if let place, !isClosingTemporaryState {
+                undoToast.offer(message: "Removed from playlist", actionName: "Remove from Playlist", subjects: [entryID]) { [weak self] in
+                    self?.undoPlaylistRemoval(playlistID, entryID: entryID, place: place) ?? .done
+                }
+            }
             finishPlaylistOperation(playlistID, token: token)
         } catch {
             if playlists.entryIDs[playlistID] == optimistic { playlists.entryIDs[playlistID] = previous }
             failPlaylistOperation(playlistID, message: "That could not be removed from the playlist.")
             finishPlaylistOperation(playlistID, token: token)
         }
+    }
+
+    /// Puts a removed entry back. A playlist still saving keeps the offer open instead of spending it:
+    /// the operation is claimed here, before any waiting, so nothing can slip in between.
+    private func undoPlaylistRemoval(_ playlistID: String, entryID: String, place: PlaylistEntryPlace) -> WiltedMacUndoResult {
+        guard !isClosingTemporaryState, let store, playlist(playlistID) != nil else { return .done }
+        guard playlists.pending[playlistID] == nil else { return .retry }
+        guard let token = beginPlaylistOperation(playlistID, .playlist) else { return .retry }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.finishPlaylistOperation(playlistID, token: token) }
+            do {
+                self.playlists.entryIDs[playlistID] = try await store.restorePlaylistEntry(
+                    playlistID: playlistID, entryID: entryID, place: place)
+            } catch {
+                self.failPlaylistOperation(playlistID, message: "That item could not be restored to the playlist.")
+            }
+        }
+        return .done
     }
 
     /// Moves a manual playlist's entry so it sits at `index` in the resulting order.

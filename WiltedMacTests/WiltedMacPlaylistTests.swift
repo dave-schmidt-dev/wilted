@@ -256,6 +256,14 @@ final class WiltedMacPlaylistTests: XCTestCase {
         XCTAssertEqual(model.playlists.entryIDs[playlist.id], [raw[2], raw[1]])
         XCTAssertEqual(model.podcastQueueIDs, Array(raw.prefix(2)), "the Larder queue is not edited")
         XCTAssertTrue(model.episodes.contains { $0.id == raw[0] }, "removing from a playlist keeps the item")
+        XCTAssertEqual(model.undoToast.current?.message, "Removed from playlist")
+        XCTAssertEqual(model.undoToast.current?.subjects, [raw[0]])
+        model.undoToast.undoCurrent()
+        try await settle()
+        let store = try XCTUnwrap(model.store)
+        let restored = try await store.playlistEntryIDs(playlistID: playlist.id)
+        XCTAssertEqual(restored, [raw[2], raw[0], raw[1]])
+        XCTAssertEqual(model.playlists.entryIDs[playlist.id], restored)
     }
 
     func testAnAutomaticPlaylistShowsWhatItsRulesMatch() async throws {
