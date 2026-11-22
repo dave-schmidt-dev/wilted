@@ -83,7 +83,7 @@ private final class LifecycleRetryClock {
 private final class LifecycleSpeaker: BulletinSpeaking {
     var completion: (@MainActor () -> Void)?
     var stops = 0
-    func speak(_ text: String, finished: @escaping @MainActor () -> Void) -> Bool {
+    func speak(_ text: String, playbackVolume: Float, finished: @escaping @MainActor () -> Void) -> Bool {
         completion = finished
         return true
     }

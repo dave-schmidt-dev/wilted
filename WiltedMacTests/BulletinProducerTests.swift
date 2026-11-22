@@ -25,7 +25,10 @@ final class BulletinProducerHarness: @unchecked Sendable {
         get { lock.withLock { _items } }
         set { lock.withLock { _items = newValue } }
     }
-    var published: LibraryBulletins? { lock.withLock { _published } }
+    var published: LibraryBulletins? {
+        get { lock.withLock { _published } }
+        set { lock.withLock { _published = newValue } }
+    }
     var publishCount: Int { lock.withLock { _publishCount } }
     var newsFetches: Int { lock.withLock { _newsFetches } }
     var now: Date {

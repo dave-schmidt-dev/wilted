@@ -65,6 +65,7 @@ actor BulletinProducer {
     static let unavailableRetry: TimeInterval = 30
     static let seenLimit = 2000
 
+    private let heardHeadlines: @Sendable () async -> HeardHeadlineHistory.Snapshot
     private let settings: @Sendable () async -> BulletinProducerSettings
     private let newsItems: @Sendable () async throws -> [NewsHeadlineCandidate]
     private let fetchPublished: @Sendable () async throws -> LibraryBulletins?
@@ -94,7 +95,9 @@ actor BulletinProducer {
          onStatus: @escaping @Sendable (BulletinProducerStatus) -> Void = { _ in },
          sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
          now: @escaping @Sendable () -> Date = { Date() },
-         pollInterval: TimeInterval = BulletinProducer.pollInterval) {
+         pollInterval: TimeInterval = BulletinProducer.pollInterval,
+         heardHeadlines: @escaping @Sendable () async -> HeardHeadlineHistory.Snapshot = { .init() }) {
+        self.heardHeadlines = heardHeadlines
         self.settings = settings
         self.newsItems = newsItems
         self.fetchPublished = fetchPublished
@@ -257,6 +260,7 @@ actor BulletinProducer {
 
     private func collectHeadlines(gapMinutes: Int, topics: HeadlineTopicFilter) async throws {
         let candidates = try await newsItems()
+        let heard = await heardHeadlines()
         let skipped = Set(candidates.filter {
             topics.skips(title: $0.title, link: $0.link, categories: $0.categories)
         }.map(\.id))
@@ -274,7 +278,8 @@ actor BulletinProducer {
             return time.timeIntervalSince(date) <= Self.headlineLifetime && date.timeIntervalSince(time) < 300
         }
         // The same story from another feed is read once; a major update to it may be read again.
-        .filter { stories.verdict(for: $0.title, at: time) != .duplicate }
+        .filter { heard.allows(id: "headline:\($0.id)", title: $0.title, at: time)
+            && stories.verdict(for: $0.title, at: time) != .duplicate }
         guard let newest = eligible.max(by: { ($0.publishedAt ?? time) < ($1.publishedAt ?? time) }) else { return }
         if let lastEmittedAt, time.timeIntervalSince(lastEmittedAt) < Double(gapMinutes) * 60 { return }
         guard let bulletin = Self.bulletin(for: newest, at: time) else { return }

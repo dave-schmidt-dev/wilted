@@ -253,7 +253,7 @@ final class ReadinessSpeaker: BulletinSpeaking {
     private(set) var callCount = 0
     private(set) var texts: [String] = []
 
-    func speak(_ text: String, finished: @escaping @MainActor () -> Void) -> Bool {
+    func speak(_ text: String, playbackVolume: Float, finished: @escaping @MainActor () -> Void) -> Bool {
         callCount += 1
         texts.append(text)
         return true

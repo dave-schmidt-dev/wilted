@@ -9,28 +9,55 @@ import WiltedLibrary
 public protocol BulletinSpeaking: AnyObject {
     /// Starts speaking and returns whether it did. `finished` is called once, on the main actor,
     /// when the speech ends by itself; stopping with `stop()` does not call it.
-    func speak(_ text: String, finished: @escaping @MainActor () -> Void) -> Bool
+    /// Implementations must set their output level with ``BulletinSpeechGain/volume(forPlaybackVolume:)``.
+    func speak(_ text: String, playbackVolume: Float, finished: @escaping @MainActor () -> Void) -> Bool
     func stop()
+}
+
+/// The volume rule every bulletin speaker must apply, including future cloned-voice speakers.
+public enum BulletinSpeechGain {
+    /// Speech is attenuated to half the episode's configured playback level as a conservative
+    /// match for the absence of a measured episode loudness value.
+    public static let playbackAttenuation: Float = 0.5
+
+    /// Returns a speech level at or below the app's playback volume.
+    public static func volume(forPlaybackVolume playbackVolume: Float) -> Float {
+        guard playbackVolume.isFinite else { return 0 }
+        return min(max(playbackVolume, 0), 1) * playbackAttenuation
+    }
 }
 
 /// `AVSpeechSynthesizer` behind `BulletinSpeaking`.
 @MainActor
 public final class SystemBulletinSpeaker: NSObject, BulletinSpeaking, AVSpeechSynthesizerDelegate {
-    private let synthesizer = AVSpeechSynthesizer()
+    private let synthesizer: AVSpeechSynthesizer
+    private let enqueueUtterance: @MainActor (AVSpeechUtterance) -> Void
     private var current: (id: ObjectIdentifier, finished: @MainActor () -> Void)?
 
     public override init() {
+        let synthesizer = AVSpeechSynthesizer()
+        self.synthesizer = synthesizer
+        enqueueUtterance = { synthesizer.speak($0) }
         super.init()
         synthesizer.delegate = self
     }
 
-    public func speak(_ text: String, finished: @escaping @MainActor () -> Void) -> Bool {
+    init(utteranceHandler: @escaping @MainActor (AVSpeechUtterance) -> Void) {
+        synthesizer = AVSpeechSynthesizer()
+        enqueueUtterance = utteranceHandler
+        super.init()
+        synthesizer.delegate = self
+    }
+
+    public func speak(_ text: String, playbackVolume: Float,
+                      finished: @escaping @MainActor () -> Void) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
         stop()
         let utterance = AVSpeechUtterance(string: trimmed)
+        utterance.volume = BulletinSpeechGain.volume(forPlaybackVolume: playbackVolume)
         current = (ObjectIdentifier(utterance), finished)
-        synthesizer.speak(utterance)
+        enqueueUtterance(utterance)
         return true
     }
 
@@ -69,6 +96,8 @@ final class PlaybackInterruptions {
     var reducer: InterruptionReducer
     let speaker: any BulletinSpeaking
     let clock: PlaybackInterruptionClock
+    let shouldSpeakHeadline: @MainActor (Bulletin) -> Bool
+    let didStartHeadline: @MainActor (Bulletin) -> Void
     /// Transcript cues of an item revision, for pause points.
     let cues: @MainActor (ItemID, RevisionID) async -> (cues: [TranscriptCue]?, timing: TranscriptTiming)
     var tickTask: Task<Void, Never>?
@@ -90,11 +119,15 @@ final class PlaybackInterruptions {
 
     init(reducer: InterruptionReducer, speaker: any BulletinSpeaking, clock: PlaybackInterruptionClock,
          routeSource: (any MacAudioRouteSource)?,
+         shouldSpeakHeadline: @escaping @MainActor (Bulletin) -> Bool = { _ in true },
+         didStartHeadline: @escaping @MainActor (Bulletin) -> Void = { _ in },
          cues: @escaping @MainActor (ItemID, RevisionID) async -> (cues: [TranscriptCue]?, timing: TranscriptTiming)) {
         self.routeSource = routeSource
         self.reducer = reducer
         self.speaker = speaker
         self.clock = clock
+        self.shouldSpeakHeadline = shouldSpeakHeadline
+        self.didStartHeadline = didStartHeadline
         self.cues = cues
     }
 
@@ -148,10 +181,16 @@ extension PlaybackController {
     public func enableInterruptions(
         speaker: any BulletinSpeaking = SystemBulletinSpeaker(), waitLimit: TimeInterval = 60,
         routeSource: any MacAudioRouteSource = MacAudioRouteLossObserver(),
+        spokenHeadlineExpiries: [String: Date] = [:],
+        shouldSpeakHeadline: @escaping @MainActor (Bulletin) -> Bool = { _ in true },
+        didStartHeadline: @escaping @MainActor (Bulletin) -> Void = { _ in },
+        now: @escaping @Sendable () -> Date = { Date() },
         protectionFailed: (@MainActor () -> Void)? = nil
     ) -> Bool {
-        let enabled = enableInterruptions(speaker: speaker, waitLimit: waitLimit, clock: PlaybackInterruptionClock(),
-                                          cues: nil, routeSource: routeSource)
+        let enabled = enableInterruptions(
+            speaker: speaker, waitLimit: waitLimit, clock: PlaybackInterruptionClock(now: now), cues: nil,
+            routeSource: routeSource, spokenHeadlineExpiries: spokenHeadlineExpiries,
+            shouldSpeakHeadline: shouldSpeakHeadline, didStartHeadline: didStartHeadline)
         interruptions?.protectionFailed = protectionFailed
         return enabled
     }
@@ -160,12 +199,17 @@ extension PlaybackController {
     func enableInterruptions(
         speaker: any BulletinSpeaking, waitLimit: TimeInterval, clock: PlaybackInterruptionClock,
         cues: (@MainActor (ItemID, RevisionID) async -> (cues: [TranscriptCue]?, timing: TranscriptTiming))?,
-        routeSource: (any MacAudioRouteSource)? = nil
+        routeSource: (any MacAudioRouteSource)? = nil,
+        spokenHeadlineExpiries: [String: Date] = [:],
+        shouldSpeakHeadline: @escaping @MainActor (Bulletin) -> Bool = { _ in true },
+        didStartHeadline: @escaping @MainActor (Bulletin) -> Void = { _ in }
     ) -> Bool {
         disableInterruptions()
         let store = store
         interruptions = PlaybackInterruptions(
-            reducer: InterruptionReducer(waitLimit: waitLimit), speaker: speaker, clock: clock, routeSource: routeSource,
+            reducer: InterruptionReducer(waitLimit: waitLimit, alreadySpoken: spokenHeadlineExpiries),
+            speaker: speaker, clock: clock, routeSource: routeSource,
+            shouldSpeakHeadline: shouldSpeakHeadline, didStartHeadline: didStartHeadline,
             cues: cues ?? { itemID, revisionID in
                 let transcript = try? await store.transcript(for: itemID, revisionID: revisionID)
                 return (transcript?.cues, transcript?.timing ?? TranscriptTiming.none)
@@ -199,6 +243,8 @@ extension PlaybackController {
 
     /// A bulletin arrived (a headline from the producer, or an alert from the monitor).
     public func deliverBulletin(_ bulletin: Bulletin) {
+        if bulletin.kind == .headline, let engine = interruptions,
+           !engine.shouldSpeakHeadline(bulletin) { return }
         guard let snapshot = interruptionSnapshot() else { return }
         process(.bulletinArrived(bulletin, snapshot))
     }
@@ -324,10 +370,17 @@ extension PlaybackController {
         speakingBulletin = bulletin
         engine.speechToken &+= 1
         let token = engine.speechToken
-        guard engine.speaker.speak(bulletin.text, finished: { [weak self, weak engine] in
+        guard engine.speaker.speak(bulletin.text, playbackVolume: backend.volume, finished: { [weak self, weak engine] in
             guard let engine else { return }
             self?.speechEnded(token, engine: engine)
         }) else { return false }
+        if bulletin.kind == .headline {
+            engine.didStartHeadline(bulletin)
+            let newlyIneligibleIDs = engine.reducer.pending.compactMap { candidate in
+                candidate.kind == .headline && !engine.shouldSpeakHeadline(candidate) ? candidate.id : nil
+            }
+            engine.reducer.removePendingBulletins(withIDs: Set(newlyIneligibleIDs))
+        }
         let timeout = Self.speechTimeout(forCharacters: bulletin.text.count)
         engine.watchdog?.cancel()
         let clock = engine.clock

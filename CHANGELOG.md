@@ -208,6 +208,8 @@ All notable changes to this project are documented in this file.
 - Unused Python runtime code and dependencies (`sounddevice`, `peewee`, `rich`, `playwright`, `textual`).
 
 ### Fixed
+- On the Mac, headlines already heard stay skipped for 24 hours across relaunches and changes to interruption settings. Reworded copies from other feeds are skipped too. Major updates can still play.
+- Mac bulletin speech follows episode playback volume with extra attenuation for the spoken voice.
 - Mac bulletins automatically retry sound output monitoring after a failure. Audio held during route loss stays paused.
 - An episode paused on the Mac could start from the beginning on the iPhone. An iPhone app opened afresh while the Mac was idle did not know the Mac existed until the Mac next published something, so its sync read nothing from the Mac and replaced the positions it had saved with that nothing. The iPhone now tells its sync about the Mac and the episodes it holds positions for, and starting an episode reads that episode's position from iCloud first (for up to 2 seconds, then it starts on what the phone already has).
 - Pressing play on the iPhone for an episode it had paused, after the Mac played that episode further, resumed at the iPhone's old pause and handed that older place back to the Mac. When its pause is more than 30 seconds old, the iPhone now checks iCloud first (waiting 1 second at most) and resumes where the Mac stopped. A quick pause and play, a skip made on the iPhone after the Mac stopped, and a resume with no signal all stay where the iPhone was.

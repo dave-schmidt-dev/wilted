@@ -39,8 +39,11 @@ final class WiltedMacBulletinHub {
     @ObservationIgnored private var newsReadinessRequest = 0
     @ObservationIgnored private var testBulletinSpeaker: (any BulletinSpeaking)?
 
+    @ObservationIgnored private let heardHistory: HeardHeadlineHistory
+    @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private weak var model: WiltedMacModel?
     @ObservationIgnored private var ownedLocation: WiltedLocationProvider?
+    @ObservationIgnored private let producerFactory: (@MainActor () -> BulletinProducer)?
     @ObservationIgnored private var producer: BulletinProducer?
     @ObservationIgnored private let makeRouteSource: @MainActor () -> any MacAudioRouteSource
     @ObservationIgnored private let makeSpeaker: @MainActor () -> any BulletinSpeaking
@@ -63,7 +66,12 @@ final class WiltedMacBulletinHub {
          makeSpeaker: @escaping @MainActor () -> any BulletinSpeaking = { SystemBulletinSpeaker() },
          makeRouteSource: @escaping @MainActor () -> any MacAudioRouteSource = { MacAudioRouteLossObserver() },
          makeAlertSource: @escaping @MainActor (String?) -> any NWSAlertSource = WiltedMacBulletinHub.nwsClient,
-         retrySleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }) {
+         retrySleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+         now: @escaping @Sendable () -> Date = { Date() },
+         producerFactory: (@MainActor () -> BulletinProducer)? = nil) {
+        self.producerFactory = producerFactory
+        self.now = now
+        self.heardHistory = HeardHeadlineHistory(defaults: model.preferences, now: now())
         self.retrySleep = retrySleep
         self.model = model
         ownedLocation = location
@@ -155,7 +163,8 @@ final class WiltedMacBulletinHub {
         testBulletinSpeaker?.stop()
         let speaker = makeSpeaker()
         testBulletinSpeaker = speaker
-        let started = speaker.speak(Self.testBulletinText) { [weak self, weak speaker] in
+        let playbackVolume = model?.playback?.backend.volume ?? Float(model?.playbackVolume ?? 1)
+        let started = speaker.speak(Self.testBulletinText, playbackVolume: playbackVolume) { [weak self, weak speaker] in
             guard let self, self.testBulletinSpeaker === speaker else { return }
             self.testBulletinSpeaker = nil
         }
@@ -186,7 +195,7 @@ final class WiltedMacBulletinHub {
             if let producer {
                 Task { await producer.settingsChanged() }
             } else {
-                let made = makeProducer()
+                let made = producerFactory?() ?? makeProducer()
                 producer = made
                 Task { await made.start() }
             }
@@ -199,10 +208,7 @@ final class WiltedMacBulletinHub {
     }
 
     private func makeProducer() -> BulletinProducer {
-        BulletinProducer(
-            settings: { [weak self] in
-                await MainActor.run { self?.currentSettings ?? Self.allOff }
-            },
+        makeProducer(
             newsItems: { [weak self] in
                 guard let self else { throw CancellationError() }
                 return try await self.newsCandidates()
@@ -217,9 +223,22 @@ final class WiltedMacBulletinHub {
                 guard let self else { throw CancellationError() }
                 try await self.publisher().publishBulletins(bulletins)
                 await self.channelUpdated(bulletins)
-            },
+            })
+    }
+
+    func makeProducer(
+        newsItems: @escaping @Sendable () async throws -> [NewsHeadlineCandidate],
+        fetchPublished: @escaping @Sendable () async throws -> LibraryBulletins?,
+        publish: @escaping @Sendable (LibraryBulletins) async throws -> Void
+    ) -> BulletinProducer {
+        BulletinProducer(
+            settings: { [weak self] in
+                await MainActor.run { self?.currentSettings ?? Self.allOff }
+            }, newsItems: newsItems, fetchPublished: fetchPublished, publish: publish,
             onStatus: { [weak self] status in
                 Task { @MainActor in self?.apply(status) }
+            }, now: now, heardHeadlines: { [heardHistory, now] in
+                await heardHistory.snapshot(at: now())
             })
     }
 
@@ -290,8 +309,18 @@ final class WiltedMacBulletinHub {
         wasPlaying = playing
         if let controller, attachedController == nil, lastFailure == nil || retryTriggered {
             let source = makeRouteSource()
-            if controller.enableInterruptions(speaker: makeSpeaker(), waitLimit: TimeInterval(waitLimit),
-                                              routeSource: source, protectionFailed: { [weak self] in
+            if controller.enableInterruptions(
+                speaker: makeSpeaker(), waitLimit: TimeInterval(waitLimit), routeSource: source,
+                spokenHeadlineExpiries: heardHistory.snapshot(at: now()).expiries,
+                shouldSpeakHeadline: { [heardHistory, now] headline in
+                    let time = now()
+                    return heardHistory.snapshot(at: time).allows(
+                        id: headline.id, title: BulletinProducer.headlineTitle(of: headline.text), at: time)
+                },
+                didStartHeadline: { [heardHistory, now] headline in
+                    heardHistory.record(id: headline.id, title: BulletinProducer.headlineTitle(of: headline.text), at: now())
+                },
+                now: now, protectionFailed: { [weak self] in
                     self?.protectionFailed(at: source.failureStep ?? .defaultOutputRead)
                 }) {
                 if let lastFailure {

@@ -6,7 +6,7 @@ import WiltedProducer
 import WiltedWeather
 
 @MainActor
-private final class HubFakeLocationManager: WiltedLocationManaging {
+final class HubFakeLocationManager: WiltedLocationManaging {
     var authorization: WiltedLocationAuthorization = .denied
     var onAuthorizationChange: (() -> Void)?
     var onFix: ((Double, Double) -> Void)?
@@ -16,19 +16,19 @@ private final class HubFakeLocationManager: WiltedLocationManaging {
 }
 
 @MainActor
-private final class HubFakeWiFi: WiltedWiFiPowerReading {
+final class HubFakeWiFi: WiltedWiFiPowerReading {
     var isPoweredOn = true
 }
 
 /// A speaker that never makes a sound.
 @MainActor
 private final class HubSilentSpeaker: BulletinSpeaking {
-    func speak(_ text: String, finished: @escaping @MainActor () -> Void) -> Bool { false }
+    func speak(_ text: String, playbackVolume: Float, finished: @escaping @MainActor () -> Void) -> Bool { false }
     func stop() {}
 }
 
 /// Counts requests and fails each one, so a running monitor shows up as calls and a stopped one as none.
-private final class HubCountingSource: NWSAlertSource, @unchecked Sendable {
+final class HubCountingSource: NWSAlertSource, @unchecked Sendable {
     struct Failure: Error {}
     private let lock = NSLock()
     private var value = 0

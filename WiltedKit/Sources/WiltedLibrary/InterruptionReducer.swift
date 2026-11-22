@@ -101,7 +101,17 @@ public struct InterruptionReducer: Sendable {
     /// Spoken or speaking ids with their expiry, so a bulletin is spoken once and the memory is bounded.
     private var spoken: [String: Date] = [:]
 
-    public init(waitLimit: TimeInterval = 60) { self.waitLimit = max(0, waitLimit) }
+    /// Creates a reducer with ids already spoken on this device and their retention deadlines.
+    /// Values whose deadline has passed are removed on the first event.
+    public init(waitLimit: TimeInterval = 60, alreadySpoken: [String: Date] = [:]) {
+        self.waitLimit = max(0, waitLimit)
+        self.spoken = alreadySpoken
+    }
+
+    /// Removes queued bulletins that became ineligible while another headline started speaking.
+    public mutating func removePendingBulletins(withIDs ids: Set<String>) {
+        pending.removeAll { ids.contains($0.id) }
+    }
 
     public mutating func handle(_ event: InterruptionEvent) -> [InterruptionEffect] {
         switch event {

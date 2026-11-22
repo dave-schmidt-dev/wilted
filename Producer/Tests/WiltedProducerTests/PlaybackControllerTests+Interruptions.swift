@@ -12,12 +12,14 @@ final class StubSpeaker: BulletinSpeaking {
     var onStop: (@MainActor () -> Void)?
     var completions: [@MainActor () -> Void] = []
     private(set) var spoken: [String] = []
+    private(set) var playbackVolumes: [Float] = []
     private(set) var stopCount = 0
     private var finished: (@MainActor () -> Void)?
 
-    func speak(_ text: String, finished: @escaping @MainActor () -> Void) -> Bool {
+    func speak(_ text: String, playbackVolume: Float, finished: @escaping @MainActor () -> Void) -> Bool {
         guard canStart else { return false }
         spoken.append(text)
+        playbackVolumes.append(playbackVolume)
         self.finished = finished
         completions.append(finished)
         return true
@@ -117,6 +119,8 @@ extension PlaybackControllerTests {
 
     func interruptionRig(
         cues: (@MainActor (ItemID, RevisionID) async -> (cues: [TranscriptCue]?, timing: TranscriptTiming))? = nil,
+        shouldSpeakHeadline: @escaping @MainActor (Bulletin) -> Bool = { _ in true },
+        didStartHeadline: @escaping @MainActor (Bulletin) -> Void = { _ in },
         firesWatchdog: Bool = false, name: String = #function
     ) async throws -> InterruptionRig {
         let path = storeURL(name)
@@ -129,7 +133,9 @@ extension PlaybackControllerTests {
         let wall = TestWallClock()
         wall.firesWatchdog = firesWatchdog
         let route = InterruptionRoute()
-        controller.enableInterruptions(speaker: speaker, waitLimit: 60, clock: wall.clock, cues: cues, routeSource: route)
+        controller.enableInterruptions(
+            speaker: speaker, waitLimit: 60, clock: wall.clock, cues: cues, routeSource: route,
+            shouldSpeakHeadline: shouldSpeakHeadline, didStartHeadline: didStartHeadline)
         return InterruptionRig(controller: controller, backend: backend, route: route, speaker: speaker, wall: wall,
                                root: path.deletingLastPathComponent())
     }
@@ -159,6 +165,58 @@ extension PlaybackControllerTests {
         XCTAssertEqual(rig.backend.currentTime, 10, accuracy: 0.0001, "at the position it was held at")
         XCTAssertNil(controller.speakingBulletin)
         XCTAssertTrue(controller.isPlaying)
+    }
+
+    func testHeadlineSpeakerReceivesTheCurrentPlaybackVolume() async throws {
+        let rig = try await interruptionRig()
+        defer { try? FileManager.default.removeItem(at: rig.root) }
+        rig.controller.setVolume(0.35)
+        try rig.controller.play()
+
+        rig.controller.deliverBulletin(try bulletin("story-one", .headline, .extreme, at: rig.wall.now))
+        XCTAssertEqual(rig.speaker.playbackVolumes, [0.35])
+        rig.speaker.finishSpeaking()
+
+        rig.controller.setVolume(0.6)
+        rig.controller.deliverBulletin(try bulletin("story-two", .headline, .extreme, at: rig.wall.now))
+        XCTAssertEqual(rig.speaker.playbackVolumes, [0.35, 0.6])
+    }
+
+    func testStartingAHeadlineDropsAQueuedRewordingAndResumesPlayback() async throws {
+        var storyWasHeard = false
+        let rig = try await interruptionRig(
+            shouldSpeakHeadline: { _ in !storyWasHeard },
+            didStartHeadline: { _ in storyWasHeard = true })
+        defer { try? FileManager.default.removeItem(at: rig.root) }
+        try rig.controller.play()
+        rig.backend.currentTime = 4
+        let now = rig.wall.now
+        let first = try Bulletin(
+            id: "headline:wire-a", kind: .headline, text: "Hakeem Jeffries weighs data center plans",
+            severity: .unknown, issuedAt: now, expiresAt: now.addingTimeInterval(3600))
+        let reworded = try Bulletin(
+            id: "headline:wire-b", kind: .headline, text: "A new server campus draws congressional scrutiny",
+            severity: .unknown, issuedAt: now.addingTimeInterval(1), expiresAt: now.addingTimeInterval(3601))
+
+        rig.controller.deliverBulletin(first)
+        rig.controller.deliverBulletin(reworded)
+        XCTAssertTrue(rig.speaker.spoken.isEmpty, "both headlines wait before the story is heard")
+
+        rig.wall.now = now.addingTimeInterval(61)
+        rig.controller.interruptionTick()
+        XCTAssertEqual(rig.speaker.spoken, [first.text])
+        XCTAssertTrue(storyWasHeard)
+        XCTAssertEqual(rig.controller.speakingBulletin?.id, first.id)
+        XCTAssertFalse(rig.backend.isPlaying)
+
+        rig.speaker.finishSpeaking()
+        XCTAssertTrue(rig.backend.isPlaying, "the skipped rewording does not leave playback held")
+        XCTAssertEqual(rig.backend.currentTime, 4, accuracy: 0.0001)
+        rig.wall.now = now.addingTimeInterval(122)
+        rig.controller.interruptionTick()
+        XCTAssertEqual(rig.speaker.spoken, [first.text], "the queued story stays removed")
+        XCTAssertNil(rig.controller.speakingBulletin)
+        XCTAssertTrue(rig.backend.isPlaying)
     }
 
     func testAHeadlineWaitsForItsPauseBetweenCuesThenSpeaksAndResumes() async throws {
