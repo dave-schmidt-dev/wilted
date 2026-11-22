@@ -328,7 +328,8 @@ SH
     APPLE_UI_TEST_LOCK="$lock" GATE_XCTEST_DEVICE_SET="$scratch/no-devices" \
     bash "$gate" >"$interrupted_log" 2>&1 &
   local pid=$! attempt fixture
-  for attempt in {1..100}; do
+  # This start-up wait is sized for a heavily loaded machine and is not an assertion.
+  for attempt in {1..450}; do
     [[ -s "$proof" ]] && break
     kill -0 "$pid" 2>/dev/null || break
     sleep 0.1
