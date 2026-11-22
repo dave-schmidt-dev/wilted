@@ -49,6 +49,55 @@ extension WiltedMacFeedRulesTests {
         )
     }
 
+    /// A change the listener got to between the preview and Apply is left alone, and the report counts
+    /// what was written, not what the preview planned.
+    func testApplyReportsOnlyTheChangesItWrote() async throws {
+        let fixture = try await makeFixture(mixed)
+        fixture.editor.preview()
+        await fixture.editor.task?.value
+        let planned = try XCTUnwrap(fixture.editor.plan?.counts.totalChanges)
+        XCTAssertEqual(planned, 5)
+        try await fixture.store.save(episodeDecision: EpisodeDecisionRecord(
+            episodeID: try ItemID(rawValue: fixture.id("b")), decision: .keep, source: .manual,
+            decidedAt: Timestamp(Date())
+        ))
+        fixture.editor.apply()
+        await fixture.editor.task?.value
+        XCTAssertEqual(fixture.editor.message, "Applied 4 changes.")
+        let after = try await fixture.decisions()
+        XCTAssertEqual(after[fixture.id("b")]?.source, .manual, "the newer choice stands")
+    }
+
+    func testReplacingChangesCountsEachWrittenAdmissionByKind() throws {
+        var planned = FeedRulesCounts()
+        planned.keeps = 3
+        planned.skips = 2
+        planned.keepToSkip = 1
+        planned.protectedManual = 4
+        let rule = UUID()
+        func admission(_ decision: EpisodeDecision, was prior: EpisodeDecision?) throws -> FeedRulesAdmission {
+            let id = try ItemID.derivePodcastEpisode(
+                feedURL: URL(string: "https://x.example.test/f.xml")!, rssGUID: UUID().uuidString,
+                enclosureURL: URL(string: "https://media.example.test/\(UUID().uuidString).mp3")!
+            )
+            return FeedRulesAdmission(
+                episodeID: id.rawValue, decision: decision, source: .rule, ruleID: rule,
+                expected: try prior.map {
+                    EpisodeDecisionRecord(episodeID: id, decision: $0, source: .rule, ruleID: rule, decidedAt: Timestamp(Date()))
+                }
+            )
+        }
+        let counts = planned.replacingChanges(withApplied: [
+            try admission(.keep, was: nil), try admission(.skip, was: .keep), try admission(.keep, was: .skip),
+        ])
+        XCTAssertEqual(counts.keeps, 1)
+        XCTAssertEqual(counts.skips, 0)
+        XCTAssertEqual(counts.keepToSkip, 1)
+        XCTAssertEqual(counts.skipToKeep, 1)
+        XCTAssertEqual(counts.protectedManual, 4, "what is left alone is carried over")
+        XCTAssertEqual(counts.totalChanges, 3)
+    }
+
     // MARK: Apply's Keeps are automatic Keeps (4.2b)
 
     private var downloadAndPrepare: FeedAutomationPolicy {

@@ -31,6 +31,8 @@ private actor AutomationSpy {
     /// time -- the shape a claim-lost or user-cancel outcome takes once it
     /// reaches `startClaimedDownload`. `withRetries` must never retry these.
     var nonRetryableDownloadFailures: Set<String> = []
+    /// Episodes a possible-duplicate flag holds after their claim was listed.
+    var heldDownloads: Set<String> = []
     /// The refresh activity Feeds shows: every open and close, and what each
     /// refresh attempt and download start saw of it.
     var refreshActive = false
@@ -41,7 +43,8 @@ private actor AutomationSpy {
     init(claimsByFeed: [String: [String]] = [:], unfinished: [String] = [],
          transientFailures: [String: Int] = [:], downloadFailures: Set<String> = [],
          transientDownloadFailures: [String: Int] = [:], nonRetryableDownloadFailures: Set<String> = [],
-         nonRetryableRefreshFailures: Set<String> = []) {
+         nonRetryableRefreshFailures: Set<String> = [], heldDownloads: Set<String> = []) {
+        self.heldDownloads = heldDownloads
         self.claimsByFeed = claimsByFeed
         self.unfinished = unfinished
         self.transientFailures = transientFailures
@@ -72,6 +75,7 @@ private actor AutomationSpy {
     func startDownload(_ episodeID: String) throws {
         activeDuringDownload.append(refreshActive)
         downloadAttempts[episodeID, default: 0] += 1
+        if heldDownloads.contains(episodeID) { throw WiltedAutomationFault.downloadHeld(episodeID) }
         if nonRetryableDownloadFailures.contains(episodeID) { throw NonRetryable() }
         if downloadFailures.contains(episodeID) { throw Transient() }
         if let remaining = transientDownloadFailures[episodeID], remaining > 0 {
@@ -517,6 +521,21 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
         XCTAssertEqual(statuses.last, .finished(refreshed: 0, downloaded: 1, failed: 1))
         let started = await spy.startedDownloads
         XCTAssertEqual(started, ["succeeds"])
+    }
+
+    /// A claim a possible-duplicate flag holds is neither started nor failed: it must not be counted
+    /// as downloaded, and it must not be reported as a failure either.
+    func testAHeldClaimIsCountedAsNeitherDownloadedNorFailed() async {
+        let spy = AutomationSpy(unfinished: ["held", "succeeds"], heldDownloads: ["held"])
+        let subject = coordinator(spy: spy, settings: settings(refresh: .manual))
+        await subject.reconcile()
+
+        let statuses = await spy.statuses
+        XCTAssertEqual(statuses.last, .finished(refreshed: 0, downloaded: 1, failed: 0))
+        let started = await spy.startedDownloads
+        XCTAssertEqual(started, ["succeeds"])
+        let attempts = await spy.attempts(for: "held")
+        XCTAssertEqual(attempts, 1, "a hold is not retried")
     }
 
     // MARK: - Launch order and refresh visibility

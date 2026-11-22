@@ -193,7 +193,12 @@ extension WiltedMacModel {
                 // requested the row has no state to keep and nothing names it
                 // as pending. It reports what it will do straight away, so the
                 // reload below has something to preserve.
-                if await self.automaticPreparationSuppressed(for: episode) {
+                let verdict = await self.automaticPreparationVerdict(for: episode)
+                if verdict == .unknown {
+                    // The flag list could not be read: that says nothing about this episode, so
+                    // its waiting request is left in place rather than cancelled. Nothing new is
+                    // admitted until the list reads again.
+                } else if verdict == .suppressed {
                     // A feed-level Off is a hard stop, including for the global
                     // prepare-everything override. Explicit Prepare never
                     // passes through here.
@@ -293,12 +298,26 @@ extension WiltedMacModel {
     /// preparation. Use global leaves processing policy in charge. Explicit
     /// Download and Prepare actions never pass through here.
     func automaticPreparationSuppressed(for episode: WiltedMacEpisode) async -> Bool {
-        // The flag is read from the store each time, and a failed read blocks.
-        if await automaticWorkIsHeldFresh(episode.id) { return true }
+        await automaticPreparationVerdict(for: episode) != .allowed
+    }
+
+    /// `suppressed` is a decision about this episode: a flag on it, or its feed's policy. `unknown`
+    /// is a flag list that could not be read, which is nothing to go on about this episode. It
+    /// blocks new automatic work like `suppressed`, but a caller that would give up waiting work
+    /// must leave it alone.
+    enum AutomaticPreparationVerdict { case allowed, suppressed, unknown }
+
+    func automaticPreparationVerdict(for episode: WiltedMacEpisode) async -> AutomaticPreparationVerdict {
+        if !fixtureMode {
+            guard let store else { return .unknown }
+            // The flag is read from the store each time.
+            guard let held = await refreshPossibleDuplicateHolds(from: store) else { return .unknown }
+            if held.contains(episode.id) { return .suppressed }
+        }
         guard let store, let rawFeedID = episode.feedID,
-              let feedID = try? ItemID(rawValue: rawFeedID) else { return false }
-        guard let policy = try? await store.feedAutomationPolicy(for: feedID) else { return false }
-        return EpisodeAdmissionService.suppressesAutomaticPreparation(policy)
+              let feedID = try? ItemID(rawValue: rawFeedID) else { return .allowed }
+        guard let policy = try? await store.feedAutomationPolicy(for: feedID) else { return .allowed }
+        return EpisodeAdmissionService.suppressesAutomaticPreparation(policy) ? .suppressed : .allowed
     }
 
     /// Writes the pending preparation ticket for a number reserved by

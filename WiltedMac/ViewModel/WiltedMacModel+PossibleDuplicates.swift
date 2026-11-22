@@ -23,18 +23,13 @@ extension WiltedMacModel {
     /// "Different": the flag is cleared and nothing else is changed about the episode. The work the
     /// flag held back is then done as it would have been without it. The answer is noted first
     /// in the preferences and struck off only once that work has been handled, so a quit or a
-    /// failure in between picks it up again at the next launch.
+    /// failure in between picks it up again at the next launch, flag deletion included.
     func clearPossibleDuplicateFlag(_ episode: WiltedMacEpisode) {
 #if canImport(WiltedProducer)
-        guard let store, let id = try? ItemID(rawValue: episode.id) else { return }
         Task { [weak self] in
             guard let self else { return }
             self.notePossibleDuplicateCatchUp(episode.id, pending: true)
-            guard (try? await store.clearPodcastEpisodePossibleDuplicate(id)) == true else {
-                self.notePossibleDuplicateCatchUp(episode.id, pending: false)
-                return
-            }
-            if await self.catchUpAfterPossibleDuplicateCleared(episode.id) {
+            if await self.finishPossibleDuplicateDifferent(episode.id) {
                 self.notePossibleDuplicateCatchUp(episode.id, pending: false)
             }
         }
@@ -57,7 +52,7 @@ extension WiltedMacModel {
         for id in (preferences.stringArray(forKey: Self.possibleDuplicateCatchUpKey) ?? []).sorted() {
             Task { [weak self] in
                 guard let self else { return }
-                if await self.catchUpAfterPossibleDuplicateCleared(id) {
+                if await self.finishPossibleDuplicateDifferent(id) {
                     self.notePossibleDuplicateCatchUp(id, pending: false)
                 }
             }
@@ -66,16 +61,25 @@ extension WiltedMacModel {
     }
 
 #if canImport(WiltedProducer)
+    /// Carries one noted "Different" answer through: the flag is deleted if it is still there (a
+    /// quit can land between the note and the delete, and a noted answer is the owner's answer),
+    /// then the held work is done. Safe to repeat. False means try again later.
+    func finishPossibleDuplicateDifferent(_ episodeID: String) async -> Bool {
+        guard let store, let id = try? ItemID(rawValue: episodeID) else { return false }
+        do { _ = try await store.clearPodcastEpisodePossibleDuplicate(id) } catch { return false }
+        return await catchUpAfterPossibleDuplicateCleared(episodeID)
+    }
+
     /// Does what the flag held back, once, in the way the owner's earlier choices call for. Safe to
     /// repeat. Returns false when it could not finish and should be tried again.
     func catchUpAfterPossibleDuplicateCleared(_ episodeID: String) async -> Bool {
         guard let store, !isClosingTemporaryState, let id = try? ItemID(rawValue: episodeID) else { return false }
-        // Unreadable: try again later. Still flagged: the owner has not answered, so nothing is owed.
-        guard let held = await refreshPossibleDuplicateHolds(from: store) else { return false }
-        if held.contains(episodeID) { return true }
+        // Unreadable, or still flagged after the answer: not finished, try again later.
+        guard let held = await refreshPossibleDuplicateHolds(from: store), !held.contains(episodeID) else { return false }
         await reloadLibraryRows()
-        guard !isClosingTemporaryState, self.store === store,
-              let episode = episodes.first(where: { $0.id == episodeID }), episode.removalKind == nil,
+        // A model that is closing or has swapped stores has not done the work: keep the note.
+        guard !isClosingTemporaryState, self.store === store else { return false }
+        guard let episode = episodes.first(where: { $0.id == episodeID }), episode.removalKind == nil,
               let rawFeedID = episode.feedID, let feedID = try? ItemID(rawValue: rawFeedID) else { return true }
         do {
             if podcastQueueIDs.contains(episodeID) {

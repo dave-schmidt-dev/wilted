@@ -13,6 +13,16 @@ struct WiltedMacLinkedEpisodeUnlink: Identifiable {
     var id: UUID { preview.associationID }
 }
 
+/// One earlier link as the owner sees it: the members' names, kept apart even when they share a title.
+struct WiltedMacLinkedEpisodePair: Identifiable {
+    let association: LibraryEpisodeAssociation
+    let labels: [String: String]
+    var id: UUID { association.groupID }
+    /// The members' names in the order the review lists them.
+    var memberLabels: [String] { association.memberIDs.compactMap { labels[$0.rawValue] }.sorted() }
+    var title: String { memberLabels.joined(separator: " and ") }
+}
+
 extension WiltedMacModel {
     /// Wilted no longer links episodes: a possible duplicate is answered on its own row. A link an
     /// earlier version made still folds its two episodes into one row, so this is the one way left
@@ -21,20 +31,60 @@ extension WiltedMacModel {
         episodeAssociations[episode.id].flatMap { $0.isSupported ? $0 : nil }
     }
 
+    /// Every link an earlier version made, whatever state its episodes are in. The Larder folds a
+    /// pair into one row and hides a finished one, and Feeds lists only episodes that are not
+    /// waiting, so a pair can have no row anywhere: this list is the control that never depends on one.
+    var linkedEpisodePairs: [WiltedMacLinkedEpisodePair] {
+        var seen = Set<UUID>()
+        return episodeAssociations.values
+            .filter { $0.isSupported && seen.insert($0.groupID).inserted }
+            .map { association in
+                WiltedMacLinkedEpisodePair(
+                    association: association,
+                    labels: Self.linkedEpisodeMemberLabels(for: association.memberIDs, episodes: episodes)
+                )
+            }
+            .sorted { ($0.title, $0.id.uuidString) < ($1.title, $1.id.uuidString) }
+    }
+
+    /// One name for each member. Two members that share a title would read the same in the
+    /// consequences, so those are told apart by their order and publish date.
+    static func linkedEpisodeMemberLabels(for ids: [ItemID], episodes: [WiltedMacEpisode]) -> [String: String] {
+        let rows = Dictionary(episodes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let ordered = ids.sorted {
+            let left = rows[$0.rawValue]?.publishedAt ?? .distantPast
+            let right = rows[$1.rawValue]?.publishedAt ?? .distantPast
+            return left == right ? $0.rawValue < $1.rawValue : left < right
+        }
+        let titles = ordered.map { rows[$0.rawValue]?.title ?? "An episode no longer in the library" }
+        var labels: [String: String] = [:]
+        for (index, id) in ordered.enumerated() {
+            let shared = titles.indices.filter { titles[$0] == titles[index] }
+            guard shared.count > 1 else { labels[id.rawValue] = titles[index]; continue }
+            var detail = "\((shared.firstIndex(of: index) ?? 0) + 1) of \(shared.count)"
+            if let published = rows[id.rawValue]?.publishedAt {
+                detail += ", published \(published.formatted(date: .abbreviated, time: .omitted))"
+            }
+            labels[id.rawValue] = "\(titles[index]) (\(detail))"
+        }
+        return labels
+    }
+
     /// Prepares the reversal so the owner reads each member's loss before anything changes.
     func prepareLinkedEpisodeUnlink(for episode: WiltedMacEpisode) async -> WiltedMacLinkedEpisodeUnlink? {
-        guard let store, let association = linkedEpisodeAssociation(for: episode) else { return nil }
+        guard let association = linkedEpisodeAssociation(for: episode) else { return nil }
+        return await prepareLinkedEpisodeUnlink(for: association)
+    }
+
+    func prepareLinkedEpisodeUnlink(for association: LibraryEpisodeAssociation) async -> WiltedMacLinkedEpisodeUnlink? {
+        guard let store else { return nil }
         do {
             let preview = try await store.previewEpisodeAssociationReversal(
                 association.groupID, expectedVersion: association.associationVersion
             )
-            let titles = Dictionary(
-                association.memberIDs.map { id in
-                    (id.rawValue, episodes.first { $0.id == id.rawValue }?.title ?? id.rawValue)
-                }, uniquingKeysWith: { first, _ in first }
-            )
+            let labels = Self.linkedEpisodeMemberLabels(for: association.memberIDs, episodes: episodes)
             return WiltedMacLinkedEpisodeUnlink(
-                preview: preview, summary: Self.linkedEpisodeUnlinkSummary(for: preview.consequences, titles: titles)
+                preview: preview, summary: Self.linkedEpisodeUnlinkSummary(for: preview.consequences, titles: labels)
             )
         } catch {
             podcastOperationMessage = "These episodes could not be unlinked. Nothing was changed."

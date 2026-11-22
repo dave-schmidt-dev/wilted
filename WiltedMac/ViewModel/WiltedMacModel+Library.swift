@@ -53,7 +53,11 @@ extension WiltedMacModel {
     /// request just now, so a possible-duplicate flag on the episode holds it. The claim stays
     /// where it is, and "Different" starts it.
     func startClaimedDownload(_ episodeID: String, automatic: Bool = false) async throws {
-        if automatic, await automaticWorkIsHeldFresh(episodeID) { return }
+        // Not a quiet return: the coordinator would count it as downloaded and publish it. The held
+        // fault tells it nothing was started and nothing failed.
+        if automatic, await automaticWorkIsHeldFresh(episodeID) {
+            throw WiltedAutomationFault.downloadHeld(episodeID)
+        }
         // Throwing, never returning. Automation only runs once the library has
         // loaded, so a claim with no episode behind it is a genuine fault. A
         // silent return would count it as downloaded and clear a claim that no

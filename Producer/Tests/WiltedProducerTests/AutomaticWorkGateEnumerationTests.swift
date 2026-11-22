@@ -13,6 +13,9 @@ final class AutomaticWorkGateEnumerationTests: XCTestCase {
     private static let sinks = [
         "downloadEpisode", "prepareEpisode", "prepareDeferredEpisodeNow", "startClaimedDownload",
         "downloadAllAvailableLarderEpisodes", "prepareAllDownloadedLarderEpisodes",
+        // Starts transfers whose claims were taken already. It carries no automatic marker, so every
+        // caller is listed below and must hold a claim the flag-aware store took.
+        "startClaimedDownloads",
     ]
 
     /// Calls made because the owner pressed something, or that carry a store
@@ -36,6 +39,13 @@ final class AutomaticWorkGateEnumerationTests: XCTestCase {
         "WiltedMacModel+PrepareAgain.swift|prepareEpisode": 1,
         // Retry and Download again from a row.
         "WiltedMacModel+Subscriptions.swift|downloadEpisode": 2,
+        // Callers of the plural start. Each one's claim came from a store call that checks the flag
+        // itself (a refresh, a feed rule, a policy change, the slots a Skip freed, or the catch-up
+        // after the owner's own "Different"), so the start needs no marker of its own.
+        "WiltedMacModel+Episodes.swift|startClaimedDownloads": 2,
+        "WiltedMacModel+FeedRules.swift|startClaimedDownloads": 1,
+        "WiltedMacModel+PossibleDuplicates.swift|startClaimedDownloads": 3,
+        "EpisodeAdmissionService.swift|startClaimedDownloads": 1,
     ]
 
     private var root: URL {
@@ -105,8 +115,10 @@ final class AutomaticWorkGateEnumerationTests: XCTestCase {
 
         // Recovery of a claim an earlier launch left behind goes through the gate twice: the list
         // it offers leaves flagged episodes out, and the start itself asks again.
-        XCTAssertTrue(try source("WiltedMacModel+Library.swift")
-            .contains("if automatic, await automaticWorkIsHeldFresh(episodeID) { return }"))
+        let library = try source("WiltedMacModel+Library.swift")
+        XCTAssertTrue(library.contains("if automatic, await automaticWorkIsHeldFresh(episodeID) {"))
+        XCTAssertTrue(library.contains("throw WiltedAutomationFault.downloadHeld(episodeID)"),
+                      "a held claim is reported as not started, never as a completed download")
         let automation = try source("WiltedMacModel+Automation.swift")
         XCTAssertTrue(automation.contains("guard let held = await refreshPossibleDuplicateHolds(from: store) else { return [] }"))
         XCTAssertTrue(automation.contains(".filter { !held.contains($0) }"))
@@ -118,8 +130,14 @@ final class AutomaticWorkGateEnumerationTests: XCTestCase {
         let downloads = try source("WiltedMacModel+Downloads.swift")
         XCTAssertTrue(downloads.contains("if automatic, automaticWorkIsHeld(episode.id) { return }"))
         XCTAssertTrue(downloads.contains("scope: automatic ? .automaticNotInFlight : .notInFlight"))
-        XCTAssertTrue(downloads.contains("if await automaticWorkIsHeldFresh(episode.id) { return true }"),
-                      "a landing download asks the store afresh")
+        XCTAssertTrue(downloads.contains("guard let held = await refreshPossibleDuplicateHolds(from: store) else { return .unknown }"),
+                      "a landing download asks the store afresh, and a failed read is unknown")
+        let arrival = try XCTUnwrap(downloads.range(of: "let verdict = await self.automaticPreparationVerdict(for: episode)"))
+        let arrivalBody = String(downloads[arrival.upperBound...].prefix(900))
+        let unknownAt = try XCTUnwrap(arrivalBody.range(of: "verdict == .unknown"))
+        let withdrawAt = try XCTUnwrap(arrivalBody.range(of: "withdrawPreparationRequest"))
+        XCTAssertLessThan(unknownAt.lowerBound, withdrawAt.lowerBound,
+                          "an unreadable flag list is handled before any request is withdrawn")
         let admit = try XCTUnwrap(downloads.range(of: "func admitAutomaticPreparation("))
         XCTAssertTrue(downloads[admit.upperBound...].prefix(200).contains("automaticWorkIsHeld(episode.id)"),
                       "automatic admission asks the gate first")

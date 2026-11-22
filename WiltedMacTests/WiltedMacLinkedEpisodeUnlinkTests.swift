@@ -67,9 +67,13 @@ final class WiltedMacLinkedEpisodeUnlinkTests: XCTestCase {
         let prepared = await pair.model.prepareLinkedEpisodeUnlink(for: row)
         let unlink = try XCTUnwrap(prepared)
         XCTAssertTrue(unlink.preview.consequences.warnsAutomationMayRetire)
-        XCTAssertTrue(unlink.summary.contains("has no Keep of its own and loses the pair's inherited protection"), unlink.summary)
+        let labels = WiltedMacModel.linkedEpisodeMemberLabels(for: [pair.first, pair.second], episodes: pair.model.episodes)
+        let firstLabel = try XCTUnwrap(labels[pair.first.rawValue])
+        let secondLabel = try XCTUnwrap(labels[pair.second.rawValue])
+        XCTAssertNotEqual(firstLabel, secondLabel, "two episodes that share a title still read differently")
+        XCTAssertTrue(unlink.summary.contains("\(secondLabel) has no Keep of its own and loses the pair's inherited protection"), unlink.summary)
         XCTAssertTrue(unlink.summary.contains("Later feed automation may retire it and delete its unprotected media"), unlink.summary)
-        XCTAssertTrue(unlink.summary.contains("keeps its own manual choice"), unlink.summary)
+        XCTAssertTrue(unlink.summary.contains("\(firstLabel) keeps its own manual choice"), unlink.summary)
         let before = try await pair.store.episodeAssociations()
         XCTAssertEqual(before.count, 1, "reviewing changes nothing")
 
@@ -79,6 +83,7 @@ final class WiltedMacLinkedEpisodeUnlinkTests: XCTestCase {
         XCTAssertTrue(active.isEmpty)
         let history = try await pair.store.episodeAssociations(includingReversed: true)
         XCTAssertEqual(history.map(\.associationID), [pair.association.associationID])
+        XCTAssertFalse(try XCTUnwrap(history.first).isActive, "the reversal stays in the history, inactive")
         XCTAssertTrue(pair.model.episodeAssociations.isEmpty, "the Larder shows two rows again")
         let decisions = try await pair.store.decisions(forFeed: pair.association.feedID)
         XCTAssertEqual(decisions.first { $0.episodeID == pair.first }?.decision, .keep, "the owner's own choice survives")
@@ -109,8 +114,12 @@ final class WiltedMacLinkedEpisodeUnlinkTests: XCTestCase {
         let prepared = await pair.model.prepareLinkedEpisodeUnlink(for: row)
         let unlink = try XCTUnwrap(prepared)
         XCTAssertFalse(unlink.preview.consequences.warnsAutomationMayRetire)
-        XCTAssertTrue(unlink.summary.contains("keeps its own earlier Skip"), unlink.summary)
+        let secondLabel = try XCTUnwrap(
+            WiltedMacModel.linkedEpisodeMemberLabels(for: [pair.first, pair.second], episodes: pair.model.episodes)[pair.second.rawValue]
+        )
+        XCTAssertTrue(unlink.summary.contains("\(secondLabel) keeps its own earlier Skip"), unlink.summary)
         XCTAssertTrue(unlink.summary.contains("the pair's newer Keep no longer applies"), unlink.summary)
+        XCTAssertTrue(unlink.summary.contains("still shields it from automatic rules"), unlink.summary)
         XCTAssertFalse(unlink.summary.contains("delete its unprotected media"), unlink.summary)
     }
 
@@ -134,6 +143,12 @@ final class WiltedMacLinkedEpisodeUnlinkTests: XCTestCase {
         let second = try episode(guid: "sync-second", title: "Sync Second")
         for value in [first, second] { try await store.save(episode: value) }
         try await store.save(subscription: PodcastSubscription(feedID: first.feedID, subscribedAt: Timestamp(created)))
+        await model.reloadLibraryRows()
+        let controller = try XCTUnwrap(model.librarySyncController)
+        await controller.tickRound()
+        try await waitFor("baseline publication") {
+            await server.currentSnapshot.entries[first.itemID] != nil
+        }
         let confirmation = PodcastEpisodePairConfirmation(
             confirmationID: UUID(), feedID: first.feedID, first: first.itemID, second: second.itemID,
             confirmedAt: Timestamp(created)
@@ -156,6 +171,38 @@ final class WiltedMacLinkedEpisodeUnlinkTests: XCTestCase {
         }
         model.stopLibrarySync()
         await model.waitForLibrarySyncShutdown()
+        XCTAssertGreaterThanOrEqual(controller.passCount, 1)
+    }
+
+    /// A link must be undoable wherever its episodes are: a pair that is not waiting has no Larder row,
+    /// and a finished pair has none in the Larder or in Feeds. The Linked episodes list names both.
+    func testEveryLinkIsReachableWhateverStateItsEpisodesAreIn() async throws {
+        let pair = try await linkedPair("reachable")
+        XCTAssertTrue(pair.model.larderWaitingEpisodes.isEmpty, "an unqueued pair has no Larder row")
+        var listed = pair.model.linkedEpisodePairs
+        XCTAssertEqual(listed.map(\.id), [pair.association.associationID])
+        XCTAssertEqual(Set(listed[0].memberLabels).count, 2, "both members are named apart")
+
+        let finished = try XCTUnwrap(pair.model.episodeAssociations[pair.first.rawValue])
+        pair.model.episodeAssociations[pair.first.rawValue] = LibraryEpisodeAssociation(
+            groupID: finished.groupID, representativeID: finished.representativeID, memberIDs: finished.memberIDs,
+            associationVersion: finished.associationVersion, isTerminal: true
+        )
+        pair.model.episodeAssociations[pair.second.rawValue] = pair.model.episodeAssociations[pair.first.rawValue]
+        XCTAssertTrue(pair.model.larderVisibleEpisodes.filter { [pair.first.rawValue, pair.second.rawValue].contains($0.id) }.isEmpty,
+                      "a finished pair is hidden from the Larder")
+        XCTAssertTrue(pair.model.feedsEpisodes.filter { [pair.first.rawValue, pair.second.rawValue].contains($0.id) }.isEmpty,
+                      "and from Feeds")
+        listed = pair.model.linkedEpisodePairs
+        XCTAssertEqual(listed.map(\.id), [pair.association.associationID], "the list still carries it")
+        XCTAssertTrue(listed[0].association.isTerminal)
+
+        await pair.model.reloadLibraryRows()
+        let prepared = await pair.model.prepareLinkedEpisodeUnlink(for: listed[0].association)
+        let unlink = try XCTUnwrap(prepared)
+        let reversed = await pair.model.unlinkEpisodes(unlink)
+        XCTAssertTrue(reversed)
+        XCTAssertTrue(pair.model.linkedEpisodePairs.isEmpty)
     }
 
     private func waitFor(

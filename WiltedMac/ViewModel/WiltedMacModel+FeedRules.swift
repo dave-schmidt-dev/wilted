@@ -200,9 +200,14 @@ extension WiltedMacModel {
             withdrawPreparationRequest(for: id.rawValue)
         }
         startClaimedDownloads(claimed)
+        // Counted from what was written, not from the preview. With nothing written there is
+        // nothing to undo, and the editor says nothing needed to change.
+        let counts = plan.counts.replacingChanges(
+            withApplied: admissions.filter { (try? ItemID(rawValue: $0.episodeID)).flatMap { applied[$0] } != nil }
+        )
         return FeedRulesApplyResult(
-            counts: plan.counts,
-            undo: FeedRulesUndo(
+            counts: counts,
+            undo: applied.isEmpty ? nil : FeedRulesUndo(
                 feedID: rawFeedID, prior: prior, applied: applied, priorQueue: priorQueue, postQueue: postQueue,
                 issued: issued, withdrawn: withdrawn, retired: retired
             )

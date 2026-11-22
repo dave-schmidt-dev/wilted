@@ -119,7 +119,12 @@ final class WiltedMacPossibleDuplicateFlagTests: XCTestCase {
         await model.reloadLibraryRows()
         let claims = try await model.unfinishedAutomationClaims()
         XCTAssertFalse(claims.contains(second.rawValue), "a flagged claim waits for the owner")
-        try await model.startClaimedDownload(second.rawValue, automatic: true)
+        do {
+            try await model.startClaimedDownload(second.rawValue, automatic: true)
+            XCTFail("a held claim must not look like a started download")
+        } catch let fault as WiltedAutomationFault {
+            XCTAssertEqual(fault, .downloadHeld(second.rawValue))
+        }
         XCTAssertNil(model.podcastDownloadTasks[second.rawValue])
     }
 
@@ -136,7 +141,7 @@ final class WiltedMacPossibleDuplicateFlagTests: XCTestCase {
             for: try ItemID.derivePodcastFeed(from: feedURL)
         )
         let stillHeld = await model.catchUpAfterPossibleDuplicateCleared(second.rawValue)
-        XCTAssertTrue(stillHeld, "while it is flagged nothing is owed")
+        XCTAssertFalse(stillHeld, "a flag still on the row is not finished work, so the note stays")
         XCTAssertNil(model.podcastDownloadTasks[second.rawValue])
         model.notePossibleDuplicateCatchUp(second.rawValue, pending: true)
         XCTAssertEqual(model.preferences.stringArray(forKey: WiltedMacModel.possibleDuplicateCatchUpKey), [second.rawValue])
@@ -148,5 +153,43 @@ final class WiltedMacPossibleDuplicateFlagTests: XCTestCase {
                       "the download Keep asked for is no longer lost")
         model.notePossibleDuplicateCatchUp(second.rawValue, pending: false)
         XCTAssertEqual(model.preferences.stringArray(forKey: WiltedMacModel.possibleDuplicateCatchUpKey) ?? [], [])
+    }
+
+    /// A quit between the noted answer and the flag deletion leaves both behind. The next launch
+    /// treats the note as the owner's answer: it deletes the flag, does the held work and strikes the note.
+    func testARelaunchFinishesADifferentAnswerWhoseFlagWasNeverDeleted() async throws {
+        let (model, _, second) = try await flaggedModel()
+        let store = try XCTUnwrap(model.store)
+        try await store.save(episodeDecision: EpisodeDecisionRecord(
+            episodeID: second, decision: .keep, source: .manual, decidedAt: Timestamp(created)
+        ))
+        try await store.addPodcastQueueEpisode(second)
+        try await store.save(
+            feedAutomationPolicy: FeedAutomationPolicy(autoDownload: .on),
+            for: try ItemID.derivePodcastFeed(from: feedURL)
+        )
+        await model.reloadLibraryRows()
+        model.notePossibleDuplicateCatchUp(second.rawValue, pending: true)
+        let heldBefore = try await store.podcastEpisodeIdentityReviewHeldIDs()
+        XCTAssertTrue(heldBefore.contains(second), "the flag survived the quit")
+
+        model.resumePossibleDuplicateCatchUps()
+        for _ in 0..<100 where !(model.preferences.stringArray(forKey: WiltedMacModel.possibleDuplicateCatchUpKey) ?? []).isEmpty {
+            try await Task.sleep(nanoseconds: 50_000_000)
+        }
+        let heldAfter = try await store.podcastEpisodeIdentityReviewHeldIDs()
+        XCTAssertFalse(heldAfter.contains(second), "the owner's answer is honoured, not discarded")
+        XCTAssertEqual(model.preferences.stringArray(forKey: WiltedMacModel.possibleDuplicateCatchUpKey) ?? [], [])
+        let claims = try await store.unfinishedPodcastDownloads().map(\.episodeID)
+        XCTAssertTrue(claims.contains(second) || model.podcastDownloadTasks[second.rawValue] != nil)
+    }
+
+    func testACatchUpThatCannotFinishKeepsItsNote() async throws {
+        let (model, _, second) = try await flaggedModel()
+        model.notePossibleDuplicateCatchUp(second.rawValue, pending: true)
+        model.isClosingTemporaryState = true
+        let finished = await model.finishPossibleDuplicateDifferent(second.rawValue)
+        XCTAssertFalse(finished, "a closing model has not done the work")
+        XCTAssertEqual(model.preferences.stringArray(forKey: WiltedMacModel.possibleDuplicateCatchUpKey), [second.rawValue])
     }
 }
