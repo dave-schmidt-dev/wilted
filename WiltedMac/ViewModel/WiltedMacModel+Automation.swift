@@ -123,6 +123,7 @@ extension WiltedMacModel {
 
     func setLastAutomationRefresh(_ date: Date) {
         preferences.set(date, forKey: Self.lastAutomationRefreshPreferenceKey)
+        automaticRefreshProblem = nil
         observedLastAutomationRefreshAt = date
     }
 
@@ -173,9 +174,17 @@ extension WiltedMacModel {
 
     /// Starts the open-window tick. Idempotent, so repeated scene callbacks are
     /// harmless.
-    func startAutomationTicker(interval: TimeInterval = WiltedMacModel.automationTickInterval) {
+    func startAutomationTicker(
+        interval: TimeInterval = WiltedMacModel.automationTickInterval,
+        notificationCenter: NotificationCenter = NSWorkspace.shared.notificationCenter
+    ) {
 #if canImport(WiltedProducer)
         guard !isClosingTemporaryState, !fixtureMode, automationTicker == nil, store != nil else { return }
+        let token = notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil,
+                                                   queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.runAutomation(trigger: .openWindowTick) }
+        }
+        automationWakeObserver = (notificationCenter, token)
         automationTicker = Task { [weak self] in
             while !Task.isCancelled {
                 do {
@@ -192,6 +201,7 @@ extension WiltedMacModel {
 
     func stopAutomationTicker() {
 #if canImport(WiltedProducer)
+        removeAutomationWakeObserver()
         automationTicker?.cancel()
         automationTicker = nil
 #endif
@@ -350,6 +360,7 @@ extension WiltedMacModel {
     /// `waitForAutomationForTemporaryState` supplies the awaited close path.
     func cancelAutomationForTemporaryState() {
 #if canImport(WiltedProducer)
+        removeAutomationWakeObserver()
         automationTask?.cancel()
         automationTicker?.cancel()
         ticketDrainTicker?.cancel()
@@ -409,6 +420,7 @@ extension WiltedMacModel {
             lastRefreshSuccess: { [weak self] in await self?.lastAutomationRefreshAt },
             recordRefreshSuccess: { [weak self] date in await self?.setLastAutomationRefresh(date) },
             report: { [weak self] status in await self?.setAutomationStatus(status) },
+            refreshFailure: { [weak self] error in await self?.recordAutomaticRefreshFailure(error) },
             refreshActivity: .init(
                 begin: { [weak self] in await self?.beginAutomaticFeedRefresh() ?? false },
                 end: { [weak self] in await self?.endAutomaticFeedRefresh() }
@@ -431,15 +443,16 @@ extension WiltedMacModel {
         automaticFeedRefreshInFlight = false
     }
 
-    private func automationFeedURLs() async throws -> [URL] {
-        guard let store else { throw CancellationError() }
-        var urls: [URL] = []
-        for subscription in try await store.subscriptions().filter(\.enabled) {
-            if let url = try await store.podcastFeed(for: subscription.feedID)?.canonicalURL {
-                urls.append(url)
-            }
-        }
-        return urls
+    private func removeAutomationWakeObserver() {
+        if let observer = automationWakeObserver { observer.center.removeObserver(observer.token) }
+        automationWakeObserver = nil
+    }
+
+    func recordAutomaticRefreshFailure(_ error: Error) {
+        let offline = (error as? PodcastFeedClientError) == .offline ||
+            (error as? URLError).map { [.notConnectedToInternet, .networkConnectionLost].contains($0.code) } == true
+        let cause = offline ? "no internet connection" : "a feed could not be read"
+        automaticRefreshProblem = "Automatic refresh could not finish (\(cause))"
     }
 
     func unfinishedAutomationClaims() async throws -> [String] {

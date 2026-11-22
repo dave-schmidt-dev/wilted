@@ -129,7 +129,7 @@ struct WiltedMacLarderView: View {
                         .accessibilityIdentifier("wilted-larder-audio-total")
                 }
                 // Absent before the first refresh, so a Larder that has never refreshed reads as it did.
-                if model.lastPodcastRefreshAt != nil {
+                if model.lastPodcastRefreshAt != nil || model.automaticRefreshProblem != nil {
                     WiltedMacLastRefreshedLabel(model: model, identifier: "wilted-larder-last-refreshed")
                 }
             }

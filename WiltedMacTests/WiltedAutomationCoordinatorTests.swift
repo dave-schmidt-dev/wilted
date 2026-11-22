@@ -1,4 +1,6 @@
+import SwiftUI
 import XCTest
+import WiltedProducer
 @testable import WiltedMac
 
 /// Records what automation asked for, so a test can assert the schedule without
@@ -135,6 +137,52 @@ final class WiltedAutomationCoordinatorTests: XCTestCase {
             now: { clock },
             sleep: { await spy.record(sleep: $0) }
         )
+    }
+
+    @MainActor
+    func testFailedRefreshExplainsTheCauseUntilASuccess() async throws {
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: wiltedTemporaryDirectory("refresh-cause"),
+                                   preferences: WiltedMacTestPreferences.ephemeral())
+        addTeardownBlock { await model.close() }
+        let policy = settings(refresh: .onLaunch)
+        let url = URL(string: "https://example.test/feed.xml")!
+        for (failure, expected, attachmentName): (URLError?, String?, String) in [
+            (URLError(.notConnectedToInternet), "Automatic refresh could not finish (no internet connection)", "last-refreshed-offline"),
+            (URLError(.badServerResponse), "Automatic refresh could not finish (a feed could not be read)", "last-refreshed-feed-unreadable"),
+            (nil, nil, "last-refreshed-ok")
+        ] {
+            let coordinator = WiltedAutomationCoordinator(
+                operations: .init(enabledFeedURLs: { [url] }, refreshFeed: { _, _ in
+                    if let failure { throw PodcastFeedClientError.transportFailure(failure) }
+                    return []
+                }, startDownload: { _ in }, unfinishedClaims: { [] }),
+                settings: { policy }, lastRefreshSuccess: { nil },
+                recordRefreshSuccess: { date in await model.setLastAutomationRefresh(date) },
+                report: { _ in }, refreshFailure: { error in await model.recordAutomaticRefreshFailure(error) },
+                sleep: { _ in }
+            )
+            await coordinator.run(trigger: .launch)
+            XCTAssertEqual(model.automaticRefreshProblem, expected)
+            XCTAssertEqual(model.lastPodcastRefreshAt == nil, failure != nil)
+            let label = WiltedMacLastRefreshedLabel(model: model, identifier: "refresh-test")
+            let shown = try WiltedMacHeadless.recognizedText(label).joined(separator: " ")
+            XCTAssertEqual(shown.contains("Try again"), failure != nil, shown)
+            if let expected { XCTAssertTrue(shown.contains(expected), shown) }
+            try attachLastRefreshedLabel(label, name: attachmentName)
+        }
+    }
+
+    @MainActor
+    private func attachLastRefreshedLabel(_ label: WiltedMacLastRefreshedLabel, name: String) throws {
+        let renderer = ImageRenderer(content: label
+            .frame(width: 760, height: 60)
+            .background(Color.white)
+            .environment(\.colorScheme, .light))
+        let image: NSImage = try XCTUnwrap(renderer.nsImage)
+        let attachment = XCTAttachment(image: image)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     // MARK: - Scheduling

@@ -65,7 +65,7 @@ public struct PodcastFeedClient: Sendable {
             throw PodcastFeedClientError.cancelled
         } catch {
             if Task.isCancelled { throw PodcastFeedClientError.cancelled }
-            throw PodcastFeedClientError.transport(String(describing: error))
+            throw PodcastFeedClientError.transportFailure(error)
         }
     }
 

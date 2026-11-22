@@ -218,7 +218,7 @@ extension PodcastFeedClient {
         } catch let error as ArticleFeedParseError {
             throw error == .externalEntity ? PodcastFeedClientError.externalEntity : PodcastFeedClientError.malformedXML
         } catch {
-            throw Task.isCancelled ? PodcastFeedClientError.cancelled : PodcastFeedClientError.transport(String(describing: error))
+            throw Task.isCancelled ? PodcastFeedClientError.cancelled : PodcastFeedClientError.transportFailure(error)
         }
     }
 }

@@ -117,7 +117,7 @@ extension WiltedMacModel {
         let formatter = RelativeDateTimeFormatter()
         formatter.dateTimeStyle = .named
         formatter.unitsStyle = .full
-        return formatter.localizedString(for: lastPodcastRefreshAt, relativeTo: now)
+        return formatter.localizedString(for: lastPodcastRefreshAt, relativeTo: max(now, lastPodcastRefreshAt))
     }
 
     /// The exact date the relative text stands for, for VoiceOver and the hover help.

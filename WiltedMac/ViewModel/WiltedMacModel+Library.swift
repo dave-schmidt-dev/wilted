@@ -448,7 +448,7 @@ extension WiltedMacModel {
 
     func refreshPodcastFeeds() {
 #if canImport(WiltedProducer)
-        guard let store, !isClosingTemporaryState, podcastRefreshTask == nil else { return }
+        guard store != nil, !isClosingTemporaryState, podcastRefreshTask == nil else { return }
         isRefreshingPodcasts = true
         podcastOperationMessage = "Refreshing subscribed podcasts…"
         let operationID = UUID()
@@ -466,13 +466,7 @@ extension WiltedMacModel {
                 }
             }
             do {
-                let subscriptions = try await store.subscriptions().filter(\.enabled)
-                var urls: [URL] = []
-                for subscription in subscriptions {
-                    if let url = try await store.podcastFeed(for: subscription.feedID)?.canonicalURL {
-                        urls.append(url)
-                    }
-                }
+                let urls = try await self.automationFeedURLs()
                 let result = try await self.refreshPodcastURLs(urls, subscribing: false)
                 guard self.podcastRefreshOperationID == operationID else { return }
                 self.lastPodcastRefreshNewEpisodeIDs = result.newEpisodeIDs.map(\.rawValue)

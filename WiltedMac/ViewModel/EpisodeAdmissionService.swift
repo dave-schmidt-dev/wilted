@@ -131,11 +131,37 @@ struct EpisodeAdmissionService {
 /// The committing half: loads a feed's durable state, asks the pure service
 /// what to admit, and commits each admission through `admitEpisode`.
 extension WiltedMacModel {
+    func automationFeedURLs() async throws -> [URL] {
+        guard let store else { throw CancellationError() }
+        var urls: [URL] = []
+        for subscription in try await store.subscriptions().filter(\.enabled) {
+            do {
+                let id = subscription.feedID
+                if let article = try await store.articleFeed(for: id) {
+                    urls.append(article.canonicalURL)
+                } else if let podcast = try await store.podcastFeed(for: id) {
+                    urls.append(podcast.canonicalURL)
+                } else {
+                    throw LocalLibraryStoreError.invalidPodcastState("Missing feed")
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                WiltedAutomationCoordinator.logSkippedFeed(error)
+            }
+        }
+        return urls
+    }
+
     /// Refreshes one feed and admits only episodes its feed policy authorizes.
     /// The per-feed `limit` of the retired automatic-download policy is not
     /// consulted: Auto download on the feed now decides what is claimed.
     func automaticRefresh(_ url: URL, claimingNewest limit: Int) async throws -> [String] {
         guard let store else { throw CancellationError() }
+        if try await store.articleFeed(for: ItemID.articleFeed(canonicalFeedURL: url)) != nil {
+            _ = try await refreshArticleFeed(url: url, subscribing: false, store: store)
+            return []
+        }
         let loaded = try await podcastFeedClient.load(url)
         try await store.save(feed: loaded.feed)
         let saved = try await store.savePodcastEpisodes(loaded.episodes, admission: .incremental)

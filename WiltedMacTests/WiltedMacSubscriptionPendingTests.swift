@@ -510,6 +510,16 @@ final class WiltedMacSubscriptionPendingTests: XCTestCase {
 
     // MARK: - Last refreshed
 
+    func testLastRefreshedAfterTimelineDateReadsNow() {
+        let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        model.setLastAutomationRefresh(now.addingTimeInterval(49))
+
+        let text = model.lastPodcastRefreshRelativeText(now: now)
+        XCTAssertEqual(text, "now")
+        XCTAssertFalse(text.contains("in "))
+    }
+
     func testLastRefreshedReadsTheSameOnFeedsAndLarderAndSurvivesAFreshModel() async throws {
         let preferences = WiltedMacTestPreferences.ephemeral()
         let model = try await model(loader: PendingLoader(documents: documents(), held: false), feeds: 0, preferences: preferences)
