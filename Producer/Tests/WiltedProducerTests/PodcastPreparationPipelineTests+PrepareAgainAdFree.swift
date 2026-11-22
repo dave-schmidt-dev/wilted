@@ -228,10 +228,7 @@ extension PodcastPreparationPipelineTests {
             .prepare(episodeID: fixture.episodeID)
         #expect(result.adRemovalOutcome == "uncertain")
 
-        let episode = try #require(try await fixture.store.podcastEpisode(for: fixture.episodeID))
-        let input = RemoteLabellingInput(
-            feedID: feed.rawValue, feedURL: try #require(URL(string: Fixture.feedAddress)),
-            feedTitle: Fixture.labelledShowTitle, audioURL: episode.enclosureURL)
+        let input = RemoteLabellingInput(feedID: feed.rawValue)
         let policy = PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: true)
         func inForce() -> String? {
             LabelledPolicyDigestInForce.digest(

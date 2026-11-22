@@ -7,7 +7,7 @@ import WiltedProducer
 /// The per-feed "Send this show for ad finding" choice: where it is kept, how it changes
 /// the route the policy picks, and the board accessors the popover's switch uses.
 @MainActor
-final class WiltedMacNotSentReasonMessageTests: XCTestCase {
+final class WiltedMacAdFindingBoardTests: XCTestCase {
     private let legacyKey = AdLabellerPreferences.keyPrefix + "localOnlyFeedIDs"
     private let confirmedKey = AdLabellerPreferences.keyPrefix + "confirmedFeedIDs"
 

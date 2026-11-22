@@ -4,7 +4,7 @@ import WiltedProducer
 
 extension WiltedMacFeedPolicyBoard {
     /// Where the policy sends this feed's transcripts right now: the owner's ad labeller
-    /// preferences, the injected key presence, and the feed's own title and address.
+    /// preferences, the injected key presence, and the feed's saved ad-removal choice.
     func adRoute(for feedID: String) -> RemoteLabellingRoute {
         let context = RemoteLabellingContext(
             preferences: AdLabellerPreferences(preferences: model.preferences),
@@ -14,17 +14,9 @@ extension WiltedMacFeedPolicyBoard {
         return RemoteLabellingPolicy.route(for: adRouteInput(for: feedID), context: context)
     }
 
-    /// Why this feed is never sent for ad finding, whatever the switches say.
-    func forcedNotSentAdReason(for feedID: String) -> RemoteLabellingNotSentReason? {
-        RemoteLabellingPolicy.forcedNotSentReason(for: adRouteInput(for: feedID))
-    }
-
     private func adRouteInput(for feedID: String) -> RemoteLabellingInput {
-        let subscription = model.subscriptions.first { $0.id == feedID }
         return RemoteLabellingInput(
-            feedID: feedID, feedURL: subscription?.feedURL,
-            feedTitle: subscription?.publisherTitle ?? subscription?.title ?? "",
-            customTitle: subscription?.title, audioURL: nil, removeAds: model.automationSettings.removeAds
+            feedID: feedID, removeAds: model.automationSettings.removeAds
         )
     }
 

@@ -4,45 +4,16 @@ import WiltedDomain
 @testable import WiltedProducer
 
 extension PodcastPreparationPipelineTests {
-    enum FeedPrivacyScenario: String, CaseIterable, Sendable {
+    enum FeedPolicyScenario: String, CaseIterable, Sendable {
         case adFreeConfirmedPublic
         case ownPromotionOnWhileAdFree
         case confirmedAndKeptBack
-        case keptBackWithPublicTitle
-        case publisherTitleContainsPlus
-        case customTitleContainsPlus
-        case credentialedAudio
-        case tokenFeedAddress
-        case unknownFeedAddress
+        case keptBackUntilConfirmed
+        case missingFeedRecord
         case newFeed
         case confirmedPublicControl
 
-        var feedAddress: String {
-            switch self {
-            case .tokenFeedAddress:
-                "https://feeds.example.test/a1b2c3d4e5f6a7b8c9d0e1f2a3b4/show.xml"
-            default:
-                Fixture.feedAddress
-            }
-        }
-
-        var publisherTitle: String? {
-            switch self {
-            case .unknownFeedAddress: nil
-            case .publisherTitleContainsPlus: "Invented Garden Plus"
-            default: Fixture.labelledShowTitle
-            }
-        }
-
-        var enclosureAddress: String {
-            self == .credentialedAudio
-                ? "https://listener:invented@cdn.example.test/e1.mp3"
-                : "https://cdn.example.test/e1.mp3"
-        }
-
-        var customTitle: String? {
-            self == .customTitleContainsPlus ? "Garden Plus" : nil
-        }
+        var feedTitle: String? { self == .missingFeedRecord ? nil : Fixture.labelledShowTitle }
 
         var adFree: Bool {
             self == .adFreeConfirmedPublic || self == .ownPromotionOnWhileAdFree
@@ -50,34 +21,26 @@ extension PodcastPreparationPipelineTests {
 
         var confirmed: Bool {
             switch self {
-            case .keptBackWithPublicTitle, .newFeed: false
+            case .keptBackUntilConfirmed, .newFeed: false
             default: true
             }
         }
 
         var keptBack: Bool {
-            self == .confirmedAndKeptBack || self == .keptBackWithPublicTitle
+            self == .confirmedAndKeptBack || self == .keptBackUntilConfirmed
         }
 
         var ownPromotionPreference: Bool { self == .ownPromotionOnWhileAdFree }
 
         var admittedRemoveAds: Bool { self != .ownPromotionOnWhileAdFree }
 
-        var sendsRemotely: Bool { self == .confirmedPublicControl }
+        var sendsRemotely: Bool { self == .confirmedPublicControl || self == .missingFeedRecord }
 
         var notSentReason: RemoteLabellingNotSent? {
             switch self {
-            case .confirmedAndKeptBack, .keptBackWithPublicTitle, .newFeed:
+            case .confirmedAndKeptBack, .keptBackUntilConfirmed, .newFeed:
                 .notConfirmed
-            case .publisherTitleContainsPlus, .customTitleContainsPlus:
-                .privateTitle
-            case .credentialedAudio:
-                .signInDetails
-            case .tokenFeedAddress:
-                .privateToken
-            case .unknownFeedAddress:
-                .unknownAddress
-            case .adFreeConfirmedPublic, .ownPromotionOnWhileAdFree, .confirmedPublicControl:
+            case .adFreeConfirmedPublic, .ownPromotionOnWhileAdFree, .confirmedPublicControl, .missingFeedRecord:
                 nil
             }
         }
@@ -101,7 +64,7 @@ extension PodcastPreparationPipelineTests {
     private func seedConsent(
         in defaults: UserDefaults,
         feedID: String,
-        scenario: FeedPrivacyScenario
+        scenario: FeedPolicyScenario
     ) {
         let confirmedKey = AdLabellerPreferences.keyPrefix + "confirmedFeedIDs"
         let keptBackKey = AdLabellerPreferences.keyPrefix + "localOnlyFeedIDs"
@@ -129,7 +92,7 @@ extension PodcastPreparationPipelineTests {
     }
 
     private func workerForParity(
-        scenario: FeedPrivacyScenario,
+        scenario: FeedPolicyScenario,
         audioURL: URL
     ) -> WorkerStub {
         if scenario.sendsRemotely {
@@ -162,27 +125,19 @@ extension PodcastPreparationPipelineTests {
         #expect(requests.allSatisfy { $0["removeSelfPromotion"] == nil })
     }
 
-    @Test(arguments: FeedPrivacyScenario.allCases)
-    func savedConsentAndWorkerRouteStayInParityThroughPrepareAndPrepareAgain(
-        scenario: FeedPrivacyScenario
+    @Test(arguments: FeedPolicyScenario.allCases)
+    func savedFeedPolicyAndWorkerRouteStayInParityThroughPrepareAndPrepareAgain(
+        scenario: FeedPolicyScenario
     ) async throws {
         let fixture = try await Fixture(
             labelled: true,
-            feedAddress: scenario.feedAddress,
-            showTitle: scenario.publisherTitle,
-            enclosureAddress: scenario.enclosureAddress)
+            showTitle: scenario.feedTitle)
         defer { fixture.remove() }
 
         let services = try #require(fixture.labelling)
         let episode = try #require(try await fixture.store.podcastEpisode(for: fixture.episodeID))
         let feedID = episode.feedID.rawValue
         seedConsent(in: services.preferences.preferences, feedID: feedID, scenario: scenario)
-        if let customTitle = scenario.customTitle {
-            try await fixture.store.save(subscription: PodcastSubscription(
-                feedID: episode.feedID,
-                subscribedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000)),
-                displayName: customTitle))
-        }
         var policy = PodcastPreparationPolicySnapshot(
             transcriptPolicy: .bestAvailable,
             removeAds: scenario.admittedRemoveAds,

@@ -10,10 +10,9 @@ Protocol, deliberately narrow:
   stderr  newline-delimited JSON progress records, one per line
   stdout  one JSON response object
 
-The worker performs no network access. Every document it needs -- the published
-transcript -- is fetched by the caller and passed in as text,
-so the transport policy (HTTPS only, size caps, redirect rules) stays in one
-place on the Swift side and no credentialed feed URL ever reaches this process.
+The worker performs no network access. The caller fetches the published
+transcript and passes it in as text. The Swift caller enforces HTTPS, size
+caps and redirect rules.
 
 Run it with the generated project-local environment and source tree:
 

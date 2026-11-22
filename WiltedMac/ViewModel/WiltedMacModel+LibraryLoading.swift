@@ -161,15 +161,8 @@ extension WiltedMacModel {
             )
         }.sorted { LibrarySortKey.title($0.title).localizedStandardCompare(LibrarySortKey.title($1.title)) == .orderedAscending }
         let downloads = snapshot.downloads
-        // The same routing facts the pipeline reads: publisher title and address, the owner's stored name.
-        let prepareAgainFeedMeta = Dictionary(allSubscriptions.map { subscription in
-            let feed = feeds[subscription.feedID]
-            return (subscription.feedID.rawValue, LabelledDigestFeedMeta(
-                feedURL: feed?.canonicalURL,
-                feedTitle: feed?.title ?? "",
-                customTitle: subscription.displayName))
-        }, uniquingKeysWith: { first, _ in first })
-        let digestInForceLookup = labelledDigestInForceLookup(feedMeta: prepareAgainFeedMeta)
+        let digestInForceLookup = labelledDigestInForceLookup(
+            feedIDs: allSubscriptions.map { $0.feedID.rawValue })
         let labellingWaitsBySubject: [String: LabellingWait] = Dictionary(
             ((try? await store.deferredWorkTickets(kind: .podcastPreparation)) ?? [])
                 .compactMap { ticket in LabellingWait(ticket).map { (ticket.subjectID, $0) } },
@@ -287,7 +280,7 @@ extension WiltedMacModel {
             episodeValues, projections: episodeCompletionProjections
         )
         await refreshEpisodesToPrepareAgain(
-            from: store, readEpoch: readEpoch, feedMeta: prepareAgainFeedMeta)
+            from: store, readEpoch: readEpoch, feedIDs: allSubscriptions.map { $0.feedID.rawValue })
         return (articleValues, LibraryEpisodeRows(values: projectedEpisodeValues, readEpoch: readEpoch),
                 allSubscriptionValues.map(applyingPendingFeedRename).map(applyingPendingFeedEnabled))
     }

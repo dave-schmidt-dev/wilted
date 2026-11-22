@@ -227,10 +227,7 @@ extension PodcastPreparationPipelineTests {
         _ = try await labelledPipeline(fixture, runner: worker, labelling: labelling)
             .prepare(episodeID: fixture.episodeID)
         let policy = PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: true)
-        let input = RemoteLabellingInput(
-            feedID: Self.labelledFeedID.rawValue, feedURL: Self.labelledFeedURL,
-            feedTitle: Self.labelledShowTitle, audioURL: URL(string: "https://cdn.example.test/e1.mp3"),
-            removeAds: true)
+        let input = RemoteLabellingInput(feedID: Self.labelledFeedID.rawValue, removeAds: true)
         let current = LabelledPolicyDigestInForce.digest(
             policy: policy, input: input, preferences: labelling.preferences, hasKey: true)
         #expect(try await fixture.store.podcastEpisodesToPrepareAgain(
@@ -261,10 +258,7 @@ extension PodcastPreparationPipelineTests {
         let labelling = configureLabelling(defaults: defaults, sender: sender)
         let preferences = labelling.preferences
         let policy = PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: true)
-        let input = RemoteLabellingInput(
-            feedID: Self.labelledFeedID.rawValue, feedURL: Self.labelledFeedURL,
-            feedTitle: Self.labelledShowTitle, audioURL: URL(string: "https://cdn.example.test/e1.mp3"),
-            removeAds: true)
+        let input = RemoteLabellingInput(feedID: Self.labelledFeedID.rawValue, removeAds: true)
         let before = LabelledPolicyDigestInForce.digest(
             policy: policy, input: input, preferences: preferences, hasKey: true)
         let worker = LabelledStageWorker { request, _ in
@@ -371,10 +365,7 @@ extension PodcastPreparationPipelineTests {
             .prepare(episodeID: fixture.episodeID)
         labelling.preferences.modelID = "invented-model-b"
         let policy = PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: true)
-        let input = RemoteLabellingInput(
-            feedID: Self.labelledFeedID.rawValue, feedURL: Self.labelledFeedURL,
-            feedTitle: Self.labelledShowTitle, audioURL: URL(string: "https://cdn.example.test/e1.mp3"),
-            removeAds: true)
+        let input = RemoteLabellingInput(feedID: Self.labelledFeedID.rawValue, removeAds: true)
         let stale = LabelledPolicyDigestInForce.digest(
             policy: policy, input: input, preferences: labelling.preferences, hasKey: true)
         #expect(try await fixture.store.podcastEpisodesToPrepareAgain(
@@ -403,7 +394,7 @@ extension PodcastPreparationPipelineTests {
             labelledDigestInForce: { _, _ in after }).isEmpty)
     }
 
-    @Test func episodeAudioThatForcesLocalIsNotOfferedForDigestReason() async throws {
+    @Test func credentialedEpisodeAudioDoesNotBlockDigestEligibility() async throws {
         let fixture = try await Fixture()
         let (defaults, defaultsName) = makeDefaults()
         let sender = LabellerSenderStub(outcomes: [
@@ -428,17 +419,14 @@ extension PodcastPreparationPipelineTests {
         _ = try await labelledPipeline(fixture, runner: worker, labelling: labelling)
             .prepare(episodeID: fixture.episodeID)
         labelling.preferences.modelID = "invented-model-b"
-        let credentialed = URL(string: "https://cdn.example.invalid/e1.mp3?token=secret-token-value")!
+        let currentDigest = LabelledPolicyDigestInForce.digest(
+            policy: PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: true),
+            input: RemoteLabellingInput(feedID: Self.labelledFeedID.rawValue, removeAds: true),
+            preferences: labelling.preferences,
+            hasKey: true)
+        #expect(currentDigest != nil)
         #expect(try await fixture.store.podcastEpisodesToPrepareAgain(
-            labelledDigestInForce: { feedID, _ in
-                let policy = PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: true)
-                return LabelledPolicyDigestInForce.digest(
-                    policy: policy,
-                    input: RemoteLabellingInput(
-                        feedID: feedID.rawValue, feedURL: Self.labelledFeedURL,
-                        feedTitle: Self.labelledShowTitle, audioURL: credentialed, removeAds: true),
-                    preferences: labelling.preferences, hasKey: true)
-            }).isEmpty)
+            labelledDigestInForce: { _, _ in currentDigest }).map(\.episodeID) == [fixture.episodeID])
     }
 
     @Test func dailyCapDoesNotChangeEligibility() async throws {
@@ -466,10 +454,7 @@ extension PodcastPreparationPipelineTests {
         _ = try await labelledPipeline(fixture, runner: worker, labelling: labelling)
             .prepare(episodeID: fixture.episodeID)
         let policy = PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: true)
-        let input = RemoteLabellingInput(
-            feedID: Self.labelledFeedID.rawValue, feedURL: Self.labelledFeedURL,
-            feedTitle: Self.labelledShowTitle, audioURL: URL(string: "https://cdn.example.test/e1.mp3"),
-            removeAds: true)
+        let input = RemoteLabellingInput(feedID: Self.labelledFeedID.rawValue, removeAds: true)
         let before = LabelledPolicyDigestInForce.digest(
             policy: policy, input: input, preferences: labelling.preferences, hasKey: true)
         #expect(try await fixture.store.podcastEpisodesToPrepareAgain(
@@ -502,10 +487,7 @@ extension PodcastPreparationPipelineTests {
             fixture, runner: worker(cue, fixture), labelling: labelling)
             .prepare(episodeID: fixture.episodeID)
         let policy = PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: true)
-        let input = RemoteLabellingInput(
-            feedID: Self.labelledFeedID.rawValue, feedURL: Self.labelledFeedURL,
-            feedTitle: Self.labelledShowTitle, audioURL: URL(string: "https://cdn.example.test/e1.mp3"),
-            removeAds: true)
+        let input = RemoteLabellingInput(feedID: Self.labelledFeedID.rawValue, removeAds: true)
         let digest = LabelledPolicyDigestInForce.digest(
             policy: policy, input: input, preferences: labelling.preferences, hasKey: true)
         #expect(try await fixture.store.podcastEpisodesToPrepareAgain(

@@ -5,6 +5,7 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Removed
+- Online ad finding now accepts confirmed shows regardless of their feed or audio address, publisher title or custom name.
 - The local ad finder (on-device classifier, its recovery rules, corpus replay, placement profiles, the "Find ads on this Mac only" setting, the shadow recorder and "Label now" backfill): ads are cut only on a validated reply from the online labeller.
 - Mac show settings: **Find ads on this Mac only** is replaced by **Send this show for ad finding**. On sends the show's transcripts to the labelling provider; off sends nothing, keeps its ads in, and is remembered, so no later confirm sheet offers the show as sent. Settings > Ad finding no longer has **Label now** or shadow records.
 - Weekly maintenance now expires inactive, uncited incomplete or unknown Xcode results after 14 quiet days without archiving them, retaining small deletion receipts.

@@ -1,7 +1,6 @@
 import Foundation
 
-/// One labelling request: the prompt text and the model settings. Nothing else about the
-/// show, feed, episode, device, or user travels with it.
+/// One labelling request, with the whole-episode prompt and selected model settings.
 public struct LabellerRequest: Sendable {
     /// The whole-episode prompt built by ``EpisodeLabeller``.
     public var prompt: String

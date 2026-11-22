@@ -229,7 +229,7 @@ struct WiltedMacAdFindingSettingsView: View {
     private var help: WiltedMacHelpContent {
         WiltedMacHelpContent(title: "Ad finding", text:
             "Only shows allowed on their Show settings pages are sent: their transcripts go to the online labeller to find ads. "
-            + "Private or subscriber shows are never sent, and shows added later are not sent until turned on in Show settings.")
+            + "Shows added later are not sent until turned on in Show settings.")
     }
 }
 
@@ -292,7 +292,7 @@ struct WiltedMacAdFindingConfirmSheet: View {
         .accessibilityIdentifier("wilted-ad-finding-sheet")
     }
 
-    /// A read-only preview of the show's route, with forced-local reasons in plain words.
+    /// A read-only preview of the show's route and owner choices.
     private func group(_ title: String, shows: [WiltedMacAdFindingSettings.Show]) -> some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
             Text(title)

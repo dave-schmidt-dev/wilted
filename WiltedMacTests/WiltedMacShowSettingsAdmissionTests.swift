@@ -88,7 +88,7 @@ final class WiltedMacShowSettingsAdmissionTests: XCTestCase {
                 XCTAssertEqual(board.removesSelfPromotion(id), show.ownPromotion, show.name)
                 if show.name == "public" { XCTAssertEqual(board.adRoute(for: id), .remote) }
                 if show.name == "publisher-plus" || show.name == "custom-plus" {
-                    XCTAssertEqual(board.adRoute(for: id), .notSent(.privateTitle))
+                    XCTAssertEqual(board.adRoute(for: id), .remote)
                 }
             }
             let episode = WiltedMacEpisode(

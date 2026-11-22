@@ -334,8 +334,7 @@ struct WiltedMacShowSettingsView: View {
         ) {
             HStack(alignment: .center, spacing: WiltedTheme.Spacing.large) {
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                    Text(forcedNotSentAdsReason
-                         ?? "When on, this show's transcripts go to the labelling provider and its ads are removed. When off, nothing is sent and its ads stay in.")
+                    Text("When on, this show's transcripts go to the labelling provider and its ads are removed. When off, nothing is sent and its ads stay in.")
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .fixedSize(horizontal: false, vertical: true)
@@ -347,24 +346,18 @@ struct WiltedMacShowSettingsView: View {
                 }
                 Spacer(minLength: WiltedTheme.Spacing.large)
                 Toggle("Send this show for ad finding", isOn: Binding(
-                    get: { forcedNotSentAdsReason == nil && board.sendsForAdFinding(feedID) },
+                    get: { board.sendsForAdFinding(feedID) },
                     set: { _ = board.setSendForAdFinding($0, for: feedID) }
                 ))
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .accessibilityLabel("Send \(subscription.title) for ad finding")
                 .accessibilityIdentifier("wilted-feed-policy-send-for-ad-finding")
-                .disabled(forcedNotSentAdsReason != nil)
             }
         }
     }
 
-    var forcedNotSentAdsReason: String? {
-        board.forcedNotSentAdReason(for: feedID)?.forcedNotSentMessage
-    }
-
     private var adRouteLine: String {
-        if forcedNotSentAdsReason != nil { return "Not sent" }
         return switch board.adRoute(for: feedID) {
         case .remote:
             "Transcripts are sent to the labelling provider"
@@ -374,6 +367,8 @@ struct WiltedMacShowSettingsView: View {
             "No provider key saved"
         case .notSent(.dailyCapReached):
             "Today's limit for online labelling is reached. Transcripts are sent to the labelling provider when capacity is available."
+        case .notSent(.adRemovalOff):
+            "Ad removal is off for this show"
         case .notSent:
             "Not sent"
         }
