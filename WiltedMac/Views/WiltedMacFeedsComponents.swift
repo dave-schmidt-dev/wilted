@@ -133,7 +133,7 @@ struct WiltedMacFeedsEpisodeRow: View {
         isShowingNotes = false
         switch action {
         case .keep: model.keepEpisode(episode)
-        case .skip: model.skipFeedEpisode(episode)
+        case .skip: model.skipFeedEpisode(episode, offerUndo: true)
         }
     }
 

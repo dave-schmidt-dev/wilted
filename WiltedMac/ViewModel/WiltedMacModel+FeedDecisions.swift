@@ -11,7 +11,7 @@ extension WiltedMacModel {
 
     /// Captures the visible order before the task starts. The task is entered
     /// in the same finite-writer ledger that model close already drains.
-    func decideFeedEpisodes(_ decision: FeedDecision, episodes candidates: [WiltedMacEpisode], at: Timestamp? = nil) {
+    func decideFeedEpisodes(_ decision: FeedDecision, episodes candidates: [WiltedMacEpisode], at: Timestamp? = nil, offerUndo: Bool = false) {
         let captured = uniqueFeedDecisionEpisodes(candidates)
         let ids = captured.map(\.id)
         guard !ids.isEmpty, pendingFeedDecisionIDs.isDisjoint(with: ids), !isClosingTemporaryState else { return }
@@ -38,7 +38,7 @@ extension WiltedMacModel {
                 self.settleFeedDecision(captured.map(\.id), committed: [])
                 return
             }
-            await self.commitFeedDecision(decision, captured: captured, at: at)
+            await self.commitFeedDecision(decision, captured: captured, at: at, offerUndo: offerUndo)
         }
         // This synchronous insertion precedes the task body's first await.
         subscriptionWriteTasks[token] = task
@@ -50,7 +50,7 @@ extension WiltedMacModel {
         return candidates.filter { seen.insert($0.id).inserted }
     }
 
-    private func commitFeedDecision(_ decision: FeedDecision, captured: [WiltedMacEpisode], at: Timestamp?) async {
+    private func commitFeedDecision(_ decision: FeedDecision, captured: [WiltedMacEpisode], at: Timestamp?, offerUndo: Bool) async {
         guard let store else { settleFeedDecision(captured.map(\.id), committed: []); return }
         let ids = captured.compactMap { try? ItemID(rawValue: $0.id) }
         guard ids.count == captured.count else { settleFeedDecision(captured.map(\.id), committed: []); return }
@@ -96,6 +96,26 @@ extension WiltedMacModel {
                 applyRetirement(to: accepted, at: retirementTimes)
                 settleFeedDecision(captured.map(\.id), committed: accepted)
                 podcastOperationMessage = decisionMessage("Skipped", changed: changed.count, accepted: accepted.count, unresolved: result.unresolved.count)
+                if offerUndo {
+                    // Restore expands associated episodes too. Include a row only when every
+                    // member changed in this skip, so an older retirement stays in place.
+                    let rows = captured.filter { logicalMemberIDs($0.id).isSubset(of: changed) }
+                    let subjects = Set(rows.flatMap { logicalMemberIDs($0.id) })
+                    if !rows.isEmpty, subjects == changed {
+                        if result.unresolved.isEmpty { podcastOperationMessage = nil }
+                        undoToast.offer(
+                            message: "Skipped \(rows.count) episode\(rows.count == 1 ? "" : "s")",
+                            actionName: "Skip", subjects: subjects
+                        ) { [weak self] in
+                            guard let self,
+                                  Set(rows.flatMap({ self.logicalMemberIDs($0.id) })) == subjects,
+                                  subjects.isSubset(of: Set(self.episodes.filter {
+                                      $0.removalKind == .retired && $0.retiredAt == retiredAt.date
+                                  }.map(\.id))) else { return }
+                            self.decideFeedEpisodes(.restore, episodes: rows)
+                        }
+                    }
+                }
                 // A retirement frees a kept slot: let the feed's oldest waiting episode in.
                 if !changed.isEmpty {
                     await releaseWaitingEpisodes(feedIDs: Set(captured.filter { changed.contains($0.id) }.compactMap(\.feedID)))

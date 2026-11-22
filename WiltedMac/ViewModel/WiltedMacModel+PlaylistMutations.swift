@@ -198,12 +198,31 @@ extension WiltedMacModel {
         playlists.entryIDs[playlistID] = optimistic
         do {
             try await Self.playlistWriteHookForTesting?()
-            try await store.removePlaylistEntry(playlistID: playlistID, entryID: entryID)
+            let removedIndex = try await store.removePlaylistEntrySavingPosition(playlistID: playlistID, entryID: entryID)
+            if let removedIndex, !isClosingTemporaryState {
+                undoToast.offer(message: "Removed from playlist", actionName: "Remove from Playlist", subjects: [entryID]) { [weak self] in
+                    Task { @MainActor [weak self] in
+                        await self?.restoreRemovedPlaylistEntry(playlistID, entryID: entryID, index: removedIndex)
+                    }
+                }
+            }
             finishPlaylistOperation(playlistID, token: token)
         } catch {
             if playlists.entryIDs[playlistID] == optimistic { playlists.entryIDs[playlistID] = previous }
             failPlaylistOperation(playlistID, message: "That could not be removed from the playlist.")
             finishPlaylistOperation(playlistID, token: token)
+        }
+    }
+
+    private func restoreRemovedPlaylistEntry(_ playlistID: String, entryID: String, index: Int) async {
+        guard !isClosingTemporaryState, let store, playlist(playlistID) != nil,
+              let token = beginPlaylistOperation(playlistID, .playlist) else { return }
+        defer { finishPlaylistOperation(playlistID, token: token) }
+        do {
+            playlists.entryIDs[playlistID] = try await store.restoreRemovedPlaylistEntry(
+                playlistID: playlistID, entryID: entryID, index: index)
+        } catch {
+            failPlaylistOperation(playlistID, message: "That item could not be restored to the playlist.")
         }
     }
 
@@ -327,5 +346,35 @@ private extension Playlist {
         Playlist(
             id: id, name: name ?? self.name, kind: kind,
             matchAll: matchAll ?? self.matchAll, sortIndex: sortIndex)
+    }
+}
+
+private extension LocalLibraryStore {
+    /// Read the durable position and remove the entry in one turn on the store actor.
+    func removePlaylistEntrySavingPosition(playlistID: String, entryID: String) throws -> Int? {
+        let position = try playlistEntryIDs(playlistID: playlistID).firstIndex(of: entryID)
+        try removePlaylistEntry(playlistID: playlistID, entryID: entryID)
+        return position
+    }
+
+    func restoreRemovedPlaylistEntry(playlistID: String, entryID: String, index: Int) throws -> [String] {
+        var current = try playlistEntryIDs(playlistID: playlistID)
+        guard !current.contains(entryID) else { return current }
+        let id = try ItemID(rawValue: entryID)
+        guard try podcastEpisode(for: id) != nil || article(for: id) != nil || audiobook(id)?.isRemoved == false else {
+            throw LocalLibraryStoreError.invalidPodcastState("missing playlist item")
+        }
+        let position = min(index, current.count)
+        try addPlaylistEntry(playlistID: playlistID, entryID: entryID)
+        if position < current.count {
+            do {
+                try movePlaylistEntry(playlistID: playlistID, entryID: entryID, to: position)
+            } catch {
+                try removePlaylistEntry(playlistID: playlistID, entryID: entryID)
+                throw error
+            }
+        }
+        current.insert(entryID, at: position)
+        return current
     }
 }

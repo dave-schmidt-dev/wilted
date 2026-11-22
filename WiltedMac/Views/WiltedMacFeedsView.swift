@@ -234,7 +234,7 @@ struct WiltedMacFeedsView: View {
                     Button("Keep selected") { model.decideFeedEpisodes(.keep, episodes: selected) }
                         .disabled(selected.isEmpty || selected.contains { model.pendingFeedDecisionIDs.contains($0.id) })
                         .accessibilityIdentifier("wilted-feeds-keep-selected")
-                    Button("Skip selected") { model.decideFeedEpisodes(.skip, episodes: selected) }
+                    Button("Skip selected") { model.decideFeedEpisodes(.skip, episodes: selected, offerUndo: true) }
                         .disabled(selected.isEmpty || selected.contains { model.pendingFeedDecisionIDs.contains($0.id) })
                         .accessibilityIdentifier("wilted-feeds-skip-selected")
                 }
