@@ -1,10 +1,13 @@
 import SwiftUI
 
 enum WiltedMacSettingsSection: String, CaseIterable {
-    case general, newEpisodes = "new-episodes", preparing, ads, reports, devices, about
+    case general, newEpisodes = "new-episodes", preparing, ads, providers, reports, devices, about
 
     var title: String {
-        self == .newEpisodes ? "New episodes" : rawValue.capitalized
+        switch self {
+        case .newEpisodes: return "New episodes"
+        default: return rawValue.capitalized
+        }
     }
 
     init(savedAnchor: String?) {
@@ -41,6 +44,8 @@ extension WiltedMacSettingsView {
             adRemovalCard
             WiltedMacAdFindingSettingsView(model: model, board: feedPolicyBoard)
             WiltedMacAdFeedbackCard(feedback: model.adFeedback)
+        case .providers:
+            WiltedMacProvidersSettingsView(model: model)
         case .reports:
             WiltedMacReportsCard(model: model, location: location)
         case .devices:

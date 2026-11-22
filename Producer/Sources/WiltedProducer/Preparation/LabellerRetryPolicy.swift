@@ -5,6 +5,7 @@ public enum LabellerStopReason: Equatable, Sendable {
     case keyRejected
     case modelUnavailable
     case unusableAnswer
+    case commandLineToolUnavailable(provider: AdLabellerProvider)
     /// The provider kept failing until the owner's wait limit ran out.
     case waitLimit
     /// The day's request cap is reached and midnight is past the wait limit.
@@ -18,6 +19,7 @@ public enum LabellerStopReason: Equatable, Sendable {
         case .keyRejected: "key-rejected"
         case .modelUnavailable: "model-unavailable"
         case .unusableAnswer: "unusable-answer"
+        case .commandLineToolUnavailable: "command-line-tool-unavailable"
         case .waitLimit: "wait-limit"
         case .dailyCap: "daily-cap"
         case .providerPaused: "provider-paused"
@@ -27,13 +29,15 @@ public enum LabellerStopReason: Equatable, Sendable {
     /// The sentence the listener reads. `formatTime` renders the paused-since time.
     public func sentence(formatTime: (Date) -> String) -> String {
         switch self {
-        case .keyRejected: "Provider key was rejected. Update it in Settings."
-        case .modelUnavailable: "The labelling model is unavailable."
-        case .unusableAnswer: "The labelling model's answer could not be used."
-        case .waitLimit: "The provider did not answer in time."
-        case .dailyCap: "The daily limit for online labelling was reached."
+        case .commandLineToolUnavailable(let provider):
+            return LabellerCommandLineRefusal(provider: provider).reasonSentence
+        case .keyRejected: return "Provider key was rejected. Update it in Settings."
+        case .modelUnavailable: return "The labelling model is unavailable."
+        case .unusableAnswer: return "The labelling model's answer could not be used."
+        case .waitLimit: return "The provider did not answer in time."
+        case .dailyCap: return "The daily limit for online labelling was reached."
         case .providerPaused(let since):
-            "The provider has not answered since \(formatTime(since)). Check the model name in Settings."
+            return "The provider has not answered since \(formatTime(since)). Check the model name in Settings."
         }
     }
 }
@@ -91,6 +95,7 @@ public enum LabellerRetryPolicy {
         let reason: WorkTicketDeferralReason
         let proposed: Date
         switch input.trigger {
+        case .failure(.commandLineToolUnavailable(let provider)): return .stop(.commandLineToolUnavailable(provider: provider))
         case .failure(.keyRejected): return .stop(.keyRejected)
         case .failure(.modelUnavailable): return .stop(.modelUnavailable)
         case .failure(.unusableAnswer): return .stop(.unusableAnswer)

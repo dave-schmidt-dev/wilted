@@ -33,7 +33,7 @@ public enum RemoteLabellingNotSent: String, Sendable, Equatable, CaseIterable {
     public var sentence: String {
         switch self {
         case .switchOff: "Online ad finding is off."
-        case .noKey: "No provider key is saved."
+        case .noKey: "The chosen provider is not ready: it needs a saved key or a model."
         case .notConfirmed: "This show is not sent for ad finding. Turn it on in the show's settings."
         }
     }

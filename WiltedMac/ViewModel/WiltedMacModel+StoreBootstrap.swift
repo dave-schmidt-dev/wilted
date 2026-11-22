@@ -632,17 +632,12 @@ extension WiltedMacModel {
                 PodcastDownloadCoordinator(store: store, libraryDirectory: mediaDirectory)
             }
         }
-        // The owner may route labelling through the signed-in OpenCode command-line tool
-        // instead of the saved key. Its private home sits in the temporary directory so the
-        // working directory the tool reports to the provider carries no account name.
         let labellerPreferences = AdLabellerPreferences(preferences: preferences)
         let labellerCounter = LabellerRequestCounter(preferences: preferences)
-        let labellerUsesCLI = labellerPreferences.usesOpenCodeCLI
-            && OpenCodeCLILabellerSender.isAvailable()
-        let labellerSender: any LabellerSending = labellerUsesCLI
-            ? OpenCodeCLILabellerSender(homeDirectory: FileManager.default.temporaryDirectory
-                .appendingPathComponent("wilted-labeller-cli", isDirectory: true))
-            : LabellerClient(keyStore: adLabellerKeyStore)
+        let labellerSender: any LabellerSending = ConfiguredLabellerSender(
+            preferences: labellerPreferences,
+            keyStore: adLabellerKeyStore
+        )
         let appLabellingServices: PodcastLabellingServices? = (fixtureMode || Self.hostsTests) ? nil : PodcastLabellingServices(
             preferences: labellerPreferences,
             counter: labellerCounter,

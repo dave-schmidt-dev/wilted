@@ -45,12 +45,15 @@ public struct LabelledRunProvenance: Equatable, Sendable {
     public let modelID: String
     public let level: String
     public let promptVersion: String
+    /// The provider choice; defaults to `unknown` when decoding older records or not provided.
+    public let provider: String
 
-    public init(route: String, modelID: String, level: String, promptVersion: String) {
+    public init(route: String, modelID: String, level: String, promptVersion: String, provider: String = "unknown") {
         self.route = route
         self.modelID = modelID
         self.level = level
         self.promptVersion = promptVersion
+        self.provider = provider
     }
 }
 
@@ -162,7 +165,8 @@ extension PodcastPreparationPipeline {
             route: "remote",
             modelID: preferences.modelID,
             level: preferences.level,
-            promptVersion: EpisodeLabeller.promptVersion
+            promptVersion: EpisodeLabeller.promptVersion,
+            provider: preferences.provider.rawValue
         )
     }
 
@@ -286,6 +290,7 @@ extension PodcastPreparationPipeline {
             detail: "\(cues.count) transcript cues",
             evidence: try? PreparationEvidence(kind: "labeller-request", fields: [
                 "cueCount": String(cues.count),
+                "provider": provenance.provider,
                 "modelID": provenance.modelID,
                 "level": provenance.level,
             ])))
@@ -321,6 +326,9 @@ extension PodcastPreparationPipeline {
             evidence: try? PreparationEvidence(kind: "labeller-result", fields: [
                 "breaks": String(reply.breaks.count),
                 "rejected": String(reply.rejected.count),
+                "provider": provenance.provider,
+                "modelID": provenance.modelID,
+                "level": provenance.level,
             ])))
         let cutFields = try await workerRequestFields(
             episode: episode, audioURL: audioURL, preparedURL: preparedURL, sourceHash: sourceHash,
@@ -338,6 +346,7 @@ extension PodcastPreparationPipeline {
             ]
         }
         cutRequest["labellerCuesDigest"] = transcript.digest
+        cutRequest["labellerProvider"] = provenance.provider
         cutRequest["labellerModelID"] = provenance.modelID
         cutRequest["labellerLevel"] = provenance.level
         cutRequest["labellerPromptVersion"] = provenance.promptVersion

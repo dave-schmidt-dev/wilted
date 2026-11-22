@@ -154,6 +154,7 @@ extension PodcastPreparationPipeline {
         if let labelled {
             hasher.update(data: Data([0]) + Data("labelledRoute".utf8))
             hasher.update(data: Data(labelled.route.utf8))
+            hasher.update(data: Data([0]) + Data(labelled.provider.utf8))
             hasher.update(data: Data([0]) + Data(labelled.modelID.utf8))
             hasher.update(data: Data([0]) + Data(labelled.level.utf8))
             hasher.update(data: Data([0]) + Data(labelled.promptVersion.utf8))

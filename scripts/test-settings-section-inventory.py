@@ -54,6 +54,10 @@ class SettingsInventory(unittest.TestCase):
         for name in ("WiltedMacAdFindingSettingsView", "WiltedMacReportsCard", "WiltedMacAdFeedbackCard",
                      "WiltedMacLifetimeStatisticsCard"):
             declarations[name] = source(name)
+        providers_page = source("WiltedMacProvidersSettingsView")
+        declarations["WiltedMacProvidersSettingsView"] = providers_page.split("private struct WiltedMacProviderCard")[0]
+        declarations["WiltedMacProviderCard"] = providers_page.split("private struct WiltedMacProviderCard")[1]
+        declarations["WiltedMacAdFindingModelSection"] = source("WiltedMacAdFindingModelSection")
         declarations["WiltedMacGlobalFeedDefaultsControls"] = source("WiltedMacGlobalFeedDefaultsControls").split("struct WiltedMacGlobalFeedDefaultsControls")[1]
         declarations["WiltedMacInheritedFeedDefaults"] = source("WiltedMacFeedsComponents").split("struct WiltedMacInheritedFeedDefaults")[1].split("\nstruct ")[0]
 
@@ -223,11 +227,16 @@ INVENTORY = {
         'wilted-ad-finding-help',
         'wilted-ad-finding-consent-summary',
         'wilted-ad-finding-controls',
-        'wilted-ad-finding-key-saved',
-        'wilted-ad-finding-key-remove',
-        'wilted-ad-finding-key-field',
-        'wilted-ad-finding-key-save',
-        'wilted-ad-finding-key-message',
+        'wilted-ad-finding-model-controls',
+        'wilted-ad-finding-provider-picker',
+        'wilted-ad-finding-model-field',
+        'wilted-ad-finding-model-save',
+        'wilted-ad-finding-model-message',
+        'wilted-ad-finding-model-picker',
+        'wilted-ad-finding-level-picker',
+        'wilted-ad-finding-level-message',
+        'wilted-ad-finding-readiness',
+        'wilted-ad-finding-setup-providers',
         'wilted-settings-all-show-\\(subscription.id)',
         'wilted-settings-all-shows-page',
         'wilted-settings-all-shows-done',
@@ -245,6 +254,34 @@ INVENTORY = {
         'wilted-ad-feedback-label',
         'wilted-ad-feedback-remove',
         'wilted-ad-feedback-restore',
+    ],
+    "providers": [
+        'wilted-providers-heading-cli',
+        'wilted-providers-check-all',
+        'wilted-providers-help',
+        'wilted-providers-heading-keys',
+        'wilted-providers-page',
+        # The page builds the provider card twice (command-line group, key group).
+        'wilted-providers-in-use-\\(row.provider.rawValue)',
+        'wilted-providers-kind-\\(row.provider.rawValue)',
+        'wilted-providers-status-\\(row.provider.rawValue)',
+        'wilted-providers-check-\\(row.provider.rawValue)',
+        'wilted-providers-key-saved-\\(row.provider.rawValue)',
+        'wilted-providers-key-remove-\\(row.provider.rawValue)',
+        'wilted-providers-key-field-\\(row.provider.rawValue)',
+        'wilted-providers-key-save-\\(row.provider.rawValue)',
+        'wilted-providers-key-message-\\(row.provider.rawValue)',
+        'wilted-providers-card-\\(row.provider.rawValue)',
+        'wilted-providers-in-use-\\(row.provider.rawValue)',
+        'wilted-providers-kind-\\(row.provider.rawValue)',
+        'wilted-providers-status-\\(row.provider.rawValue)',
+        'wilted-providers-check-\\(row.provider.rawValue)',
+        'wilted-providers-key-saved-\\(row.provider.rawValue)',
+        'wilted-providers-key-remove-\\(row.provider.rawValue)',
+        'wilted-providers-key-field-\\(row.provider.rawValue)',
+        'wilted-providers-key-save-\\(row.provider.rawValue)',
+        'wilted-providers-key-message-\\(row.provider.rawValue)',
+        'wilted-providers-card-\\(row.provider.rawValue)',
     ],
     "reports": [
         'wilted-reports-interruptions',

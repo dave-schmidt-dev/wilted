@@ -668,6 +668,10 @@ extension PodcastPreparationPipelineTests {
         let otherPrompt = LabelledRunProvenance(
             route: "remote", modelID: "model-a", level: "low", promptVersion: "labeller-prompt-v0")
         #expect(PodcastPreparationPipeline.policyDigest(policy, labelled: otherPrompt) != remoteDigest)
+
+        let otherProvider = LabelledRunProvenance(
+            route: "remote", modelID: "model-a", level: "low", promptVersion: EpisodeLabeller.promptVersion, provider: "claudeCodeCLI")
+        #expect(PodcastPreparationPipeline.policyDigest(policy, labelled: otherProvider) != remoteDigest)
     }
 
     @Test func decoderAcceptsWorkerReplyWithOrWithoutAdProfileFields() throws {

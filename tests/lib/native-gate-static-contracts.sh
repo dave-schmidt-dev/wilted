@@ -221,8 +221,8 @@ assert_snapshot_contract() {
   assert_contains 'source "$repo_root/scripts/lib/native-gate-validation.sh"' "$gate"
   assert_contains 'validate_pixel_snapshot_baselines' "$gate"
   assert_contains 'validate_ios_pixel_snapshot_baselines' "$gate"
-  assert_validation_contains 'expected_count=228'
-  assert_validation_contains 'shells=76'
+  assert_validation_contains 'expected_count=229'
+  assert_validation_contains 'shells=77'
   for state in not-ready ready; do
     for appearance in light dark; do
       assert_validation_contains "testReportsSettingsPixelBaselines.mac-shell-settings-reports-$state-$appearance.png"
@@ -323,6 +323,7 @@ assert_snapshot_contract() {
     testNewEpisodesSettingsPixels \
     testPreparingSettingsPixels \
     testAdsSettingsPixels \
+    testProvidersSettingsPixels \
     testReportsSettingsPixels \
     testDevicesSettingsPixels \
     testAboutSettingsPixels \

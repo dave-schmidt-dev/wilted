@@ -89,7 +89,7 @@ struct RemoteLabellingPolicyTests {
     @Test func eachNotSentReasonMapsToItsNotSentKindAndSentence() {
         let expected: [RemoteLabellingNotSentReason: (kind: String, sentence: String)?] = [
             .switchOff: ("not-sent-switch-off", "Online ad finding is off."),
-            .noKey: ("not-sent-no-key", "No provider key is saved."),
+            .noKey: ("not-sent-no-key", "The chosen provider is not ready: it needs a saved key or a model."),
             .notConfirmed: ("not-sent-not-confirmed",
                             "This show is not sent for ad finding. Turn it on in the show's settings."),
             .adRemovalOff: nil,
