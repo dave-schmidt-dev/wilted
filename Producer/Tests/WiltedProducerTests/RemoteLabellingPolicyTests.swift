@@ -38,6 +38,15 @@ struct RemoteLabellingPolicyTests {
         #expect(route(input(), context(capReached: true)) == .notSent(.dailyCapReached))
     }
 
+    /// Ad removal off and an ad-free feed win over every other reason, so nothing is ever sent for them.
+    @Test func adRemovalOffDecidesBeforeEveryOtherRule() {
+        var withoutAds = input()
+        withoutAds.removeAds = false
+        #expect(route(withoutAds, context(on: false, key: false, confirmed: [], capReached: true)) == .notSent(.adRemovalOff))
+        #expect(route(input(), context(on: false, key: false, confirmed: [], adFree: ["feed-1"], capReached: true))
+            == .notSent(.adRemovalOff))
+    }
+
     @Test func reasonsHaveStableRawStrings() {
         #expect(RemoteLabellingNotSentReason.allCases.map(\.rawValue) == [
             "switchOff", "noKey", "notConfirmed", "adRemovalOff",
