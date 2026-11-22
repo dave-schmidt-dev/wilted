@@ -35,6 +35,8 @@ extension WiltedMacFeedPolicyViewTests {
         let labeller = AdLabellerPreferences(preferences: fixture.model.preferences)
         labeller.isEnabled = true
         labeller.setConfirmed(feedID: fixture.feedID, true)
+        // The confirmation sheet saves consent, then the board re-reads it, as the app does.
+        fixture.board.refreshAdPreferences()
 
         XCTAssertEqual(fixture.board.adRoute(for: fixture.feedID), .remote)
         XCTAssertTrue(fixture.board.sendsForAdFinding(fixture.feedID))
