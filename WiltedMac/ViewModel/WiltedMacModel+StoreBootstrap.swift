@@ -408,8 +408,15 @@ extension WiltedMacModel {
     /// other failure goes.
     private func closeInterruptedPreparationRuns(in store: LocalLibraryStore) async {
         // The display cap must not hide an older live run from recovery.
-        guard let runs = try? await store.preparationRuns(limit: Int.max) else { return }
-        for run in runs where !run.isTerminal {
+        let runs: [PreparationRunSummary]
+        do {
+            runs = try await store.prunePreparationHistoryAndFetchOpenRuns()
+        } catch {
+            Self.reclaimLog.warning("Preparation history pruning failed: \(LogSafeError.describe(error), privacy: .public)")
+            guard let allRuns = try? await store.preparationRuns(limit: Int.max) else { return }
+            runs = allRuns.filter { !$0.isTerminal }
+        }
+        for run in runs {
             if run.entries.first?.status.attempt != nil,
                (try? await store.closeInactivePreparationRun(run, at: Timestamp(Date()),
                     detail: Self.preparationInterruptedMessage)) == true { continue }

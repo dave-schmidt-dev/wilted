@@ -307,6 +307,15 @@ extension LocalLibraryStore {
     /// keep processing the rest of the library on a malformed row, not abort
     /// reconciliation for every item because one is bad.
     nonisolated internal func newestReadyRevisionsByItemID(in context: ModelContext) throws -> [String: StoredAudioRevision] {
+        try newestReadyRevisionsChecked(in: context).ready
+    }
+
+    /// `newestReadyRevisionsByItemID` that also names the items whose newest revision claims to be
+    /// ready (it has a media URL) but could not be read, so a caller that must not guess can tell
+    /// "no ready revision" from "a ready revision I cannot see".
+    nonisolated internal func newestReadyRevisionsChecked(in context: ModelContext) throws -> (
+        ready: [String: StoredAudioRevision], unreadable: Set<String>
+    ) {
         let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
         var newestByItemID: [String: LocalLibrarySchemaV3Models.RevisionRecord] = [:]
         for record in records {
@@ -314,16 +323,21 @@ extension LocalLibraryStore {
             newestByItemID[record.itemID] = record
         }
         var result: [String: StoredAudioRevision] = [:]
+        var unreadable = Set<String>()
         for (itemIDRaw, record) in newestByItemID {
-            guard let mediaURLString = record.mediaURL, let mediaURL = URL(string: mediaURLString),
+            guard let mediaURLString = record.mediaURL else { continue }
+            guard let mediaURL = URL(string: mediaURLString),
                   let itemID = try? ItemID(rawValue: itemIDRaw),
                   let revision = try? AudioRevision(itemID: itemID, revisionID: RevisionID(rawValue: record.id), durationSeconds: record.durationSeconds,
                                                     byteCount: record.byteCount, contentHash: record.contentHash, mediaType: record.mediaType,
                                                     createdAt: Timestamp(record.createdAt), schemaVersion: record.schemaVersion)
-            else { continue }
+            else {
+                unreadable.insert(itemIDRaw)
+                continue
+            }
             result[itemIDRaw] = StoredAudioRevision(revision: revision, mediaURL: mediaURL)
         }
-        return result
+        return (result, unreadable)
     }
 
     nonisolated internal func newestReadyRevisionsByItemID() throws -> [String: StoredAudioRevision] {

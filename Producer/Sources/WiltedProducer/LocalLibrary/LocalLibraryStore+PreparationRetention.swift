@@ -1,0 +1,102 @@
+import Foundation
+import SwiftData
+import WiltedDomain
+
+extension LocalLibraryStore {
+    /// Applies retention to the snapshot bootstrap already needs for interrupted-run
+    /// recovery. Selection and deletion share one actor turn and model context.
+    public func prunePreparationHistoryAndFetchOpenRuns() throws -> [PreparationRunSummary] {
+        let context = ModelContext(container)
+        let (records, runs, unreadableRows) = try preparationRunSnapshotChecked(in: context)
+        let podcasts = runs.filter { $0.requestID == PodcastPreparationPipeline.requestID(for: $0.itemID) }
+        let open = runs.filter { !$0.isTerminal }
+        // A lone generation is always protected as the newest.
+        let histories = Dictionary(grouping: podcasts, by: \.itemID).filter {
+            $0.value.count > 1 && $0.value.contains(where: \.isTerminal)
+        }
+        guard !histories.isEmpty else { return open }
+
+        let (ready, unreadableRevisions) = try newestReadyRevisionsChecked(in: context)
+        let current = PodcastPreparationEligibility.current.rawValue
+        // Every outcome row is evidence an episode was prepared; only current ones can prove a Ready revision.
+        let allOutcomes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>())
+        let outcomes = allOutcomes.filter { $0.eligibility == current }
+        let currentOutcomes = Set(outcomes.map(\.id))
+        let tickets = try context.fetch(FetchDescriptor<LocalLibrarySchemaV22Models.WorkTicketRecord>())
+        var revisionOwners: [String: Set<String>] = [:]
+        for row in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>()) {
+            revisionOwners[row.id, default: []].insert(row.itemID)
+        }
+        // Protection is read from four places. If any input for an episode cannot be read, or
+        // contradicts another, nothing is pruned for any episode it names.
+        var protection = PreparationProtection(blocked: unreadableRevisions)
+        protection.readJournal(unreadable: unreadableRows, runs: runs)
+        protection.readOutcomes(outcomes, revisionOwners: revisionOwners)
+        protection.readTickets(tickets)
+        let prepared = PreparationProtection.preparedEpisodes(
+            runs: runs, outcomes: allOutcomes, revisionOwners: revisionOwners)
+
+        // An episode is pruned only on positive proof: either its Ready proof is found and consistent,
+        // or it is shown never to have been prepared. Anything else leaves its history whole.
+        var removals = Set<String>()
+        for (item, history) in histories where !protection.blocked.contains(item.rawValue) {
+            switch PreparationProtection.proof(
+                for: item.rawValue, history: history, prepared: prepared,
+                ready: ready[item.rawValue], currentOutcomes: currentOutcomes) {
+            case .skip: continue
+            case .neverPrepared:
+                removals.formUnion(Self.prunablePreparationIDs(
+                    in: history, hasReadyRevision: false, proofRunID: nil,
+                    ticket: protection.ticketAttempts[item.rawValue]))
+            case let .ready(proofRunID):
+                removals.formUnion(Self.prunablePreparationIDs(
+                    in: history, hasReadyRevision: true, proofRunID: proofRunID,
+                    ticket: protection.ticketAttempts[item.rawValue]))
+            }
+        }
+        if !removals.isEmpty {
+            for record in records where removals.contains(record.id) { context.delete(record) }
+            try context.save()
+        }
+        return open
+    }
+
+    /// Selects deletable event IDs from one item's complete recovery snapshot.
+    static func prunablePreparationIDs(
+        in runs: [PreparationRunSummary], hasReadyRevision: Bool,
+        proofRunID: String?, ticket: PreparationAttemptIdentity?
+    ) -> Set<String> {
+        func attempt(_ run: PreparationRunSummary) -> PreparationAttemptIdentity? {
+            run.entries.first?.status.attempt
+        }
+        // Request sequence and retry count are numeric; legacy unbound history is oldest.
+        let ordered = runs.sorted {
+            let left = attempt($0), right = attempt($1)
+            return (left?.requestSequence ?? -1, left?.attemptCount ?? -1)
+                > (right?.requestSequence ?? -1, right?.attemptCount ?? -1)
+        }
+        // The proof is the run the caller validated, never one re-picked by its last terminal.
+        let proofIndex = proofRunID.flatMap { id in ordered.firstIndex { $0.id == id } }
+        let keepLegacy = hasReadyRevision && proofIndex.flatMap { attempt(ordered[$0]) } == nil
+        var failures = 0
+        var removals = Set<String>()
+        for (index, run) in ordered.enumerated() {
+            if run.outcome == .failed { failures += 1 }
+            guard index > 0, index != proofIndex, run.isTerminal else { continue }
+            if let key = attempt(run) {
+                guard key != ticket else { continue }
+            } else if keepLegacy { continue }
+
+            let olderThanProof = proofIndex.map { index > $0 } ?? true
+            let pruneWholeRun = olderThanProof && (run.outcome != .failed || failures > 3)
+            for entry in run.entries where pruneWholeRun || entry.id.hasSuffix("#heartbeat") {
+                guard entry.requestID == run.requestID, entry.itemID == run.itemID,
+                      entry.id.hasPrefix(run.id + "|"),
+                      maintenanceGeneration(of: entry.id, requestID: run.requestID) == attempt(run)
+                else { continue }
+                removals.insert(entry.id)
+            }
+        }
+        return removals
+    }
+}

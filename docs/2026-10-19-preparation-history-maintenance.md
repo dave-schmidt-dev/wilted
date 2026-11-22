@@ -1,7 +1,6 @@
-# Preparation history: bounded maintenance reads and a retention proposal
+# Preparation history: bounded maintenance reads and retention
 
-Task 7. Status: bounded reads implemented (no rows deleted beyond today's
-behaviour); retention (pruning) is a proposal for David to decide.
+Task 7. Bounded invalidation reads and bootstrap retention are implemented.
 
 ## Terms
 
@@ -30,10 +29,8 @@ behaviour); retention (pruning) is a proposal for David to decide.
 
 Follow-up read gaps corrected separately on 2026-10-20, without pruning or a schema change:
 
-- `preparationRuns(limit:)` / `allPreparationRunSummaries` already decode every journal
-  row before applying the display limit. Bootstrap now explicitly requests all runs
-  through the existing API, so more than 200 newer terminal runs cannot hide a live one.
-  Prep's default display limit remains 200; no additional journal scan was introduced.
+- Bootstrap uses the uncapped recovery snapshot, so more than 200 newer terminal runs
+  cannot hide a live one. Retention shares that snapshot. Prep's display limit remains 200.
 - `latestPreparationTimeline(for:revisionID:)` keeps its newest-64-row fast path. On a
   miss it fetches the exact current outcome and reuses the bounded Ready-generation
   lookup below, retaining revision matching and legacy recent-history behavior.
@@ -112,10 +109,12 @@ loop already pays. Making the storage cost item-bounded needs an index on
   visited. Today such an item (a legacy run that failed before any download) could
   receive a forced-redownload marker for an episode with nothing downloaded.
 
-## Retention proposal (David decides; not implemented)
+## Retention proposal (implemented with N=3, no age cap, no index)
 
-Pruning would run at bootstrap, after `invalidateStalePodcastPreparations`, per item,
-using the same bounded reads.
+Mac bootstrap prunes after the invalidation or pending-marker pass and before closing
+interrupted runs. It reuses the complete run snapshot that interrupted-run recovery
+already requires. Retention adds no journal fetch to bootstrap. The existing
+`preparationMaintenanceRowsRead` counter measures bounded invalidation reads. The separate recovery snapshot still scales with total history.
 
 **Always keep**
 
@@ -125,15 +124,28 @@ using the same bounded reads.
 4. Invalidation markers (`podcast-invalidation|`, `podcast-reset-preparation|`).
 5. Legacy unbound rows for an item whose Ready revision has no bound proof.
 
+**Fail closed.** Pruning reads its protection from four places: the journal, the newest revision,
+the current outcome and the work ticket. If any input for an episode cannot be read or validated,
+nothing is pruned for that episode. That covers a journal row that cannot be decoded or has an
+invalid item ID, a terminal row whose generation does not match its stored generation, a newest
+revision that has a media URL but fails validation, a Ready revision with no current outcome, and a
+ticket with an invalid counter (a ticket that has not started, with no attempts, is normal and
+does not block). A row that names an episode in any way, by its item ID, its request ID, its
+revision or its ticket key, is checked against the others, and a contradiction blocks every episode it
+names: a journal run whose rows name more than one episode, a current outcome whose revision row has
+no owner or belongs to another episode, a running ticket with no attempt, and a ticket that disagrees
+with its own durable key. Other, unrelated episodes are pruned as usual.
+
+**Positive proof.** Even with every input readable, an episode is pruned only on proof found, never
+on proof missing. With a Ready revision, its current outcome must be keyed to the same episode and
+revision, and its own history must hold the succeeded run that produced it, with every terminal row
+in that run agreeing (a later failure in the same generation, or a success filed under a damaged
+request ID, means no proof). Without a Ready revision, the episode counts as never prepared only if
+no revision row, outcome row (of any kind) or succeeded run anywhere shows otherwise (a revision that lost its
+media URL still counts as prepared). Otherwise the episode is skipped whole.
+
 **Prune candidates**
 
 - Terminal generations older than both the Ready-proving and the newest generation,
-  keeping the newest **N** failed generations so Prep still shows recent failures.
-- Heartbeat rows (`#heartbeat`) of any terminal generation other than the two kept.
-
-**Decisions needed**
-
-1. Whether to prune at all, and the value of N (suggest 3).
-2. Whether Prep history may lose runs older than N failures per item.
-3. Whether an age cap (for example 90 days) should also apply to failed generations.
-4. Whether to add the `requestID` index (schema version) so storage cost is bounded too.
+  keeping the newest **three** failed generations so Prep still shows recent failures.
+- Heartbeat rows (`#heartbeat`) of other terminal generations, except where an always-keep rule applies.
