@@ -1,4 +1,5 @@
 import Foundation
+import SwiftData
 import XCTest
 import WiltedDomain
 @testable import WiltedProducer
@@ -87,6 +88,53 @@ final class LocalLibraryRuleSkipTests: XCTestCase {
         let decision = try await fixture.store.episodeDecision(for: fixture.episodeID)
         XCTAssertEqual(retiredAt, firstRetiredAt)
         XCTAssertNil(decision, "no rule decision is written for an episode the rule did not retire")
+    }
+
+    // MARK: - Playback that began first
+
+    /// The store rechecks playback in its own transaction, so a caller whose earlier check was
+    /// overtaken (Apply Rules, or a refresh-time Skip) cannot delete the audio of an episode that is
+    /// now playing, has a saved position, or was finished.
+    func testRuleSkipLeavesTheEpisodeAndItsAudioWhenItIsTheCurrentQueueEpisode() async throws {
+        let fixture = try await makeFixture()
+        try await fixture.store.replacePodcastQueue(
+            try PodcastQueueState(episodeIDs: [fixture.episodeID], currentEpisodeID: fixture.episodeID)
+        )
+        try await assertLeftAlone(fixture)
+    }
+
+    func testRuleSkipLeavesTheEpisodeAndItsAudioWhenItHasASavedPosition() async throws {
+        let fixture = try await makeFixture()
+        try insertPlayback(fixture, positionSeconds: 42, completed: false)
+        try await assertLeftAlone(fixture)
+    }
+
+    func testRuleSkipLeavesTheEpisodeAndItsAudioWhenItWasFinished() async throws {
+        let fixture = try await makeFixture()
+        try insertPlayback(fixture, positionSeconds: 0, completed: true)
+        try await assertLeftAlone(fixture)
+    }
+
+    private func insertPlayback(_ fixture: Fixture, positionSeconds: Double, completed: Bool) throws {
+        let context = ModelContext(fixture.store.container)
+        context.insert(LocalLibrarySchemaV21Models.PlaybackRecord(try PlaybackState(
+            itemID: fixture.episodeID, revisionID: try RevisionID(rawValue: "r1"), sessionID: "session", sequence: 1,
+            positionSeconds: positionSeconds, durationSeconds: 100, completed: completed, intent: .progress,
+            deviceID: "synthetic", updatedAt: Timestamp(Date())
+        )))
+        try context.save()
+    }
+
+    private func assertLeftAlone(_ fixture: Fixture, line: UInt = #line) async throws {
+        let skipped = try await fixture.store.retireEpisodeBySkipRule(fixture.episodeID, ruleID: UUID())
+        XCTAssertFalse(skipped, line: line)
+        let removal = try await fixture.store.removalKind(for: fixture.episodeID)
+        let decision = try await fixture.store.episodeDecision(for: fixture.episodeID)
+        let download = try await fixture.store.download(for: fixture.episodeID)
+        XCTAssertNil(removal, "the episode is not retired", line: line)
+        XCTAssertNil(decision, "no rule decision is written", line: line)
+        XCTAssertNotNil(download, "its download record stays", line: line)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.mediaURL.path), "and so does its audio", line: line)
     }
 
     // MARK: - Undo and rollback

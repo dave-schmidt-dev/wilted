@@ -344,8 +344,8 @@ extension LocalLibraryStore {
     /// after it commits. A manual decision is the listener's and always wins:
     /// an episode restored from History carries a manual Keep, so a rule never
     /// retires it again. Returns false, writing nothing, for a missing or
-    /// already removed episode, one with a manual decision, or one flagged as a
-    /// possible duplicate.
+    /// already removed episode, one with a manual decision, one flagged as a
+    /// possible duplicate, or one the listener has started playing.
     @discardableResult
     public func retireEpisodeBySkipRule(_ episodeID: ItemID, ruleID: UUID,
                                         at decidedAt: Timestamp = Timestamp(Date())) throws -> Bool {
@@ -358,6 +358,8 @@ extension LocalLibraryStore {
         guard try !Self.associationHasManualChoice(for: episodeID, in: context) else { return false }
         // A flagged lookalike keeps its row and media until the owner answers.
         guard try !Self.hasPendingPossibleDuplicateHold(for: episodeID, in: context) else { return false }
+        // Playback that began after the caller's own check still wins: the Skip would delete its audio.
+        guard try !Self.episodeHasStartedPlayback(episodeID, in: context) else { return false }
         episode.retiredAt = decidedAt.date
         episode.removalKind = PodcastEpisodeRemovalKind.retired.rawValue
         if let existing {
