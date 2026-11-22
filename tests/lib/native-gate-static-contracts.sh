@@ -236,7 +236,7 @@ assert_snapshot_contract() {
   assert_validation_contains "expected_size='56 x 260'"
   assert_validation_contains "expected_size='520 x 420'"
   assert_validation_contains "expected_size='224 x 56'"
-  assert_validation_contains "expected_size='760 x 440'"
+  assert_validation_contains "expected_size='760 x 660'"
   assert_validation_contains 'testFeedsRowPixelBaselines.mac-shell-feeds-row-light.png'
   assert_validation_contains 'testFeedsRowPixelBaselines.mac-shell-feeds-row-dark.png'
   for kind in minimum full; do
