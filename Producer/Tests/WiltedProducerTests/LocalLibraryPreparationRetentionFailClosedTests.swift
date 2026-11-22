@@ -132,6 +132,14 @@ extension LocalLibraryStoreTests {
             let prefix = fixture.requestID + "|generation-6-1|"
             for row in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
                 predicate: #Predicate { $0.id.starts(with: prefix) })) { context.delete(row) }
+            // Unbound legacy rows too: they are not exempt from an episode that is skipped whole.
+            let failure = try PreparationTerminalResult(
+                outcome: .failed, error: ProducerError(code: .failed, message: "legacy", retryable: true))
+            try insertPreparation(context, id: fixture.requestID + "|extracting#1", itemID: fixture.itemID,
+                requestID: fixture.requestID, stage: .extracting, at: fixture.base, attempt: nil)
+            try insertPreparation(context, id: fixture.requestID + "|terminal", itemID: fixture.itemID,
+                requestID: fixture.requestID, stage: .failed, at: fixture.base.addingTimeInterval(1),
+                attempt: nil, terminal: failure)
         }
     }
 
@@ -161,13 +169,64 @@ extension LocalLibraryStoreTests {
         }
     }
 
-    func testRetentionPrunesNothingWhenAnOutcomeKeyNamesAnotherEpisodeThanItsFields() async throws {
-        try await prunesNothing("retention-outcome-key") { _, context in
+    /// The outcome's key names this episode and its Ready revision, but its fields consistently name
+    /// another episode and that episode's own revision. Trusting the key would take it for this
+    /// episode's current outcome.
+    func testRetentionPrunesNothingWhenAnOutcomeKeyNamesThisEpisodeButItsFieldsNameAnother() async throws {
+        try await prunesNothing("retention-outcome-key") { fixture, context in
+            let other = try ItemID.derivePodcastEpisode(
+                feedURL: URL(string: "https://feeds.example.test/keyed.xml")!, rssGUID: "keyed",
+                enclosureURL: URL(string: "https://media.example.test/keyed.mp3")!)
+            let otherRevision = try AudioRevision(
+                itemID: other, revisionID: RevisionID(rawValue: "keyed-revision"),
+                durationSeconds: fixture.revision.durationSeconds, byteCount: fixture.revision.byteCount,
+                contentHash: fixture.revision.contentHash, mediaType: fixture.revision.mediaType,
+                createdAt: fixture.revision.createdAt, schemaVersion: fixture.revision.schemaVersion)
+            context.insert(LocalLibrarySchemaV3Models.RevisionRecord(otherRevision, mediaURL: fixture.mediaURL))
             for row in try context.fetch(
                 FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>()) {
-                row.id = "someone-else|" + row.revisionID
+                row.episodeID = other.rawValue
+                row.revisionID = otherRevision.revisionID.rawValue
             }
         }
+    }
+
+    func testRetentionPrunesNothingWhenOnlyANonCurrentOutcomeSurvives() async throws {
+        try await prunesNothing("retention-noncurrent-outcome") { fixture, context in
+            for row in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
+            where row.itemID == fixture.itemID.rawValue { context.delete(row) }
+            for row in try context.fetch(
+                FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>()) {
+                row.eligibility = PodcastPreparationEligibility.invalid.rawValue
+            }
+            let prefix = fixture.requestID + "|generation-6-1|"
+            for row in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
+                predicate: #Predicate { $0.id.starts(with: prefix) })) { context.delete(row) }
+        }
+    }
+
+    /// An older run that proves the revision stays when a newer run for the same revision holds a
+    /// failure and then a success: the newer one is not valid proof, so it must not displace it.
+    func testRetentionKeepsTheValidatedProofRunWhenANewerRunIsContradictory() async throws {
+        let fixture = try await makePreparationHistoryStore("retention-two-proofs")
+        defer { try? FileManager.default.removeItem(at: fixture.url.deletingLastPathComponent()) }
+        _ = try await addRetentionHistory(to: fixture, olderFailedGenerationCount: 5, newerFailedGenerationCount: 3)
+        let context = ModelContext(fixture.store.container)
+        let attempt = try PreparationAttemptIdentity(requestSequence: 9, attemptCount: 1)
+        let success = try PreparationTerminalResult(outcome: .succeeded, revisionID: fixture.revision.revisionID)
+        try insertPreparation(
+            context, id: fixture.requestID + "|generation-9-1|terminal-late", itemID: fixture.itemID,
+            requestID: fixture.requestID, stage: .completed, at: fixture.base.addingTimeInterval(5_000),
+            attempt: attempt, terminal: success)
+        try context.save()
+
+        let proofPrefix = fixture.requestID + "|generation-6-1|"
+        let proofRows = try preparationHistoryIDs(in: fixture).filter { $0.hasPrefix(proofPrefix) }
+        XCTAssertFalse(proofRows.isEmpty)
+        _ = try await fixture.store.prunePreparationHistoryAndFetchOpenRuns()
+        let after = try preparationHistoryIDs(in: fixture)
+        XCTAssertEqual(after.filter { $0.hasPrefix(proofPrefix) }, proofRows, "the validated proof run is kept whole")
+        XCTAssertFalse(after.contains { $0.hasPrefix(fixture.requestID + "|generation-1-1|") }, "older failures are still pruned")
     }
 
     func testRetentionPrunesNothingWhenASucceededRunExistsButNoRevisionDoes() async throws {

@@ -47,7 +47,7 @@ extension LocalLibraryStoreTests {
 
         let ticket = try PreparationAttemptIdentity(requestSequence: 2, attemptCount: 1)
         let removals = LocalLibraryStore.prunablePreparationIDs(in: runs.reversed(),
-            hasReadyRevision: false, currentRevision: nil, ticket: ticket)
+            hasReadyRevision: false, proofRunID: nil, ticket: ticket)
 
         for sequence in [1, 3, 4, 5] {
             let prefix = requestID + "|generation-\(sequence)-1|"
@@ -75,7 +75,7 @@ extension LocalLibraryStoreTests {
                 outcome: sequence == 4 ? .succeeded : .failed, revisionID: sequence == 4 ? ready : nil)
         }
         let removals = LocalLibraryStore.prunablePreparationIDs(
-            in: runs, hasReadyRevision: true, currentRevision: ready, ticket: nil)
+            in: runs, hasReadyRevision: true, proofRunID: runs[3].id, ticket: nil)
         let older = runs.prefix(3).flatMap { $0.entries.map(\.id) }
         let heartbeats = runs[4..<11].flatMap { $0.entries.map(\.id).filter { $0.hasSuffix("#heartbeat") } }
         XCTAssertEqual(removals, Set(older + heartbeats))

@@ -18,9 +18,9 @@ extension LocalLibraryStore {
 
         let (ready, unreadableRevisions) = try newestReadyRevisionsChecked(in: context)
         let current = PodcastPreparationEligibility.current.rawValue
-        let outcomes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>(
-            predicate: #Predicate { $0.eligibility == current }
-        ))
+        // Every outcome row is evidence an episode was prepared; only current ones can prove a Ready revision.
+        let allOutcomes = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>())
+        let outcomes = allOutcomes.filter { $0.eligibility == current }
         let currentOutcomes = Set(outcomes.map(\.id))
         let tickets = try context.fetch(FetchDescriptor<LocalLibrarySchemaV22Models.WorkTicketRecord>())
         var revisionOwners: [String: Set<String>] = [:]
@@ -34,7 +34,7 @@ extension LocalLibraryStore {
         protection.readOutcomes(outcomes, revisionOwners: revisionOwners)
         protection.readTickets(tickets)
         let prepared = PreparationProtection.preparedEpisodes(
-            runs: runs, outcomes: outcomes, revisionOwners: revisionOwners)
+            runs: runs, outcomes: allOutcomes, revisionOwners: revisionOwners)
 
         // An episode is pruned only on positive proof: either its Ready proof is found and consistent,
         // or it is shown never to have been prepared. Anything else leaves its history whole.
@@ -46,11 +46,11 @@ extension LocalLibraryStore {
             case .skip: continue
             case .neverPrepared:
                 removals.formUnion(Self.prunablePreparationIDs(
-                    in: history, hasReadyRevision: false, currentRevision: nil,
+                    in: history, hasReadyRevision: false, proofRunID: nil,
                     ticket: protection.ticketAttempts[item.rawValue]))
-            case let .ready(revision):
+            case let .ready(proofRunID):
                 removals.formUnion(Self.prunablePreparationIDs(
-                    in: history, hasReadyRevision: true, currentRevision: revision,
+                    in: history, hasReadyRevision: true, proofRunID: proofRunID,
                     ticket: protection.ticketAttempts[item.rawValue]))
             }
         }
@@ -64,7 +64,7 @@ extension LocalLibraryStore {
     /// Selects deletable event IDs from one item's complete recovery snapshot.
     static func prunablePreparationIDs(
         in runs: [PreparationRunSummary], hasReadyRevision: Bool,
-        currentRevision: RevisionID?, ticket: PreparationAttemptIdentity?
+        proofRunID: String?, ticket: PreparationAttemptIdentity?
     ) -> Set<String> {
         func attempt(_ run: PreparationRunSummary) -> PreparationAttemptIdentity? {
             run.entries.first?.status.attempt
@@ -75,12 +75,8 @@ extension LocalLibraryStore {
             return (left?.requestSequence ?? -1, left?.attemptCount ?? -1)
                 > (right?.requestSequence ?? -1, right?.attemptCount ?? -1)
         }
-        let proofIndex = currentRevision.flatMap { revision in
-            ordered.firstIndex { run in
-                run.outcome == .succeeded
-                    && run.entries.last(where: { $0.status.terminal })?.status.terminalResult?.revisionID == revision
-            }
-        }
+        // The proof is the run the caller validated, never one re-picked by its last terminal.
+        let proofIndex = proofRunID.flatMap { id in ordered.firstIndex { $0.id == id } }
         let keepLegacy = hasReadyRevision && proofIndex.flatMap { attempt(ordered[$0]) } == nil
         var failures = 0
         var removals = Set<String>()

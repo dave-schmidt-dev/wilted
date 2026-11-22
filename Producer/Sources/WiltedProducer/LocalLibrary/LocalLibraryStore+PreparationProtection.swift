@@ -59,11 +59,11 @@ struct PreparationProtection {
         case skip
         /// Shown never to have been prepared: only failed history exists.
         case neverPrepared
-        /// A Ready revision with a current outcome and the succeeded run that produced it.
-        case ready(RevisionID)
+        /// A Ready revision with a current outcome; the associated value is the validated run that proves it.
+        case ready(String)
     }
 
-    /// Episodes with any sign of a finished preparation: a revision row, a current outcome, or a run
+    /// Episodes with any sign of a finished preparation: a revision row, any outcome row, or a run
     /// that ended with a revision, wherever it is filed. "Never prepared" needs all of these absent.
     static func preparedEpisodes(
         runs: [PreparationRunSummary],
@@ -86,9 +86,15 @@ struct PreparationProtection {
     ) -> Proof {
         guard let ready else { return prepared.contains(episode) ? .skip : .neverPrepared }
         let revision = ready.revision.revisionID
-        guard currentOutcomes.contains(episode + "|" + revision.rawValue),
-              history.contains(where: { proves($0, revision) }) else { return .skip }
-        return .ready(revision)
+        guard currentOutcomes.contains(episode + "|" + revision.rawValue) else { return .skip }
+        // Newest validated run wins, so deletion keeps exactly the run that was checked.
+        func rank(_ run: PreparationRunSummary) -> [Int] {
+            let attempt = run.entries.first?.status.attempt
+            return [attempt?.requestSequence ?? -1, attempt?.attemptCount ?? -1]
+        }
+        guard let proof = history.filter({ proves($0, revision) })
+            .max(by: { $0.id != $1.id && rank($0).lexicographicallyPrecedes(rank($1)) }) else { return .skip }
+        return .ready(proof.id)
     }
 
     /// A run proves a revision only if it ended in success, and every terminal event it holds says so.

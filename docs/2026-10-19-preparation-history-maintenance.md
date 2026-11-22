@@ -141,7 +141,7 @@ on proof missing. With a Ready revision, its current outcome must be keyed to th
 revision, and its own history must hold the succeeded run that produced it, with every terminal row
 in that run agreeing (a later failure in the same generation, or a success filed under a damaged
 request ID, means no proof). Without a Ready revision, the episode counts as never prepared only if
-no revision row, current outcome or succeeded run anywhere shows otherwise (a revision that lost its
+no revision row, outcome row (of any kind) or succeeded run anywhere shows otherwise (a revision that lost its
 media URL still counts as prepared). Otherwise the episode is skipped whole.
 
 **Prune candidates**
