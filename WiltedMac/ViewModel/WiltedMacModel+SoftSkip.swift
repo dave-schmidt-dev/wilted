@@ -70,10 +70,10 @@ extension WiltedMacModel {
     /// Something still saving on one of these rows keeps the offer open instead of spending it.
     private func undoSoftSkip(_ open: OpenSoftSkip, rows: [WiltedMacEpisode]) -> WiltedMacUndoResult {
         guard !isClosingTemporaryState else { return .done }
-        let members = Set(open.record.retiredIDs.map(\.rawValue))
-        let mine = rows.filter { members.contains($0.id) }
-        guard pendingFeedDecisionIDs.isDisjoint(with: mine.map(\.id)) else { return .retry }
-        decideFeedEpisodes(.undoSkip(open.record), episodes: mine)
+        // The rows the owner skipped, not the retired members: a linked pair is skipped through one visible
+        // row, so the members need not be among them. The store restores only what the record names.
+        guard pendingFeedDecisionIDs.isDisjoint(with: rows.map(\.id)) else { return .retry }
+        decideFeedEpisodes(.undoSkip(open.record), episodes: rows)
         return .done
     }
 

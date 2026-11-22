@@ -72,6 +72,33 @@ extension WiltedMacFeedDecisionTests {
         XCTAssertNil(fixture.model.undoToast.current)
     }
 
+    func testUndoingASkipOfALinkedPairRestoresBothEpisodes() async throws {
+        let fixture = try await makeFixture(count: 2, queueIndexes: [])
+        addTeardownBlock { await fixture.model.close() }
+        let (a, b) = (fixture.itemIDs[0], fixture.itemIDs[1])
+        let preview = try await fixture.store.previewEpisodeAssociation(
+            confirming: PodcastEpisodePairConfirmation(
+                confirmationID: UUID(), feedID: fixture.feedID, first: a, second: b, confirmedAt: fixture.createdAt),
+            representativeID: a)
+        _ = try await fixture.store.applyEpisodeAssociation(preview, at: fixture.createdAt)
+        await fixture.model.reloadLibraryRows()
+
+        fixture.model.skipFeedEpisode(try XCTUnwrap(fixture.model.episodes.first { $0.id == a.rawValue }), offerUndo: true)
+        await drainDecisionWriters(fixture.model)
+        let removedA = try await fixture.store.removalKind(for: a)
+        let removedB = try await fixture.store.removalKind(for: b)
+        XCTAssertNotNil(removedA)
+        XCTAssertNotNil(removedB)
+
+        fixture.model.undoToast.undoCurrent()
+        await drainDecisionWriters(fixture.model)
+
+        let backA = try await fixture.store.removalKind(for: a)
+        let backB = try await fixture.store.removalKind(for: b)
+        XCTAssertNil(backA)
+        XCTAssertNil(backB, "the linked twin comes back with the row that was skipped")
+    }
+
     func testAnOlderUndoDoesNothingAfterANewerSkip() async throws {
         let fixture = try await makeFixture(count: 1, queueIndexes: [])
         addTeardownBlock { await fixture.model.close() }
