@@ -230,7 +230,7 @@ extension LocalLibraryStore {
         let sealed = Date.distantPast
         let active = FetchDescriptor<ReceiptRecord>(predicate: #Predicate { $0.undoAvailableUntil != sealed })
         let receipts = try context.fetch(active)
-        guard !receipts.isEmpty else { return capacity }
+        guard !receipts.isEmpty || !softSkipHolds.isEmpty else { return capacity }
         let lookup = try EpisodeAssociationReadLookup(in: context)
         for receipt in receipts {
             for member in try JSONDecoder().decode([CompletionMember].self, from: receipt.members) where member.reservesCapacity {
@@ -240,6 +240,17 @@ extension LocalLibraryStore {
                     capacity[feedID, default: 0] += 1
                 }
             }
+        }
+        // A soft Skip's slot stays taken while its Undo window is open: Undo would give it back, and a
+        // refresh that filled it meanwhile would leave the feed over its limit.
+        for (id, hold) in softSkipHolds where hold.reservesCapacity {
+            guard let episode = lookup.episodes[id.rawValue], episode.retiredAt == hold.retiredAt,
+                  episode.removalKind == PodcastEpisodeRemovalKind.retired.rawValue else { continue }
+            let members = lookup.state(for: id)?.memberIDs ?? [id]
+            // A linked partner still on the feed already holds the group's slot.
+            guard members.allSatisfy({ lookup.episodes[$0.rawValue]?.removalKind == PodcastEpisodeRemovalKind.retired.rawValue }) else { continue }
+            let key = lookup.state(for: id)?.representativeID ?? id
+            if reserved.insert(key).inserted { capacity[hold.feedID, default: 0] += 1 }
         }
         return capacity
     }

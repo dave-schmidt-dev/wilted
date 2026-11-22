@@ -146,10 +146,17 @@ final class WiltedMacUndoToastCenter {
             scheduleExpiry()
             return
         }
+        // Command-Z pops this offer off the window's undo stack before running it.
+        let fromUndoStack = undoManager?.isUndoing == true
         undoing.insert(id)
         let result = action()
         undoing.remove(id)
         if result == .done { forget(id, closing: false) }
+        else if fromUndoStack {
+            // A kept-open offer must go back on the stack, or the next Command-Z would take back an
+            // older action while the toast still offers this one. The stack is busy until this returns.
+            Task { @MainActor [weak self] in self?.reregister(id) }
+        }
         scheduleExpiry()
     }
 
@@ -231,6 +238,11 @@ final class WiltedMacUndoToastCenter {
         if ownsGroup { undoManager.setActionName(offer.actionName) }
         undoManager.endUndoGrouping()
         if ownsGroup { undoManager.groupsByEvent = groupsByEvent }
+    }
+
+    private func reregister(_ id: UUID) {
+        guard let offer = offers.first(where: { $0.id == id }) else { return }
+        register(offer)
     }
 
     /// Removes an offer. `closing` says it ended without being taken, so its `onClose` runs, unless

@@ -138,7 +138,12 @@ extension LocalLibraryStore {
                     Self.stageRetirementManualDecision(id, at: retiredAt, lookup: lookup, in: context)
                 }
             }
+            let held = deferringMediaDeletion && asOwnerChoice
+                ? try softSkipHolds(for: committed, prior: priorDecisions, retiredAt: retiredAt, in: context, lookup: lookup)
+                : [:]
             try context.save()
+            // Recorded in the same actor turn as the save, so no refresh can see the vacancy first.
+            softSkipHolds.merge(held) { _, new in new }
             deleteMediaIfUnreferenced(doomedMedia)
         } else if asOwnerChoice {
             priorDecisions = Self.priorDecisions(of: alreadyAtTarget, lookup: lookup)
@@ -154,6 +159,21 @@ extension LocalLibraryStore {
             mediaRecordFetchCount: mediaRecordFetchCount, saveCount: committed.isEmpty ? 0 : 1,
             priorDecisions: priorDecisions
         )
+    }
+
+    /// The holds a soft Skip's newly retired members take while its Undo window is open.
+    private func softSkipHolds(
+        for committed: [ItemID], prior: [ItemID: EpisodeDecisionRecord?], retiredAt: Timestamp,
+        in context: ModelContext, lookup: EpisodeAssociationReadLookup
+    ) throws -> [ItemID: SoftSkipHold] {
+        let queued = Set(try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>()).map(\.episodeID))
+        var holds: [ItemID: SoftSkipHold] = [:]
+        for id in committed {
+            guard let episode = lookup.episodes[id.rawValue], let feedID = try? ItemID(rawValue: episode.feedID) else { continue }
+            let wasKept = (prior[id] ?? nil)?.decision == .keep || queued.contains(id.rawValue)
+            holds[id] = SoftSkipHold(feedID: feedID, retiredAt: retiredAt.date, reservesCapacity: wasKept)
+        }
+        return holds
     }
 
     /// Restores only Feed-retired rows. A dismissed row remains the stronger

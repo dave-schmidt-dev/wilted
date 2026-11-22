@@ -57,6 +57,15 @@ public struct SoftSkipRecord: Codable, Equatable, Sendable {
     }
 }
 
+/// One member of an open soft Skip, as admission and downloads see it.
+struct SoftSkipHold {
+    let feedID: ItemID
+    let retiredAt: Date
+    /// The member held a kept slot before the Skip (a Keep decision or a place in the queue), so
+    /// Undo would take that slot back and admission must not fill it meanwhile.
+    let reservesCapacity: Bool
+}
+
 /// What closing a soft Skip did.
 public struct SoftSkipClose: Equatable, Sendable {
     /// Members still retired from the Skip whose media is now gone, or never existed.
@@ -124,6 +133,7 @@ extension LocalLibraryStore {
             }
         }
         if context.hasChanges { try context.save() }
+        for id in record.retiredIDs { softSkipHolds[id] = nil }
         return restored
     }
 
@@ -152,9 +162,14 @@ extension LocalLibraryStore {
             finished.append(id)
             if (lookup.state(for: id)?.memberIDs.count ?? 1) <= 1 { doomed.insert(id.rawValue) }
         }
-        guard !doomed.isEmpty else { return SoftSkipClose(finished: finished, held: held) }
+        guard !doomed.isEmpty else {
+            for id in ids { softSkipHolds[id] = nil }
+            return SoftSkipClose(finished: finished, held: held)
+        }
         let media = try Self.deleteMediaRecords(forEpisodesWithIDs: doomed, in: context)
         try context.save()
+        // From here a download that finishes for these members is refused (see `finalizePodcastDownload`).
+        for id in ids { softSkipHolds[id] = nil }
         deleteMediaIfUnreferenced(media)
         return SoftSkipClose(finished: finished, held: held)
     }

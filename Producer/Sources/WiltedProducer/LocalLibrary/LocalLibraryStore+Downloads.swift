@@ -79,6 +79,16 @@ extension LocalLibraryStore {
             throw LocalLibraryStoreError.invalidPodcastState("completed download revision")
         }
         let context = ModelContext(container)
+        // A retired episode keeps no media: one whose cleanup is done (or that was never part of a soft
+        // Skip) refuses a download that finishes late, which would otherwise bring its records back for
+        // good. A member of an open soft Skip is still cleaned at the window's close, so it may finish.
+        let lookup = try EpisodeAssociationReadLookup(in: context)
+        if let episode = lookup.episodes[revision.itemID.rawValue],
+           episode.removalKind == PodcastEpisodeRemovalKind.retired.rawValue,
+           (lookup.state(for: revision.itemID)?.memberIDs.count ?? 1) <= 1,
+           softSkipHolds[revision.itemID]?.retiredAt != episode.retiredAt {
+            throw LocalLibraryStoreError.invalidPodcastState("download finished for a retired episode")
+        }
         let revisions = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
         if let existing = revisions.first(where: { $0.id == revision.revisionID.rawValue }) {
             guard existing.itemID == revision.itemID.rawValue,

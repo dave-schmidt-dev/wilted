@@ -239,6 +239,7 @@ extension WiltedMacModel {
             beginLifetimeStatisticsLoad()
             // After the library is in memory, not in a parallel task: automation
             // resolves a claimed episode ID against `episodes`.
+            releaseSlotsOfAbandonedSoftSkips()
             startAutomationOnLaunch()
             resumePossibleDuplicateCatchUps()
             startAutomationTicker()

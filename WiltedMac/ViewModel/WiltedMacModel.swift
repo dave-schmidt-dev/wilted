@@ -370,8 +370,7 @@ final class WiltedMacModel {
     @ObservationIgnored var playbackReadoutClock: WiltedMacPlaybackReadoutClock?
     @ObservationIgnored var seamMarkerScheduleCountForTesting = 0
     @ObservationIgnored var playbackProjectionWriteCountForTesting = 0
-    /// Why CloudKit calls are paused (rate limited, unavailable) and until when; nil while they run.
-    /// Set by the library sync's shared gate, shown in the Sync settings card.
+    /// Why and until when CloudKit calls are paused (library sync gate, Sync card); nil while they run.
     var libraryThrottle: TransportGateState?
     /// Whether library sync may send for the signed-in iCloud account (Task 5.0); nil while off.
     var libraryAccountStatus: WiltedMacLibraryAccountStatus?
@@ -383,21 +382,20 @@ final class WiltedMacModel {
     var pendingFeedRenames: [String: WiltedMacFeedRenameState] = [:]
     var feedRenameReadEpoch: UInt64 = 0
     var feedRenameNeedsReload = false
-    /// Read-order metadata only. A committed Feed decision advances this
-    /// boundary so a snapshot that began beforehand cannot publish over it.
+    /// Read order only: a committed Feed decision advances it so an older snapshot cannot publish over it.
     var libraryReadEpoch: UInt64 = 0
     var lastAppliedLibraryReadEpoch: UInt64 = 0
-    /// Imported playback writes invalidate older whole-library reads, but
-    /// should only cause a follow-up read when one of those reads is rejected.
+    /// Imported playback writes void older library reads; a follow-up read runs only if one is rejected.
     @ObservationIgnored var importedPlaybackReadEpoch: UInt64 = 0
     @ObservationIgnored var importedPositionLibraryReloadTask: Task<Void, Never>?
     @ObservationIgnored var importedPositionLibraryReloadTargetEpoch: UInt64 = 0
     @ObservationIgnored var importedPositionLibraryReloadPending = false
-    /// Exact Feed rows whose durable decision has started. Separate from Larder admission retry state:
-    /// a decision failure stays selected and retryable instead of becoming an automatic arrival.
+    /// Feed rows whose durable decision started; a failure stays selected and retryable, not an automatic arrival.
     var pendingFeedDecisionIDs: Set<String> = []
     /// Soft Skips whose Undo offer is still open in this run, so a launch-time cleanup leaves them alone.
     @ObservationIgnored var openSoftSkips: [OpenSoftSkip] = []
+    /// Feeds whose abandoned soft Skips closed at launch and are owed a slot release once the library is loaded.
+    @ObservationIgnored var softSkipReleaseFeedIDs: Set<String> = []
     var failedFeedDecisionIDs: Set<String> = []
     /// Posts of followed article feeds that no rule or policy decided: the Feeds inbox lists them
     /// beside podcast episodes. In memory; the next refresh offers them again.

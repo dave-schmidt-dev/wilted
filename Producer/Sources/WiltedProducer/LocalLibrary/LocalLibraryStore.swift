@@ -71,6 +71,11 @@ public actor LocalLibraryStore {
     /// Test-only: proves invalidation reads do not grow with retained depth.
     var preparationMaintenanceRowsRead = 0
 
+    /// Members of soft Skips whose Undo window is open, by episode. Kept only in memory: a quit ends every
+    /// window, and the next launch closes the Skips (see `SoftSkipRecord`). While a member is held, its
+    /// slot in the feed still counts as kept for admission, and a download may still finish for it.
+    var softSkipHolds: [ItemID: SoftSkipHold] = [:]
+
     /// Whether a summary rebuild is running; only one may run at a time.
     var lifetimeStatisticsRebuildRunning = false
 

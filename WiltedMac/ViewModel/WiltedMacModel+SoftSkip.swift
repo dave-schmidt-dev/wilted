@@ -19,7 +19,7 @@ extension WiltedMacModel {
 
     /// Skips whose audio has not been reclaimed yet. Kept in the preferences so a quit inside the
     /// window cannot leave the audio behind for good: the next launch closes them.
-    private var pendingSoftSkips: [SoftSkipRecord] {
+    var pendingSoftSkips: [SoftSkipRecord] {
         get {
             preferences.data(forKey: Self.pendingSoftSkipsKey)
                 .flatMap { try? JSONDecoder().decode([SoftSkipRecord].self, from: $0) } ?? []
@@ -32,9 +32,11 @@ extension WiltedMacModel {
 
     /// Records the Skip, then offers Undo. The audio is reclaimed when the offer ends without being
     /// taken (it ran out, or was withdrawn); if no offer can be made, at once.
-    func offerSoftSkipUndo(_ record: SoftSkipRecord, rows: [WiltedMacEpisode], changed: Int) {
+    func offerSoftSkipUndo(
+        _ record: SoftSkipRecord, rows: [WiltedMacEpisode], changed: Int, replacing intent: SoftSkipRecord? = nil
+    ) {
         let open = OpenSoftSkip(record: record, feedIDs: Set(rows.compactMap(\.feedID)))
-        pendingSoftSkips.append(record)
+        if let intent { replacePending(intent, with: record) } else { pendingSoftSkips.append(record) }
         openSoftSkips.append(open)
         let offered = undoToast.offer(
             message: "Skipped \(changed) episode\(changed == 1 ? "" : "s")",
@@ -44,6 +46,15 @@ extension WiltedMacModel {
             undo: { [weak self] in self?.undoSoftSkip(open, rows: rows) ?? .done }
         )
         if offered == nil { closeSoftSkip(open) }
+    }
+
+    /// Writes a Skip's cleanup to the ledger before its retirement commits. It names every episode the Skip
+    /// will retire and no earlier decisions, which is all closing needs: closing acts only on members still
+    /// retired from this very moment, so one that was already retired or never was is left alone.
+    func recordSoftSkipIntent(ids: [ItemID], at retiredAt: Timestamp) -> SoftSkipRecord {
+        let intent = SoftSkipRecord(retiredAt: retiredAt, retiredIDs: ids, entries: [])
+        pendingSoftSkips.append(intent)
+        return intent
     }
 
     /// Some members of an open Skip went away on their own (their feed was unsubscribed). Undo and the
@@ -56,7 +67,7 @@ extension WiltedMacModel {
         open.record = narrowed
     }
 
-    private func replacePending(_ old: SoftSkipRecord, with new: SoftSkipRecord?) {
+    func replacePending(_ old: SoftSkipRecord, with new: SoftSkipRecord?) {
         var ledger = pendingSoftSkips
         guard let index = ledger.firstIndex(of: old) else {
             if let new { ledger.append(new); pendingSoftSkips = ledger }
@@ -111,7 +122,24 @@ extension WiltedMacModel {
             guard let close = try? await store.finalizeSoftSkip(
                 record.retiredIDs, at: record.retiredAt, protecting: livePlaybackEpisodeIDs()) else { continue }
             replacePending(record, with: record.keeping(Set(close.held)))
+            // What the live close does for its members: no waiting preparation, and the slot goes to the
+            // feed's next waiting episode once the library is read.
+            for id in close.finished {
+                withdrawPreparationRequest(for: id.rawValue)
+                if let feedID = try? await store.podcastEpisode(for: id)?.feedID {
+                    softSkipReleaseFeedIDs.insert(feedID.rawValue)
+                }
+            }
         }
+    }
+
+    /// Lets the feeds whose abandoned Skips just closed fill the slots those Skips freed. Called once the
+    /// library rows are loaded, which admission counts from.
+    func releaseSlotsOfAbandonedSoftSkips() {
+        let feeds = softSkipReleaseFeedIDs
+        softSkipReleaseFeedIDs = []
+        guard !feeds.isEmpty else { return }
+        enqueueFeedWriteAfterDecisions { [weak self] in await self?.releaseWaitingEpisodes(feedIDs: feeds) }
     }
 
     /// Takes back a soft Skip in the store and reloads what shows it. The undo changes only members

@@ -52,6 +52,52 @@ extension WiltedMacFeedDecisionTests {
         XCTAssertEqual(after.count, 0)
     }
 
+    func testTheCleanupIsOnTheLedgerOnceAndAFinishedSkipLeavesNone() async throws {
+        let fixture = try await makeFixture(count: 1, queueIndexes: [])
+        addTeardownBlock { await fixture.model.close() }
+        _ = try await seedDownloadedEpisode(fixture)
+
+        fixture.model.skipFeedEpisode(fixture.episodes[0], offerUndo: true)
+        await drainDecisionWriters(fixture.model)
+        XCTAssertEqual(fixture.model.pendingSoftSkips.count, 1, "the write-ahead entry was replaced, not added to")
+        XCTAssertFalse(fixture.model.pendingSoftSkips[0].entries.isEmpty, "and now carries what Undo needs")
+
+        fixture.model.undoToast.undoCurrent()
+        await drainDecisionWriters(fixture.model)
+        XCTAssertTrue(fixture.model.pendingSoftSkips.isEmpty, "an Undo leaves nothing to clean")
+    }
+
+    func testASkipThatChangesNothingLeavesNoCleanupOnTheLedger() async throws {
+        let fixture = try await makeFixture(count: 1, queueIndexes: [])
+        addTeardownBlock { await fixture.model.close() }
+        _ = try await fixture.store.retireEpisodes(
+            [fixture.itemIDs[0]], at: fixture.createdAt, asOwnerChoice: true, deferringMediaDeletion: false)
+        await fixture.model.reloadLibraryRows()
+
+        fixture.model.skipFeedEpisode(fixture.episodes[0], offerUndo: true)
+        await drainDecisionWriters(fixture.model)
+
+        XCTAssertTrue(fixture.model.pendingSoftSkips.isEmpty)
+    }
+
+    func testALaunchAfterAQuitInsideTheWindowReclaimsTheAudioAndFreesTheSlot() async throws {
+        let fixture = try await makeFixture(count: 1, queueIndexes: [])
+        addTeardownBlock { await fixture.model.close() }
+        let mediaURL = try await seedDownloadedEpisode(fixture)
+        fixture.model.skipFeedEpisode(fixture.episodes[0], offerUndo: true)
+        await drainDecisionWriters(fixture.model)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: mediaURL.path))
+
+        // The quit: the offer is gone with the process, the ledger entry stays.
+        fixture.model.openSoftSkips.removeAll()
+        await fixture.model.closeAbandonedSoftSkips(in: fixture.store)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mediaURL.path))
+        XCTAssertTrue(fixture.model.pendingSoftSkips.isEmpty)
+        XCTAssertEqual(fixture.model.softSkipReleaseFeedIDs, [fixture.feedID.rawValue],
+                       "the feed is owed a release of the slot, done once its rows are loaded")
+    }
+
     func testUndoGivesTheEpisodeBackWithItsAudioHistoryAndNoNewKeep() async throws {
         let fixture = try await makeFixture(count: 1, queueIndexes: [])
         addTeardownBlock { await fixture.model.close() }

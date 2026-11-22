@@ -73,6 +73,28 @@ final class WiltedMacUndoToastCloseTests: XCTestCase {
         XCTAssertEqual([counter.undone, counter.closed], [2, 0])
     }
 
+    func testCommandZAfterABusyUndoStillTakesBackTheSameOfferNotAnOlderOne() async throws {
+        let clock = VirtualTime()
+        let center = center(clock)
+        let manager = UndoManager()
+        manager.groupsByEvent = false
+        center.attach(manager)
+        let older = Counter(), newer = Counter()
+        offer(on: center, counting: older)
+        var answers: [WiltedMacUndoResult] = [.retry, .done]
+        offer(on: center, counting: newer) { answers.removeFirst() }
+
+        manager.undo()
+        // The stack is busy until the undo returns; the offer goes back on it right after.
+        for _ in 0..<50 where !manager.canUndo { await Task.yield() }
+        XCTAssertEqual([older.undone, newer.undone], [0, 1])
+        XCTAssertNotNil(center.current, "the busy undo kept the newer offer")
+
+        manager.undo()
+        XCTAssertEqual([older.undone, newer.undone], [0, 2], "the second Command-Z reaches the same offer, not the older one")
+        XCTAssertEqual(center.offers.count, 1, "only the older offer is still waiting")
+    }
+
     func testAnExpiredOfferDoesNothingEvenBeforeItsTimerFires() async {
         // A clock the test moves by hand, with a timer that never wakes by itself.
         let sleeper = VirtualTime()

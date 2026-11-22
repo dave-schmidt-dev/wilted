@@ -85,8 +85,17 @@ extension WiltedMacModel {
                 podcastOperationMessage = decisionMessage("Kept", changed: changed.count, accepted: accepted.count, unresolved: outcome.unresolved.count)
             case .skip:
                 let retiredAt = originatedAt
-                let result = try await store.retireEpisodes(
-                    ids, at: retiredAt, asOwnerChoice: true, deferringMediaDeletion: offerUndo)
+                // Written before the retirement commits, so a quit or a cancel between the commit and the
+                // offer cannot leave the audio kept with nothing to clear it at the next launch.
+                let intent = offerUndo ? recordSoftSkipIntent(ids: ids, at: retiredAt) : nil
+                let result: PodcastEpisodeBatchResult
+                do {
+                    result = try await store.retireEpisodes(
+                        ids, at: retiredAt, asOwnerChoice: true, deferringMediaDeletion: offerUndo)
+                } catch {
+                    if let intent { replacePending(intent, with: nil) }
+                    throw error
+                }
                 let changed = Set(result.committed.map(\.rawValue))
                 let accepted = changed.union(result.alreadyAtTarget.map(\.rawValue))
                 // The originating owner choice committed atomically with group retirement.
@@ -106,12 +115,14 @@ extension WiltedMacModel {
                     offerSoftSkipUndo(
                         SoftSkipRecord(retiredAt: retiredAt, committed: result.committed,
                                        alreadyAtTarget: result.alreadyAtTarget, prior: result.priorDecisions),
-                        rows: captured, changed: changed.count
+                        rows: captured, changed: changed.count, replacing: intent
                     )
                 } else if !changed.isEmpty {
                     // A retirement frees a kept slot: let the feed's oldest waiting episode in.
                     await releaseWaitingEpisodes(feedIDs: feedIDs)
                 }
+                // Nothing was retired, so no cleanup is owed.
+                if let intent, changed.isEmpty { replacePending(intent, with: nil) }
             case let .undoSkip(record):
                 let restored = try await commitUndoSoftSkip(record, rows: captured, store: store)
                 guard !isClosingTemporaryState, !Task.isCancelled else { return }

@@ -284,6 +284,85 @@ final class LocalLibrarySoftSkipTests: XCTestCase {
         XCTAssertEqual(stored, [o[0], o[2]])
     }
 
+    // MARK: - Open window: admission and late downloads
+
+    /// Skips the first (kept) episode softly and returns what Undo would need.
+    private func skipKeptEpisode(_ fixture: Fixture) async throws -> SoftSkipRecord {
+        try await fixture.store.save(episodeDecision: EpisodeDecisionRecord(
+            episodeID: fixture.ids[0], decision: .keep, source: .manual, decidedAt: Timestamp(Date(timeIntervalSince1970: 1_760_000_000))))
+        let result = try await fixture.store.retireEpisodes(
+            [fixture.ids[0]], at: skippedAt, asOwnerChoice: true, deferringMediaDeletion: true)
+        return SoftSkipRecord(retiredAt: skippedAt, committed: result.committed,
+                              alreadyAtTarget: result.alreadyAtTarget, prior: result.priorDecisions)
+    }
+
+    private func admitAutomatically(_ fixture: Fixture, _ id: ItemID, limit: Int) async throws {
+        try await fixture.store.admitEpisode(
+            EpisodeDecisionRecord(episodeID: id, decision: .keep, source: .policy, decidedAt: Timestamp(Date())),
+            automaticKeptLimit: limit)
+    }
+
+    func testAKeptSlotStaysTakenWhileTheUndoWindowIsOpenAndFreesWhenItCloses() async throws {
+        let fixture = try await makeFixture(count: 2)
+        let record = try await skipKeptEpisode(fixture)
+        let feedID = try ItemID.derivePodcastFeed(from: URL(string: "https://podcasts.example.test/soft-skip.xml")!)
+
+        let reserved = try await fixture.store.manualCompletionCapacityReservations()
+        XCTAssertEqual(reserved[feedID], 1)
+        do {
+            try await admitAutomatically(fixture, fixture.ids[1], limit: 1)
+            XCTFail("a refresh must not fill the slot Undo would take back")
+        } catch { XCTAssertEqual(error as? AutomaticEpisodeAdmissionError, .capacityUnavailable) }
+
+        try await fixture.store.finalizeSoftSkip(record.retiredIDs, at: skippedAt)
+        let freed = try await fixture.store.manualCompletionCapacityReservations()
+        XCTAssertNil(freed[feedID])
+        try await admitAutomatically(fixture, fixture.ids[1], limit: 1)
+    }
+
+    func testUndoReleasesTheHoldAndTheEpisodeKeepsItsOwnSlot() async throws {
+        let fixture = try await makeFixture(count: 2)
+        let record = try await skipKeptEpisode(fixture)
+
+        try await fixture.store.undoSoftSkip(record)
+
+        let feedID = try ItemID.derivePodcastFeed(from: URL(string: "https://podcasts.example.test/soft-skip.xml")!)
+        let reserved = try await fixture.store.manualCompletionCapacityReservations()
+        XCTAssertNil(reserved[feedID], "the restored episode counts as kept itself, so nothing is reserved twice")
+        do {
+            try await admitAutomatically(fixture, fixture.ids[1], limit: 1)
+            XCTFail("the restored Keep still fills the only slot")
+        } catch { XCTAssertEqual(error as? AutomaticEpisodeAdmissionError, .capacityUnavailable) }
+    }
+
+    func testALateDownloadFinishesInsideTheWindowButNotAfterTheCleanup() async throws {
+        let fixture = try await makeFixture(count: 1)
+        let id = fixture.ids[0]
+        let record = try await skipKeptEpisode(fixture)
+        let late = fixture.media[id]!.deletingLastPathComponent().appendingPathComponent("late.mp3")
+        try Data(repeating: 7, count: 64).write(to: late)
+        let revision = try AudioRevision(
+            itemID: id, revisionID: RevisionID(rawValue: "rev-late"), durationSeconds: 60, byteCount: 64,
+            contentHash: "sha256:" + String(repeating: "c", count: 64), mediaType: "audio/mpeg",
+            createdAt: Timestamp(Date()), schemaVersion: 3)
+        let download = try PodcastDownload(
+            episodeID: id, status: .completed, bytesReceived: 64, localURL: late,
+            contentHash: revision.contentHash, updatedAt: Timestamp(Date()))
+
+        try await fixture.store.finalizePodcastDownload(revision: revision, mediaURL: late, download: download)
+        try await fixture.store.finalizeSoftSkip(record.retiredIDs, at: skippedAt)
+
+        let again = try AudioRevision(
+            itemID: id, revisionID: RevisionID(rawValue: "rev-later"), durationSeconds: 60, byteCount: 64,
+            contentHash: revision.contentHash, mediaType: "audio/mpeg", createdAt: Timestamp(Date()), schemaVersion: 3)
+        do {
+            try await fixture.store.finalizePodcastDownload(revision: again, mediaURL: late, download: download)
+            XCTFail("a download finishing after the cleanup must not bring the media back")
+        } catch {}
+        let stored = try await fixture.store.download(for: id)
+        XCTAssertNil(stored)
+    }
+
     // MARK: - Fixture
 
     private struct Fixture {
