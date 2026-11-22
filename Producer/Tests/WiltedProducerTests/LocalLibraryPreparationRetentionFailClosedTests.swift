@@ -205,6 +205,26 @@ extension LocalLibraryStoreTests {
         }
     }
 
+    /// A non-current outcome row keyed to this episode and revision, whose fields name another
+    /// episode, is still a sign this episode was prepared: its key must count, not only its fields.
+    func testRetentionPrunesNothingWhenANonCurrentOutcomeIsKeyedToThisEpisodeButNamesAnother() async throws {
+        try await prunesNothing("retention-noncurrent-keyed") { fixture, context in
+            for row in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
+            where row.itemID == fixture.itemID.rawValue { context.delete(row) }
+            let other = try ItemID.derivePodcastEpisode(
+                feedURL: URL(string: "https://feeds.example.test/keyed-stale.xml")!, rssGUID: "keyed-stale",
+                enclosureURL: URL(string: "https://media.example.test/keyed-stale.mp3")!)
+            for row in try context.fetch(
+                FetchDescriptor<LocalLibrarySchemaV10Models.PodcastPreparationOutcomeRecord>()) {
+                row.eligibility = PodcastPreparationEligibility.invalid.rawValue
+                row.episodeID = other.rawValue
+            }
+            let prefix = fixture.requestID + "|generation-6-1|"
+            for row in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.PreparationRecord>(
+                predicate: #Predicate { $0.id.starts(with: prefix) })) { context.delete(row) }
+        }
+    }
+
     /// An older run that proves the revision stays when a newer run for the same revision holds a
     /// failure and then a success: the newer one is not valid proof, so it must not displace it.
     func testRetentionKeepsTheValidatedProofRunWhenANewerRunIsContradictory() async throws {

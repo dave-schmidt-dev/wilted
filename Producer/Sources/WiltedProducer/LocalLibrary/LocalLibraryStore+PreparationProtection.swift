@@ -71,7 +71,11 @@ struct PreparationProtection {
         revisionOwners: [String: Set<String>]
     ) -> Set<String> {
         var prepared = Set(revisionOwners.values.joined())
-        prepared.formUnion(outcomes.map(\.episodeID))
+        for outcome in outcomes {
+            // A row's key names an episode too, and its fields may disagree with it.
+            prepared.insert(outcome.episodeID)
+            if let keyed = outcome.id.split(separator: "|", maxSplits: 1).first { prepared.insert(String(keyed)) }
+        }
         for run in runs where run.entries.contains(where: { $0.status.terminalResult?.revisionID != nil }) {
             prepared.formUnion(run.entries.map(\.itemID.rawValue))
             if let named = podcastItemID(fromRequestID: run.requestID) { prepared.insert(named) }
