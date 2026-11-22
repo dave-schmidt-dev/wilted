@@ -517,12 +517,12 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
         XCTAssertEqual(result.episodeRecordFetchCount, 1)
     }
 
-    private func drainDecisionWriters(_ model: WiltedMacModel) async {
+    func drainDecisionWriters(_ model: WiltedMacModel) async {
         let writers = Array(model.subscriptionWriteTasks.values)
         for writer in writers { await writer.value }
     }
 
-    private func makeFixture(
+    func makeFixture(
         count: Int, queueIndexes: [Int],
         transportFactory: WiltedMacPodcastDownloadTransportFactory? = nil,
         validatorFactory: WiltedMacPodcastMediaValidatorFactory? = nil
@@ -587,7 +587,7 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
     }
 }
 
-private struct FeedDecisionFixture {
+struct FeedDecisionFixture {
     let model: WiltedMacModel
     let store: LocalLibraryStore
     let directory: URL

@@ -198,12 +198,10 @@ extension WiltedMacModel {
         playlists.entryIDs[playlistID] = optimistic
         do {
             try await Self.playlistWriteHookForTesting?()
-            let removedIndex = try await store.removePlaylistEntrySavingPosition(playlistID: playlistID, entryID: entryID)
-            if let removedIndex, !isClosingTemporaryState {
+            let place = try await store.removePlaylistEntryRememberingPlace(playlistID: playlistID, entryID: entryID)
+            if let place, !isClosingTemporaryState {
                 undoToast.offer(message: "Removed from playlist", actionName: "Remove from Playlist", subjects: [entryID]) { [weak self] in
-                    Task { @MainActor [weak self] in
-                        await self?.restoreRemovedPlaylistEntry(playlistID, entryID: entryID, index: removedIndex)
-                    }
+                    self?.undoPlaylistRemoval(playlistID, entryID: entryID, place: place) ?? .done
                 }
             }
             finishPlaylistOperation(playlistID, token: token)
@@ -214,16 +212,23 @@ extension WiltedMacModel {
         }
     }
 
-    private func restoreRemovedPlaylistEntry(_ playlistID: String, entryID: String, index: Int) async {
-        guard !isClosingTemporaryState, let store, playlist(playlistID) != nil,
-              let token = beginPlaylistOperation(playlistID, .playlist) else { return }
-        defer { finishPlaylistOperation(playlistID, token: token) }
-        do {
-            playlists.entryIDs[playlistID] = try await store.restoreRemovedPlaylistEntry(
-                playlistID: playlistID, entryID: entryID, index: index)
-        } catch {
-            failPlaylistOperation(playlistID, message: "That item could not be restored to the playlist.")
+    /// Puts a removed entry back. A playlist still saving keeps the offer open instead of spending it:
+    /// the operation is claimed here, before any waiting, so nothing can slip in between.
+    private func undoPlaylistRemoval(_ playlistID: String, entryID: String, place: PlaylistEntryPlace) -> WiltedMacUndoResult {
+        guard !isClosingTemporaryState, let store, playlist(playlistID) != nil else { return .done }
+        guard playlists.pending[playlistID] == nil else { return .retry }
+        guard let token = beginPlaylistOperation(playlistID, .playlist) else { return .retry }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.finishPlaylistOperation(playlistID, token: token) }
+            do {
+                self.playlists.entryIDs[playlistID] = try await store.restorePlaylistEntry(
+                    playlistID: playlistID, entryID: entryID, place: place)
+            } catch {
+                self.failPlaylistOperation(playlistID, message: "That item could not be restored to the playlist.")
+            }
         }
+        return .done
     }
 
     /// Moves a manual playlist's entry so it sits at `index` in the resulting order.
@@ -346,35 +351,5 @@ private extension Playlist {
         Playlist(
             id: id, name: name ?? self.name, kind: kind,
             matchAll: matchAll ?? self.matchAll, sortIndex: sortIndex)
-    }
-}
-
-private extension LocalLibraryStore {
-    /// Read the durable position and remove the entry in one turn on the store actor.
-    func removePlaylistEntrySavingPosition(playlistID: String, entryID: String) throws -> Int? {
-        let position = try playlistEntryIDs(playlistID: playlistID).firstIndex(of: entryID)
-        try removePlaylistEntry(playlistID: playlistID, entryID: entryID)
-        return position
-    }
-
-    func restoreRemovedPlaylistEntry(playlistID: String, entryID: String, index: Int) throws -> [String] {
-        var current = try playlistEntryIDs(playlistID: playlistID)
-        guard !current.contains(entryID) else { return current }
-        let id = try ItemID(rawValue: entryID)
-        guard try podcastEpisode(for: id) != nil || article(for: id) != nil || audiobook(id)?.isRemoved == false else {
-            throw LocalLibraryStoreError.invalidPodcastState("missing playlist item")
-        }
-        let position = min(index, current.count)
-        try addPlaylistEntry(playlistID: playlistID, entryID: entryID)
-        if position < current.count {
-            do {
-                try movePlaylistEntry(playlistID: playlistID, entryID: entryID, to: position)
-            } catch {
-                try removePlaylistEntry(playlistID: playlistID, entryID: entryID)
-                throw error
-            }
-        }
-        current.insert(entryID, at: position)
-        return current
     }
 }

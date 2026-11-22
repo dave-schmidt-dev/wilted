@@ -65,6 +65,8 @@ extension WiltedMacModel {
             // an already-retired row out of the sweep, so its original
             // timestamp is not clobbered with this launch's.
             _ = try? await configuredStore.reconcileEpisodeRemovals()
+            // A Skip whose Undo window ended with the app closed still owes its audio's removal.
+            await closeAbandonedSoftSkips(in: configuredStore)
             // After reconcile, so this sees the listening rows step 2 just
             // backfilled from legacy playback records, and before the
             // library is read, so retirement is reflected in the first
