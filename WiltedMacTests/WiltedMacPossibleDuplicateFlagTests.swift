@@ -192,4 +192,65 @@ final class WiltedMacPossibleDuplicateFlagTests: XCTestCase {
         XCTAssertFalse(finished, "a closing model has not done the work")
         XCTAssertEqual(model.preferences.stringArray(forKey: WiltedMacModel.possibleDuplicateCatchUpKey), [second.rawValue])
     }
+
+    /// Makes `second` a kept, queued, downloaded episode that is still waiting for preparation.
+    private func downloadedKeptEpisode(_ model: WiltedMacModel, _ second: ItemID) async throws {
+        let store = try XCTUnwrap(model.store)
+        try await store.save(episodeDecision: EpisodeDecisionRecord(
+            episodeID: second, decision: .keep, source: .manual, decidedAt: Timestamp(created)
+        ))
+        try await store.addPodcastQueueEpisode(second)
+        let media = wiltedTemporaryDirectory("possible-duplicate-media").appendingPathComponent("episode.m4a")
+        try Data("audio".utf8).write(to: media)
+        let hash = "sha256:" + String(repeating: "b", count: 64)
+        try await store.finalizePodcastDownload(
+            revision: try AudioRevision(
+                itemID: second, revisionID: try RevisionID(rawValue: "rev-" + String(repeating: "b", count: 64)),
+                durationSeconds: 12, byteCount: 5, contentHash: hash, mediaType: "audio/mpeg",
+                createdAt: Timestamp(created), schemaVersion: 3),
+            mediaURL: media,
+            download: try PodcastDownload(
+                episodeID: second, status: .completed, bytesReceived: 5, expectedByteCount: 5,
+                localURL: media, contentHash: hash, updatedAt: Timestamp(created))
+        )
+        await model.reloadLibraryRows()
+    }
+
+    /// The flag list reads fine for the catch-up's first look but fails just before preparation would
+    /// be asked for. That is not an answer about the episode, so the note must stay.
+    func testAFailedSecondFlagReadKeepsTheDifferentNote() async throws {
+        let (model, _, second) = try await flaggedModel()
+        try await downloadedKeptEpisode(model, second)
+        model.notePossibleDuplicateCatchUp(second.rawValue, pending: true)
+        var reads = 0
+        model.possibleDuplicateHoldReadFailsForTesting = {
+            reads += 1
+            return reads >= 3
+        }
+        let finished = await model.finishPossibleDuplicateDifferent(second.rawValue)
+        XCTAssertEqual(reads, 3, "the third read, the one before preparation, is the one that failed")
+        XCTAssertFalse(finished)
+        XCTAssertEqual(model.preferences.stringArray(forKey: WiltedMacModel.possibleDuplicateCatchUpKey), [second.rawValue])
+        model.possibleDuplicateHoldReadFailsForTesting = nil
+        let retried = await model.finishPossibleDuplicateDifferent(second.rawValue)
+        XCTAssertTrue(retried, "once the list reads, the same answer finishes")
+    }
+
+    /// A download lands while the flag list cannot be read: its preparation is neither admitted nor
+    /// cancelled, and the next tick asks again instead of waiting for a relaunch.
+    func testAnArrivalWithAnUnreadableFlagListIsRetriedLater() async throws {
+        let (model, _, second) = try await flaggedModel()
+        try await downloadedKeptEpisode(model, second)
+        _ = try await XCTUnwrap(model.store).clearPodcastEpisodePossibleDuplicate(second)
+        await model.reloadLibraryRows()
+        let episode = try XCTUnwrap(model.episodes.first { $0.id == second.rawValue })
+        let sequence = model.reservePreparationRequest(for: second.rawValue)
+        model.possibleDuplicateHoldReadFailsForTesting = { true }
+        await model.applyArrivalPreparationVerdict(for: episode)
+        XCTAssertEqual(model.arrivalPreparationsAwaitingFlagList, [second.rawValue])
+        XCTAssertEqual(model.preparationRequestSequences[second.rawValue], sequence, "the waiting request stays")
+        model.possibleDuplicateHoldReadFailsForTesting = nil
+        await model.retryArrivalPreparationsAwaitingFlagList()
+        XCTAssertTrue(model.arrivalPreparationsAwaitingFlagList.isEmpty, "the retry settled it")
+    }
 }

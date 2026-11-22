@@ -110,8 +110,13 @@ extension WiltedMacModel {
         }
         guard let current = episodes.first(where: { $0.id == episodeID }),
               current.removalKind == nil, current.downloadState == .completed,
-              !current.preparationState.isPrepared, podcastQueueIDs.contains(current.id),
-              !(await automaticPreparationSuppressed(for: current)) else { return true }
+              !current.preparationState.isPrepared, podcastQueueIDs.contains(current.id) else { return true }
+        // An unreadable flag list is not an answer: the note stays until preparation is settled.
+        switch await automaticPreparationVerdict(for: current) {
+        case .unknown: return false
+        case .suppressed: return true
+        case .allowed: break
+        }
         if automationSettings.prepareEverythingDownloaded {
             prepareEpisode(current, automatic: true)
         } else {

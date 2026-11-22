@@ -100,14 +100,17 @@ extension WiltedMacModel {
     /// is the cancellable part; once it finishes, the commit runs to the end.
     func applyFeedRules(
         feedID: String, rules: EpisodeMatchRules, progress: @escaping FeedRulesProgress,
-        stepHook: (@Sendable (Int) async -> Void)? = nil
+        stepHook: (@Sendable (Int) async -> Void)? = nil,
+        beforeWriteForTesting: (() async -> Void)? = nil
     ) async throws -> FeedRulesApplyResult {
         let plan = try await previewFeedRules(feedID: feedID, rules: rules, progress: progress, stepHook: stepHook)
         try Task.checkCancellation()
-        return try await commitFeedRules(plan, feedID: feedID)
+        return try await commitFeedRules(plan, feedID: feedID, beforeWrite: beforeWriteForTesting)
     }
 
-    private func commitFeedRules(_ plan: FeedRulesPlan, feedID rawFeedID: String) async throws -> FeedRulesApplyResult {
+    private func commitFeedRules(
+        _ plan: FeedRulesPlan, feedID rawFeedID: String, beforeWrite: (() async -> Void)? = nil
+    ) async throws -> FeedRulesApplyResult {
         guard let store, !isClosingTemporaryState, let feedID = try? ItemID(rawValue: rawFeedID) else {
             throw CancellationError()
         }
@@ -125,7 +128,11 @@ extension WiltedMacModel {
             current[$0.episodeID] == $0.expected && !startedNow.contains($0.episodeID)
                 && !held.contains($0.episodeID)
         }
-        guard !admissions.isEmpty else { return FeedRulesApplyResult(counts: plan.counts, undo: nil) }
+        guard !admissions.isEmpty else {
+            return FeedRulesApplyResult(counts: plan.counts.replacingChanges(withApplied: []), undo: nil)
+        }
+        // The window between the last read and the first write, where the listener can still decide.
+        await beforeWrite?()
 
         let priorQueue = try await store.podcastQueueState()
         let decidedAt = Timestamp(Date())
@@ -167,7 +174,14 @@ extension WiltedMacModel {
                         episodeID: admission.episodeID, decision: admission.decision, source: admission.source,
                         ruleID: admission.ruleID, workTicketKinds: kinds
                     )
-                    if try await commitAdmission(request, as: id, decidedAt: decidedAt, store: store) { claimed.append(admission.episodeID) }
+                    let outcome = try await commitAdmissionOutcome(request, as: id, decidedAt: decidedAt, store: store)
+                    // The store refused it (a flag set since the read above): nothing was written,
+                    // so it is neither counted nor offered an Undo.
+                    guard outcome.written else {
+                        prior.removeValue(forKey: id)
+                        continue
+                    }
+                    if outcome.claimed { claimed.append(admission.episodeID) }
                     if !kinds.isEmpty { issued.insert(id) }
                 }
                 applied[id] = record

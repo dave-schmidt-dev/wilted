@@ -529,9 +529,12 @@ final class WiltedMacModel {
     /// Episodes flagged as possible duplicates, as of the last library read.
     /// nil means the read failed or has not run, and automation then waits.
     var possibleDuplicateHeldIDs: Set<String>?
-    /// One preparation runs at a time; the rest queue. See
-    /// `WiltedPreparationGate` for why concurrent runs cost work rather
-    /// than saving time.
+    /// Landed downloads whose automatic preparation waits for an unreadable flag list to read again.
+    var arrivalPreparationsAwaitingFlagList: Set<String> = []
+    /// Tests only: returns true to make a read of the flag list fail.
+    var possibleDuplicateHoldReadFailsForTesting: (@MainActor () -> Bool)?
+    /// One preparation runs at a time; the rest queue. See `WiltedPreparationGate`
+    /// for why concurrent runs cost work rather than saving time.
     let preparationGate = WiltedPreparationGate()
     var podcastRestoreTasks: [String: Task<Void, Never>] = [:]
     /// Removing advertisements is why preparation exists. Read once, when the

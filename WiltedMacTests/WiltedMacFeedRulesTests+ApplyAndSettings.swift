@@ -68,6 +68,27 @@ extension WiltedMacFeedRulesTests {
         XCTAssertEqual(after[fixture.id("b")]?.source, .manual, "the newer choice stands")
     }
 
+    /// The owner decides an episode after Apply has read the decisions but before it writes. The store
+    /// refuses that write, so Apply neither counts it nor offers to undo it.
+    func testApplyDoesNotCountOrUndoAKeepTheStoreRefusedAtCommit() async throws {
+        let fixture = try await makeFixture(mixed)
+        let b = try ItemID(rawValue: fixture.id("b"))
+        let result = try await fixture.model.applyFeedRules(
+            feedID: fixture.feedID.rawValue, rules: fixture.editor.rules, progress: { _, _ in },
+            beforeWriteForTesting: {
+                try? await fixture.store.save(episodeDecision: EpisodeDecisionRecord(
+                    episodeID: b, decision: .keep, source: .manual, decidedAt: Timestamp(Date())
+                ))
+            }
+        )
+        XCTAssertEqual(result.counts.totalChanges, 4, "five were planned and one was refused")
+        let undo = try XCTUnwrap(result.undo)
+        XCTAssertNil(undo.applied[b], "the refused Keep is not offered an Undo")
+        XCTAssertNil(undo.prior[b])
+        let after = try await fixture.decisions()
+        XCTAssertEqual(after[fixture.id("b")]?.source, .manual, "the owner's decision stands")
+    }
+
     func testReplacingChangesCountsEachWrittenAdmissionByKind() throws {
         var planned = FeedRulesCounts()
         planned.keeps = 3

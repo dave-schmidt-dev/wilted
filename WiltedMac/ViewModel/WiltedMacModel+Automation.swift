@@ -246,6 +246,7 @@ extension WiltedMacModel {
                     return
                 }
                 guard let self else { return }
+                await self.retryArrivalPreparationsAwaitingFlagList()
                 guard await self.hasNonTerminalWorkTicket() else { continue }
                 await self.parkDeferredPreparationTickets()
                 self.startEligibleAutomaticPreparations()

@@ -42,8 +42,8 @@ extension WiltedMacModel {
     /// empties the cache so automation blocks, when the read fails.
     @discardableResult
     func refreshPossibleDuplicateHolds(from store: LocalLibraryStore) async -> Set<String>? {
-        let held = (try? await store.podcastEpisodeIdentityReviewHeldIDs())
-            .map { Set($0.map(\.rawValue)) }
+        let held = possibleDuplicateHoldReadFailsForTesting?() == true ? nil
+            : (try? await store.podcastEpisodeIdentityReviewHeldIDs()).map { Set($0.map(\.rawValue)) }
         possibleDuplicateHeldIDs = held
         return held
     }

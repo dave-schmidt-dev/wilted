@@ -301,24 +301,39 @@ extension WiltedMacModel {
         return result
     }
 
+    /// What one committed admission did: whether the store wrote it, and whether this call took
+    /// the download claim. A refusal (a flag, the kept limit) writes nothing and claims nothing.
+    struct AdmissionOutcome: Equatable {
+        let written: Bool
+        let claimed: Bool
+    }
+
     /// Commits one admission: decision, queue entry and tickets in one write,
     /// then adopts the preparation request and takes the download claim.
     /// Returns true when this call took the download claim.
     func commitAdmission(
         _ admission: EpisodeAdmissionService.Admission, as id: ItemID, decidedAt: Timestamp, store: LocalLibraryStore
     ) async throws -> Bool {
+        try await commitAdmissionOutcome(admission, as: id, decidedAt: decidedAt, store: store).claimed
+    }
+
+    /// `commitAdmission` that also says whether the store refused the write.
+    func commitAdmissionOutcome(
+        _ admission: EpisodeAdmissionService.Admission, as id: ItemID, decidedAt: Timestamp, store: LocalLibraryStore
+    ) async throws -> AdmissionOutcome {
         let tickets: [WorkTicket]
         do { tickets = try await store.admitEpisode(.init(
             episodeID: id, decision: admission.decision, source: admission.source,
             ruleID: admission.ruleID, decidedAt: decidedAt
         ), enqueue: admission.decision == .keep, workTicketKinds: admission.workTicketKinds,
             requestedAt: Timestamp(manualCompletionNow()), automaticKeptLimit: admission.automaticKeptLimit)
-        } catch is AutomaticEpisodeAdmissionError { return false }
+        } catch is AutomaticEpisodeAdmissionError { return AdmissionOutcome(written: false, claimed: false) }
         for ticket in tickets where ticket.kind == .podcastPreparation {
             adoptAdmittedPreparation(sequence: ticket.requestSequence, for: admission.episodeID)
         }
-        return admission.workTicketKinds.contains(.podcastDownload)
+        let claimed = admission.workTicketKinds.contains(.podcastDownload)
             ? try await store.claimPodcastDownload(episodeID: id) : false
+        return AdmissionOutcome(written: true, claimed: claimed)
     }
 
     /// Starts the transfers whose claims `commitAdmission` took.

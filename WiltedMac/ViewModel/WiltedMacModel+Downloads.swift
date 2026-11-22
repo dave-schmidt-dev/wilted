@@ -193,28 +193,7 @@ extension WiltedMacModel {
                 // requested the row has no state to keep and nothing names it
                 // as pending. It reports what it will do straight away, so the
                 // reload below has something to preserve.
-                let verdict = await self.automaticPreparationVerdict(for: episode)
-                if verdict == .unknown {
-                    // The flag list could not be read: that says nothing about this episode, so
-                    // its waiting request is left in place rather than cancelled. Nothing new is
-                    // admitted until the list reads again.
-                } else if verdict == .suppressed {
-                    // A feed-level Off is a hard stop, including for the global
-                    // prepare-everything override. Explicit Prepare never
-                    // passes through here.
-                    if self.preparationRequestSequences[episode.id] != nil {
-                        self.withdrawPreparationRequest(for: episode.id)
-                    }
-                } else if self.automationSettings.prepareEverythingDownloaded,
-                   self.podcastQueueIDs.contains(episode.id) {
-                    // The override prepares immediately, exactly as the group's
-                    // Prepare all does, and only for an episode waiting on the
-                    // Larder; with it off the processing policy's own plan
-                    // (including off-peak) still governs the arrival.
-                    self.prepareEpisode(episode, automatic: true)
-                } else {
-                    self.admitAutomaticPreparation(for: episode, at: Date())
-                }
+                await self.applyArrivalPreparationVerdict(for: episode)
                 // The file has landed and its preparation is under way, so a
                 // reload that fails from here leaves stale rows -- it does not
                 // mean the download failed, and the catch below would say so.
@@ -318,6 +297,49 @@ extension WiltedMacModel {
               let feedID = try? ItemID(rawValue: rawFeedID) else { return .allowed }
         guard let policy = try? await store.feedAutomationPolicy(for: feedID) else { return .allowed }
         return EpisodeAdmissionService.suppressesAutomaticPreparation(policy) ? .suppressed : .allowed
+    }
+
+    /// Decides what a landed download's preparation does, from the flag list and the feed's policy.
+    /// An unreadable flag list says nothing about this episode, so its waiting request is left in
+    /// place, nothing new is admitted, and the episode is remembered so the ticker asks again.
+    func applyArrivalPreparationVerdict(for episode: WiltedMacEpisode) async {
+        let verdict = await automaticPreparationVerdict(for: episode)
+        if verdict == .unknown {
+            arrivalPreparationsAwaitingFlagList.insert(episode.id)
+            return
+        }
+        arrivalPreparationsAwaitingFlagList.remove(episode.id)
+        if verdict == .suppressed {
+            // A feed-level Off is a hard stop, including for the global
+            // prepare-everything override. Explicit Prepare never
+            // passes through here.
+            if preparationRequestSequences[episode.id] != nil {
+                withdrawPreparationRequest(for: episode.id)
+            }
+        } else if automationSettings.prepareEverythingDownloaded,
+                  podcastQueueIDs.contains(episode.id) {
+            // The override prepares immediately, exactly as the group's
+            // Prepare all does, and only for an episode waiting on the
+            // Larder; with it off the processing policy's own plan
+            // (including off-peak) still governs the arrival.
+            prepareEpisode(episode, automatic: true)
+        } else {
+            admitAutomaticPreparation(for: episode, at: Date())
+        }
+    }
+
+    /// Asks again for each landed download whose flag list could not be read. Called every tick.
+    func retryArrivalPreparationsAwaitingFlagList() async {
+        for id in arrivalPreparationsAwaitingFlagList.sorted() {
+            guard !isClosingTemporaryState,
+                  let episode = episodes.first(where: { $0.id == id }), episode.removalKind == nil,
+                  episode.downloadState == .completed, !episode.preparationState.isPrepared,
+                  podcastPreparationTasks[id] == nil else {
+                arrivalPreparationsAwaitingFlagList.remove(id)
+                continue
+            }
+            await applyArrivalPreparationVerdict(for: episode)
+        }
     }
 
     /// Writes the pending preparation ticket for a number reserved by

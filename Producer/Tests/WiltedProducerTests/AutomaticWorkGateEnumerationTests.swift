@@ -116,9 +116,10 @@ final class AutomaticWorkGateEnumerationTests: XCTestCase {
         // Recovery of a claim an earlier launch left behind goes through the gate twice: the list
         // it offers leaves flagged episodes out, and the start itself asks again.
         let library = try source("WiltedMacModel+Library.swift")
-        XCTAssertTrue(library.contains("if automatic, await automaticWorkIsHeldFresh(episodeID) {"))
-        XCTAssertTrue(library.contains("throw WiltedAutomationFault.downloadHeld(episodeID)"),
-                      "a held claim is reported as not started, never as a completed download")
+        XCTAssertTrue(
+            library.contains("if automatic, await automaticWorkIsHeldFresh(episodeID) {\n            throw WiltedAutomationFault.downloadHeld(episodeID)\n        }"),
+            "the freshly read flag guard throws the held fault: a held claim is reported as not started, never as a completed download"
+        )
         let automation = try source("WiltedMacModel+Automation.swift")
         XCTAssertTrue(automation.contains("guard let held = await refreshPossibleDuplicateHolds(from: store) else { return [] }"))
         XCTAssertTrue(automation.contains(".filter { !held.contains($0) }"))
@@ -132,12 +133,20 @@ final class AutomaticWorkGateEnumerationTests: XCTestCase {
         XCTAssertTrue(downloads.contains("scope: automatic ? .automaticNotInFlight : .notInFlight"))
         XCTAssertTrue(downloads.contains("guard let held = await refreshPossibleDuplicateHolds(from: store) else { return .unknown }"),
                       "a landing download asks the store afresh, and a failed read is unknown")
-        let arrival = try XCTUnwrap(downloads.range(of: "let verdict = await self.automaticPreparationVerdict(for: episode)"))
-        let arrivalBody = String(downloads[arrival.upperBound...].prefix(900))
-        let unknownAt = try XCTUnwrap(arrivalBody.range(of: "verdict == .unknown"))
+        XCTAssertTrue(downloads.contains("await self.applyArrivalPreparationVerdict(for: episode)"),
+                      "a landing download decides its preparation through the verdict")
+        XCTAssertTrue(downloads.contains("if held.contains(episode.id) { return .suppressed }"),
+                      "a positive match on the flag list suppresses; an unreadable list is not a match")
+        let arrival = try XCTUnwrap(downloads.range(of: "func applyArrivalPreparationVerdict(for episode: WiltedMacEpisode) async {"))
+        let arrivalBody = String(downloads[arrival.upperBound...].prefix(1_100))
+        let unknownAt = try XCTUnwrap(arrivalBody.range(of: "if verdict == .unknown {"))
         let withdrawAt = try XCTUnwrap(arrivalBody.range(of: "withdrawPreparationRequest"))
         XCTAssertLessThan(unknownAt.lowerBound, withdrawAt.lowerBound,
                           "an unreadable flag list is handled before any request is withdrawn")
+        XCTAssertTrue(arrivalBody.contains("arrivalPreparationsAwaitingFlagList.insert(episode.id)"),
+                      "an unreadable flag list is remembered so the ticker asks again")
+        XCTAssertTrue(try source("WiltedMacModel+Automation.swift").contains("await self.retryArrivalPreparationsAwaitingFlagList()"),
+                      "the ticker retries those arrivals")
         let admit = try XCTUnwrap(downloads.range(of: "func admitAutomaticPreparation("))
         XCTAssertTrue(downloads[admit.upperBound...].prefix(200).contains("automaticWorkIsHeld(episode.id)"),
                       "automatic admission asks the gate first")
