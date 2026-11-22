@@ -115,6 +115,26 @@ final class LocalLibraryRuleSkipTests: XCTestCase {
         try await assertLeftAlone(fixture)
     }
 
+    /// A listen can finish with no saved position and no queue marker: only the listening record says so.
+    func testRuleSkipLeavesTheEpisodeAndItsAudioWhenOnlyItsListeningRecordIsFinished() async throws {
+        let fixture = try await makeFixture()
+        try await fixture.store.saveListening(PodcastListeningState(
+            episodeID: fixture.episodeID, completedAt: Timestamp(Date()), lastRevisionID: nil,
+            updatedAt: Timestamp(Date())
+        ))
+        try await assertLeftAlone(fixture)
+    }
+
+    /// Play Now and playlists start audio before anything is saved, so the caller's live player is
+    /// the only witness: the episode it names is left alone though the store holds no trace yet.
+    func testRuleSkipLeavesTheEpisodeAndItsAudioWhenTheCallersLivePlayerHasItLoaded() async throws {
+        let fixture = try await makeFixture()
+        try await assertLeftAlone(fixture, protecting: [fixture.episodeID])
+        // Without the live witness the same episode is skipped, so the check is the only thing that held it.
+        let skipped = try await fixture.store.retireEpisodeBySkipRule(fixture.episodeID, ruleID: UUID())
+        XCTAssertTrue(skipped)
+    }
+
     private func insertPlayback(_ fixture: Fixture, positionSeconds: Double, completed: Bool) throws {
         let context = ModelContext(fixture.store.container)
         context.insert(LocalLibrarySchemaV21Models.PlaybackRecord(try PlaybackState(
@@ -125,8 +145,9 @@ final class LocalLibraryRuleSkipTests: XCTestCase {
         try context.save()
     }
 
-    private func assertLeftAlone(_ fixture: Fixture, line: UInt = #line) async throws {
-        let skipped = try await fixture.store.retireEpisodeBySkipRule(fixture.episodeID, ruleID: UUID())
+    private func assertLeftAlone(_ fixture: Fixture, protecting: Set<ItemID> = [], line: UInt = #line) async throws {
+        let skipped = try await fixture.store.retireEpisodeBySkipRule(
+            fixture.episodeID, ruleID: UUID(), protecting: protecting)
         XCTAssertFalse(skipped, line: line)
         let removal = try await fixture.store.removalKind(for: fixture.episodeID)
         let decision = try await fixture.store.episodeDecision(for: fixture.episodeID)

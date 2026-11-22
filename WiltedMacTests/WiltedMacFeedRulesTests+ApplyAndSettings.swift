@@ -135,6 +135,29 @@ extension WiltedMacFeedRulesTests {
         XCTAssertNil(row.removalKind, "it was not retired")
     }
 
+    /// Play Now and a playlist load the audio before saving anything: no queue marker, position or
+    /// finished record exists yet. The player holds "b", so Apply must still leave it alone.
+    func testApplyDoesNotSkipAnEpisodeTheLivePlayerHasLoadedBeforeAnythingWasSaved() async throws {
+        let fixture = try await makeFixture(mixed)
+        let b = try ItemID(rawValue: fixture.id("b"))
+        let controller = PlaybackController(store: fixture.store, backend: WiltedFixturePlaybackBackend(), deviceID: "fixture")
+        let revision = try AudioRevision(
+            itemID: b, revisionID: RevisionID(rawValue: "live-player"), durationSeconds: 60, byteCount: 1,
+            contentHash: "sha256:\(String(repeating: "b", count: 64))", mediaType: "audio/mp4",
+            createdAt: Timestamp(Date()), schemaVersion: 1)
+        let result = try await fixture.model.applyFeedRules(
+            feedID: fixture.feedID.rawValue, rules: fixture.editor.rules, progress: { _, _ in },
+            beforeWriteForTesting: {
+                fixture.model.playback = controller
+                try? await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/live-player.m4a"))
+            }
+        )
+        XCTAssertNil(try XCTUnwrap(result.undo).applied[b], "the skip that was left alone is not offered an Undo")
+        let row = try XCTUnwrap(fixture.model.episodes.first { $0.id == b.rawValue })
+        XCTAssertNil(row.removalKind, "it was not retired")
+        await fixture.model.close()
+    }
+
     func testReplacingChangesCountsEachWrittenAdmissionByKind() throws {
         var planned = FeedRulesCounts()
         planned.keeps = 3

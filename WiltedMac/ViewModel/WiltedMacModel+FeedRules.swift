@@ -168,7 +168,8 @@ extension WiltedMacModel {
                     // skips only by rule; false means it was removed or decided
                     // by the listener since the read above, so it is left alone.
                     guard let ruleID = admission.ruleID,
-                          try await store.retireEpisodeBySkipRule(id, ruleID: ruleID, at: decidedAt) else {
+                          try await store.retireEpisodeBySkipRule(
+                              id, ruleID: ruleID, at: decidedAt, protecting: livePlaybackEpisodeIDs()) else {
                         prior.removeValue(forKey: id)
                         continue
                     }
@@ -235,10 +236,19 @@ extension WiltedMacModel {
     /// Whether the episode is playing, was played or is the queue's current one right now.
     /// An unreadable queue counts as started.
     private func hasStartedSincePreview(_ id: ItemID, store: LocalLibraryStore) async -> Bool {
+        if livePlaybackEpisodeIDs().contains(id) { return true }
         if let row = episodes.first(where: { $0.id == id.rawValue }), hasStartedEpisode(row) { return true }
         if currentPodcastEpisodeID == id.rawValue { return true }
         guard let queue = try? await store.podcastQueueState() else { return true }
         return queue.currentEpisodeID == id
+    }
+
+    /// The episodes the player has loaded or the model names as playing, with their linked members.
+    /// Audio starts before any of it is saved, so a Skip that deletes audio reads this at the last
+    /// moment and passes it to the store, which cannot see the live player.
+    func livePlaybackEpisodeIDs() -> Set<ItemID> {
+        let named = [playback?.itemID?.rawValue, currentPodcastEpisodeID].compactMap { $0 }
+        return Set(named.flatMap { logicalMemberIDs($0) }.compactMap { try? ItemID(rawValue: $0) })
     }
 
     // MARK: Undo

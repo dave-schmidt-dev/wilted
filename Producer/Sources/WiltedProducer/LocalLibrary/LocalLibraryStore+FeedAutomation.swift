@@ -346,9 +346,15 @@ extension LocalLibraryStore {
     /// retires it again. Returns false, writing nothing, for a missing or
     /// already removed episode, one with a manual decision, one flagged as a
     /// possible duplicate, or one the listener has started playing.
+    ///
+    /// Playback can begin before anything is saved (Play Now and playlists start the audio first), so
+    /// the caller names the episodes its live player has loaded in `protecting`, read as late as it can.
+    /// The stored state is checked here in the same transaction as the write.
     @discardableResult
     public func retireEpisodeBySkipRule(_ episodeID: ItemID, ruleID: UUID,
-                                        at decidedAt: Timestamp = Timestamp(Date())) throws -> Bool {
+                                        at decidedAt: Timestamp = Timestamp(Date()),
+                                        protecting livePlayback: Set<ItemID> = []) throws -> Bool {
+        guard !livePlayback.contains(episodeID) else { return false }
         let context = ModelContext(container)
         let identifier = episodeID.rawValue
         guard let episode = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
