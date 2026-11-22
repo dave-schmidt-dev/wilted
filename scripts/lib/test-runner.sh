@@ -159,3 +159,23 @@ wilted_reexec_bounded() {
   exec env WILTED_BOUNDED_ENTRY=1 \
     python3 "$runner" "${budget_args[@]}" -- bash "$entrypoint" "$@"
 }
+
+# Bash 3 shares xtrace and stderr. Trace source locations only, leaving command
+# arguments (which can hold credentials) out of both the trace and the stream.
+wilted_debug_leg() {
+  local PS4='+ ' trace_dir="$repo_root/.logs/gate-debug"
+  mkdir -p "$trace_dir" || return 1
+  local trace_log
+  trace_log="$(mktemp "$trace_dir/$name.XXXXXX")" || return 1
+  wilted_trace_locations "$@" 6>>"$trace_log"
+}
+
+wilted_trace_locations() {
+  set -T
+  trap '{ set -x; : "${BASH_SOURCE[0]##*/}:${LINENO} ${FUNCNAME[0]}"; set +x; } 2>&6' DEBUG
+  local rc=0
+  "$@" || rc=$?
+  trap - DEBUG
+  set +T
+  return "$rc"
+}

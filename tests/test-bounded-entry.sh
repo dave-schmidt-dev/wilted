@@ -310,4 +310,17 @@ for entrypoint in "$repo_root/scripts/test-phase0.sh" "$repo_root/scripts/test-g
     exit 1
   }
 done
+
+# A debug leg traces nested shell source locations without echoing its arguments.
+source "$repo_root/scripts/lib/test-runner.sh"
+(
+  repo_root="$fixture"; name=debug-fixture
+  debug_probe() { : "$1"; printf 'leg stderr\n' >&2; return 17; }
+  rc=0
+  wilted_debug_leg debug_probe private-argument 2>"$tmp_root/debug-console" || rc=$?
+  [[ "$rc" == 17 && "$(<"$tmp_root/debug-console")" == 'leg stderr' ]]
+  trace_files=("$fixture"/.logs/gate-debug/debug-fixture.*)
+  grep -q 'debug_probe' "${trace_files[0]}"
+  ! grep -q 'private-argument' "${trace_files[0]}"
+)
 printf '%s\n' 'bounded test entry meta-test passed'

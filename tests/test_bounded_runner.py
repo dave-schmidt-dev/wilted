@@ -334,6 +334,93 @@ class BoundedRunnerTests(unittest.TestCase):
         self.assertEqual(result, 125)
         self.assertLess(time.monotonic() - started, 2)
 
+    def run_timeout_with_sample(self, sample_status: int) -> tuple[int, Path]:
+        module = load_runner(f"run_bounded_timeout_evidence_{sample_status}")
+        module.TIMEOUT_EVIDENCE_ROOT = self.path / f"timeout-evidence-{sample_status}"
+        sleep_stub = self.path / f"sleep-{sample_status}"
+        sleep_stub.write_text(
+            f"#!{PYTHON}\nimport time\ntime.sleep(20)\n", encoding="utf-8"
+        )
+        sleep_stub.chmod(0o755)
+        module.SAMPLE_COMMAND = str(sleep_stub)  # Executable fixture; subprocess.run is stubbed.
+        lock_pid_file = self.path / f"ui-lock-{sample_status}.pid"
+        lock_pid_file.write_text(f"{os.getpid()}\n", encoding="ascii")
+        watcher = mock.Mock(pid=os.getpid() + 100000, returncode=0)
+        watcher.poll.return_value = None
+        original_popen = module.subprocess.Popen
+        child_handles: list[subprocess.Popen[bytes]] = []
+        held_watchdog_fds: list[int] = []
+
+        def selective_popen(argv, *args, **kwargs):
+            if "--watchdog" in argv:
+                held_watchdog_fds.extend(os.dup(int(fd)) for fd in argv[-2:])
+                return watcher
+            child = original_popen(argv, *args, **kwargs)
+            child_handles.append(child)
+            return child
+
+        def synthetic_process_table():
+            if not child_handles or child_handles[0].poll() is not None:
+                return {}
+            child = child_handles[0]
+            return {
+                child.pid: module.Process(child.pid, os.getpid(), "synthetic", "R", child.pid)
+            }
+
+        def synthetic_diagnostic(command, **kwargs):
+            if command[0] == "/bin/ps":
+                child = child_handles[0]
+                rows = (
+                    f"{child.pid} {os.getpid()} R 00:01 {sleep_stub.name}\n"
+                    f"{os.getpid()} 1 S 10:00 python3\n"
+                )
+                return subprocess.CompletedProcess(command, 0, rows, "")
+            Path(command[-1]).write_text("synthetic sample\n", encoding="utf-8")
+            return subprocess.CompletedProcess(command, sample_status, "", "")
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "GATE_UI_TEST_LOCK_PID_FILE": str(lock_pid_file),
+                "WILTED_UI_LOCK_PID_FILE": "",
+            },
+        ), mock.patch.object(module.subprocess, "Popen", side_effect=selective_popen), \
+             mock.patch.object(module.subprocess, "run", side_effect=synthetic_diagnostic), \
+             mock.patch.object(module, "process_table", side_effect=synthetic_process_table), \
+             mock.patch.object(module, "leader_start", return_value="synthetic"):
+            try:
+                result = module.run(1, [str(sleep_stub), "20"])
+            finally:
+                for child in child_handles:
+                    if child.poll() is None:
+                        child.kill()
+                        child.wait(timeout=2)
+                for fd in held_watchdog_fds:
+                    os.close(fd)
+        evidence_dirs = list(module.TIMEOUT_EVIDENCE_ROOT.iterdir())
+        self.assertEqual(len(evidence_dirs), 1)
+        return result, evidence_dirs[0]
+
+    def test_deadline_saves_bounded_evidence_and_keeps_124(self) -> None:
+        result, evidence_dir = self.run_timeout_with_sample(0)
+        self.assertEqual(result, 124)
+        self.assertEqual(
+            {path.name for path in evidence_dir.iterdir()},
+            {"sample", "process-tree", "gate-lock-owner"},
+        )
+        self.assertIn("synthetic sample", (evidence_dir / "sample").read_text())
+        self.assertIn("pid ppid state elapsed command", (evidence_dir / "process-tree").read_text())
+        self.assertIn(f"owner_pid={os.getpid()}", (evidence_dir / "gate-lock-owner").read_text())
+
+    def test_sample_failure_does_not_change_deadline_status(self) -> None:
+        result, evidence_dir = self.run_timeout_with_sample(9)
+        self.assertEqual(result, 124)
+        self.assertIn("sample unavailable", (evidence_dir / "sample").read_text())
+        self.assertEqual(
+            {path.name for path in evidence_dir.iterdir()},
+            {"sample", "process-tree", "gate-lock-owner"},
+        )
+
     def test_slow_watchdog_cleanup_does_not_fail_successful_child(self) -> None:
         module = load_runner("run_bounded_watchdog_wait")
         # A successful child and completed supervisor cleanup. The watchdog's single

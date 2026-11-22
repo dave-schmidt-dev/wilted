@@ -79,8 +79,8 @@ bounded_runner="${WILTED_BOUNDED_RUNNER:-$repo_root/scripts/run-bounded.py}"
 # the override keeps the meta-test hermetic.
 macos_ui_failure_diagnostics_dir="${WILTED_MAC_UI_FAILURE_DIAGNOSTICS_DIR:-$repo_root/.logs/native-gate-diagnostics}"
 cleanup_mac_test_hosts() {
-  # Never sweep a peer's active test host. Hold all Mac product locks while
-  # probing stale hosts; admission is nonblocking so cleanup cannot add a queue.
+  [[ "$native_self_test" != 1 ]] || return 0
+  # Hold all Mac product locks during stale host cleanup. Acquisition is nonblocking.
   python3 - "$repo_root" <<'PYMAC'
 import fcntl
 import os
@@ -288,7 +288,7 @@ run_leg() {
   shift 2
   local output_file="$tmp_root/$name.log"
   local result_bundle="$tmp_root/$name.xcresult"
-  local command_status=0 logger_status=0 stream_file="$tmp_root/$name.stream"
+  local host_state_status=0 command_status=0 logger_status=0 stream_file="$tmp_root/$name.stream"
   wilted_temp_prepare_leg "$tmp_root" "$name"
 
   if is_deferred_leg "$name"; then
@@ -298,6 +298,16 @@ run_leg() {
     return 0
   fi
 
+  if [[ "$native_self_test" != 1 || -n "${WILTED_HOST_STATE_PS:-}" ]]; then
+    TMPDIR="$WILTED_TEMP_LEG_WORK" python3 "$repo_root/scripts/lib/host-state.py" "$name" "$$" || host_state_status=$?
+  fi
+  if [[ "$host_state_status" -ne 0 ]]; then
+    : >"$native_audit_root/preflight-refused"
+    wilted_temp_audit_leg "$tmp_root" "$name" || true
+    failed_legs=$((failed_legs + 1)); completed_legs=$((completed_legs + 1))
+    status "native.leg.complete name=$name status=$host_state_status reason=preflight-refused"
+    return 0
+  fi
   status "native.leg.start name=$name"
   if is_forced_failure "$name"; then
     printf '%s\n' 'forced_self_test_failure' >"$output_file"
@@ -339,6 +349,7 @@ run_leg() {
   else
     wilted_start_logger "$output_file" "$stream_file"
     set +e
+    if [[ "${WILTED_GATE_DEBUG:-0}" == 1 ]]; then set -- wilted_debug_leg "$@"; fi
     TMPDIR="$WILTED_TEMP_LEG_WORK" "$@" >&9 2>&1 || command_status=$?
     set +e # a leg can re-enable errexit (xcode_test_leg); `||` keeps its failure from ending the gate
     wilted_finish_logger
@@ -782,6 +793,7 @@ status "native.complete failed_legs=$failed_legs total_legs=$completed_legs defe
 wilted_gate_legs_summary
 if [[ "$failed_legs" -ne 0 ]]; then
   status "native.failed count=$failed_legs"
+  [[ ! -e "$native_audit_root/preflight-refused" ]] || exit 2
   exit 1
 fi
 if [[ "$deferred_legs" -ne 0 ]]; then

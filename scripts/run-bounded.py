@@ -18,8 +18,10 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 
 LABEL = "run-bounded"
@@ -46,6 +48,11 @@ WATCHDOG_WAIT_SECONDS = (
     + INSPECTION_INTERVAL_SECONDS
 )
 PROCESS_TABLE_COMMAND = ["/bin/ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart="]
+TIMEOUT_EVIDENCE_ROOT = Path(__file__).resolve().parent.parent / ".logs" / "timeouts"
+TIMEOUT_EVIDENCE_SECONDS = 5.0
+TIMEOUT_TREE_SECONDS = 1.0
+TIMEOUT_SAMPLE_SECONDS = 3.0
+SAMPLE_COMMAND = "/usr/bin/sample"
 
 
 def emit(message: str) -> None:
@@ -386,6 +393,7 @@ def watchdog(startup_fd: int, control_fd: int) -> int:
                 emit(f"watchdog-inspection-slow count={slow}: {error}")
         except (OSError, subprocess.SubprocessError) as error:
             emit(f"watchdog-inspection-failed: {error}")
+            os.close(control_fd)  # Publish teardown before inspecting or signalling children.
             tree.cleanup()
             return EXIT_CLEANUP_FAILED
 
@@ -448,6 +456,119 @@ def finish_watchdog(watcher: subprocess.Popen[object]) -> bool:
         emit(f"watchdog-cleanup-failed status={watcher.returncode}")
         return False
     return True
+
+
+def save_timeout_evidence(
+    tree: OwnedTree, child_pid: int, budget: float
+) -> Path | None:
+    """Best-effort bounded diagnostics for a deadline, without command arguments."""
+    run_id = f"{int(time.time())}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+    evidence_dir = TIMEOUT_EVIDENCE_ROOT / run_id
+    try:
+        evidence_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+    except OSError as error:
+        emit(f"timeout-evidence-unavailable error={type(error).__name__}")
+        return None
+
+    deadline = time.monotonic() + budget
+    process_tree_path = evidence_dir / "process-tree"
+    sample_path = evidence_dir / "sample"
+    lock_owner_path = evidence_dir / "gate-lock-owner"
+    processes: dict[int, tuple[int, str, str, str]] = {}
+
+    try:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired("ps", TIMEOUT_TREE_SECONDS)
+        result = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,ppid=,stat=,etime=,comm="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=min(TIMEOUT_TREE_SECONDS, remaining),
+        )
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, "ps")
+        for line in result.stdout.splitlines():
+            fields = line.split(maxsplit=4)
+            if len(fields) != 5:
+                continue
+            try:
+                pid, ppid = int(fields[0]), int(fields[1])
+            except ValueError:
+                continue
+            # `comm` reports the executable name without potentially sensitive argv.
+            processes[pid] = (ppid, fields[2], fields[3], fields[4].replace("\t", " "))
+        children: dict[int, list[int]] = {}
+        for pid, (ppid, *_details) in processes.items():
+            children.setdefault(ppid, []).append(pid)
+        owned = set(tree.known) | {child_pid}
+        pending = list(owned)
+        while pending:
+            for descendant in children.get(pending.pop(), []):
+                if descendant not in owned:
+                    owned.add(descendant)
+                    pending.append(descendant)
+        rows = ["pid ppid state elapsed command (executable name only; arguments omitted)"]
+        for pid in sorted(owned):
+            if pid in processes:
+                ppid, state, elapsed, command = processes[pid]
+                rows.append(f"{pid} {ppid} {state} {elapsed} {command}")
+        if len(rows) == 1:
+            rows.append("process tree unavailable: no owned processes remained in the snapshot")
+        process_tree_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    except (OSError, subprocess.SubprocessError) as error:
+        process_tree_path.write_text(
+            f"process tree unavailable: {type(error).__name__}\n", encoding="utf-8"
+        )
+
+    if not os.path.isfile(SAMPLE_COMMAND) or not os.access(SAMPLE_COMMAND, os.X_OK):
+        sample_path.write_text("sample unavailable: /usr/bin/sample is unavailable\n", encoding="utf-8")
+    else:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            sample_path.write_text("sample skipped: evidence time limit reached\n", encoding="utf-8")
+        else:
+            sample_status = 0
+            try:
+                result = subprocess.run(
+                    [SAMPLE_COMMAND, str(child_pid), str(int(TIMEOUT_SAMPLE_SECONDS)), "-file", str(sample_path)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    timeout=remaining,
+                )
+                sample_status = result.returncode
+            except (OSError, subprocess.SubprocessError):
+                sample_status = 1
+            if sample_status != 0 or not sample_path.is_file() or sample_path.stat().st_size == 0:
+                sample_path.write_text(
+                    f"sample unavailable: sample command failed status={sample_status}\n",
+                    encoding="utf-8",
+                )
+
+    lock_pid_file = os.environ.get("GATE_UI_TEST_LOCK_PID_FILE") or os.environ.get(
+        "WILTED_UI_LOCK_PID_FILE"
+    )
+    lock_description = "no lock\n"
+    if lock_pid_file and os.path.isfile(lock_pid_file):
+        try:
+            with open(lock_pid_file, "r", encoding="ascii") as lock_file:
+                raw_pid = lock_file.read(32).strip()
+            if raw_pid.isdecimal() and int(raw_pid) > 0:
+                lock_pid = int(raw_pid)
+                command = processes.get(lock_pid, (0, "", "", "unavailable"))[3]
+                lock_description = f"owner_pid={lock_pid} command={command}\n"
+            else:
+                lock_description = "lock owner unavailable: PID not published\n"
+        except (OSError, UnicodeError):
+            lock_description = "lock owner unavailable: PID file could not be read\n"
+    try:
+        lock_owner_path.write_text(lock_description, encoding="utf-8")
+    except OSError as error:
+        emit(f"timeout-evidence-lock-owner-unavailable error={type(error).__name__}")
+    emit(f"timeout-evidence path={evidence_dir}")
+    return evidence_dir
 
 
 def run(timeout: float, argv: list[str]) -> int:
@@ -564,17 +685,15 @@ def run(timeout: float, argv: list[str]) -> int:
                     break
                 if now >= deadline:
                     emit(f"timeout seconds={timeout:g} pid={child.pid} phase={os.environ.get('WILTED_WORK_PHASE', 'command')} elapsed={now - work_started:.1f}s")
-                    try:
-                        table = tree.scan()
-                        for owned_pid in tree.live(table):
-                            identity = subprocess.run(
-                                ["/bin/ps", "-p", str(owned_pid), "-o", "comm="],
-                                capture_output=True, text=True, timeout=PS_TIMEOUT_SECONDS, check=False,
-                            )
-                            executable = os.path.basename(identity.stdout.strip())
-                            emit(f"diagnostic owned-pid={owned_pid} executable={executable!r}")
-                    except (OSError, subprocess.SubprocessError) as error:
-                        emit(f"diagnostic-unavailable error={type(error).__name__}")
+                    monitor = select.poll()
+                    monitor.register(control_write_fd, select.POLLERR | select.POLLHUP)
+                    if watcher.poll() is None and not monitor.poll(0):
+                        try:
+                            # Keep subsecond deadlines responsive while allowing a full sample on hosted runs.
+                            budget = timeout if timeout < 1 else TIMEOUT_EVIDENCE_SECONDS
+                            save_timeout_evidence(tree, child.pid, budget)
+                        except (OSError, ValueError, subprocess.SubprocessError) as error:
+                            emit(f"timeout-evidence-unavailable error={type(error).__name__}")
                     outcome = EXIT_TIMEOUT
                     break
                 time.sleep(POLL_SECONDS)
