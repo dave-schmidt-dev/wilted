@@ -41,6 +41,29 @@ public struct SoftSkipRecord: Codable, Equatable, Sendable {
     }
 
     public var entryIDs: [ItemID] { entries.map(\.episodeID) }
+
+    /// The same Skip without the given members, or nil when none of its retired members are left. Used
+    /// when some members go away on their own (their feed is unsubscribed), so Undo and the cleanup
+    /// that follows cover only the rest.
+    public func removing(_ gone: Set<ItemID>) -> SoftSkipRecord? {
+        let rest = retiredIDs.filter { !gone.contains($0) }
+        guard !rest.isEmpty else { return nil }
+        return SoftSkipRecord(retiredAt: retiredAt, retiredIDs: rest, entries: entries.filter { !gone.contains($0.episodeID) })
+    }
+
+    /// The same Skip reduced to the members whose cleanup is still to do.
+    public func keeping(_ kept: Set<ItemID>) -> SoftSkipRecord? {
+        removing(Set(retiredIDs).subtracting(kept))
+    }
+}
+
+/// What closing a soft Skip did.
+public struct SoftSkipClose: Equatable, Sendable {
+    /// Members still retired from the Skip whose media is now gone, or never existed.
+    public let finished: [ItemID]
+    /// Members still retired whose media was kept because the player has them loaded. Their cleanup
+    /// is still owed.
+    public let held: [ItemID]
 }
 
 extension LocalLibraryStore {
@@ -106,28 +129,33 @@ extension LocalLibraryStore {
 
     /// Closes a soft Skip once Undo can no longer happen: deletes the media records of every member
     /// still retired from this Skip, then their files. A member the owner restored or skipped again
-    /// since is left alone, and a member of a group of linked episodes keeps its media, as a direct
-    /// Skip of one does. Returns the members still retired from this Skip, with or without media,
-    /// so the caller can finish its own follow-up for them. Safe to repeat.
+    /// since is left alone, a member of a group of linked episodes keeps its media, as a direct Skip
+    /// of one does, and a member in `protecting` (the player has it loaded, which the store cannot
+    /// see) keeps its media and is reported as `held`, so its cleanup can be tried again later. The
+    /// check and the deletion share one save. Safe to repeat.
     @discardableResult
-    public func finalizeSoftSkip(_ ids: [ItemID], at retiredAt: Timestamp) throws -> [ItemID] {
+    public func finalizeSoftSkip(
+        _ ids: [ItemID], at retiredAt: Timestamp, protecting: Set<ItemID> = []
+    ) throws -> SoftSkipClose {
         let context = ModelContext(container)
         context.autosaveEnabled = false
         defer { if context.hasChanges { context.rollback() } }
         let lookup = try EpisodeAssociationReadLookup(in: context)
-        var stillRetired: [ItemID] = []
+        var finished: [ItemID] = []
+        var held: [ItemID] = []
         var doomed = Set<String>()
         for id in ids {
             guard let episode = lookup.episodes[id.rawValue],
                   episode.removalKind == PodcastEpisodeRemovalKind.retired.rawValue,
                   episode.retiredAt == retiredAt.date else { continue }
-            stillRetired.append(id)
+            if protecting.contains(id) { held.append(id); continue }
+            finished.append(id)
             if (lookup.state(for: id)?.memberIDs.count ?? 1) <= 1 { doomed.insert(id.rawValue) }
         }
-        guard !doomed.isEmpty else { return stillRetired }
+        guard !doomed.isEmpty else { return SoftSkipClose(finished: finished, held: held) }
         let media = try Self.deleteMediaRecords(forEpisodesWithIDs: doomed, in: context)
         try context.save()
         deleteMediaIfUnreferenced(media)
-        return stillRetired
+        return SoftSkipClose(finished: finished, held: held)
     }
 }

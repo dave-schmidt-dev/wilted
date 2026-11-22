@@ -148,7 +148,7 @@ final class LocalLibrarySoftSkipTests: XCTestCase {
         let result = try await fixture.store.retireEpisodes([a, b], at: skippedAt, asOwnerChoice: true, deferringMediaDeletion: true)
         _ = try await fixture.store.restoreEpisodes([b], at: Date(timeIntervalSince1970: 1_760_000_200))
 
-        let remaining = try await fixture.store.finalizeSoftSkip(result.committed, at: skippedAt)
+        let remaining = try await fixture.store.finalizeSoftSkip(result.committed, at: skippedAt).finished
 
         XCTAssertEqual(remaining, [a])
         let downloadA = try await fixture.store.download(for: a)
@@ -157,7 +157,7 @@ final class LocalLibrarySoftSkipTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.media[a]!.path))
         XCTAssertNotNil(downloadB, "the restored episode keeps its audio")
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.media[b]!.path))
-        let again = try await fixture.store.finalizeSoftSkip(result.committed, at: skippedAt)
+        let again = try await fixture.store.finalizeSoftSkip(result.committed, at: skippedAt).finished
         XCTAssertEqual(again, [a], "closing twice is harmless")
     }
 
@@ -169,10 +169,43 @@ final class LocalLibrarySoftSkipTests: XCTestCase {
                                     alreadyAtTarget: result.alreadyAtTarget, prior: result.priorDecisions)
         try await fixture.store.undoSoftSkip(record)
 
-        let remaining = try await fixture.store.finalizeSoftSkip(record.retiredIDs, at: skippedAt)
+        let remaining = try await fixture.store.finalizeSoftSkip(record.retiredIDs, at: skippedAt).finished
 
         XCTAssertEqual(remaining, [])
         XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.media[id]!.path))
+    }
+
+    func testClosingKeepsTheAudioOfAMemberThePlayerHasLoadedAndReportsItHeld() async throws {
+        let fixture = try await makeFixture(count: 2)
+        let (a, b) = (fixture.ids[0], fixture.ids[1])
+        let result = try await fixture.store.retireEpisodes([a, b], at: skippedAt, asOwnerChoice: true, deferringMediaDeletion: true)
+
+        let close = try await fixture.store.finalizeSoftSkip(result.committed, at: skippedAt, protecting: [b])
+
+        XCTAssertEqual(close.finished, [a])
+        XCTAssertEqual(close.held, [b])
+        let downloadB = try await fixture.store.download(for: b)
+        XCTAssertNotNil(downloadB, "the playing episode keeps its audio")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.media[b]!.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.media[a]!.path))
+
+        let later = try await fixture.store.finalizeSoftSkip([b], at: skippedAt)
+        XCTAssertEqual(later.finished, [b], "once the player lets go, the next close reclaims it")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.media[b]!.path))
+    }
+
+    func testARecordCanBeNarrowedToTheMembersThatRemain() async throws {
+        let fixture = try await makeFixture(count: 2)
+        let (a, b) = (fixture.ids[0], fixture.ids[1])
+        let result = try await fixture.store.retireEpisodes([a, b], at: skippedAt, asOwnerChoice: true, deferringMediaDeletion: true)
+        let record = SoftSkipRecord(retiredAt: skippedAt, committed: result.committed,
+                                    alreadyAtTarget: result.alreadyAtTarget, prior: result.priorDecisions)
+
+        let narrowed = try XCTUnwrap(record.removing([a]))
+        XCTAssertEqual(narrowed.retiredIDs, [b])
+        XCTAssertEqual(narrowed.entryIDs, [b])
+        XCTAssertNil(narrowed.removing([b]), "nothing left to offer or clean up")
+        XCTAssertEqual(record.keeping([a])?.retiredIDs, [a])
     }
 
     func testTheRecordSurvivesBeingSavedAndReadBack() async throws {

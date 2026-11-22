@@ -86,4 +86,38 @@ final class WiltedMacUndoToastCloseTests: XCTestCase {
         XCTAssertEqual([counter.undone, counter.closed], [0, 1], "the late press closes the offer and runs nothing")
         XCTAssertNil(center.current)
     }
+
+    func testWithdrawingSomeSubjectsNarrowsAnOfferThatCanNarrowAndDoesNotCloseIt() {
+        let clock = VirtualTime()
+        let center = center(clock)
+        var narrowedBy: [Set<String>] = []
+        var closed = 0
+        center.offer(
+            message: "Skipped 3.", actionName: "Skip", subjects: ["a", "b", "c"],
+            onClose: { closed += 1 }, narrow: { narrowedBy.append($0) }, undo: { .done }
+        )
+
+        center.withdraw(subjects: ["a", "z"])
+        XCTAssertEqual(narrowedBy, [["a"]], "only the subjects that left are reported")
+        XCTAssertEqual(center.current?.subjects, ["b", "c"], "the rest stays on offer")
+        XCTAssertEqual(closed, 0)
+
+        center.withdraw(subjects: ["b", "c"])
+        XCTAssertNil(center.current, "when nothing is left the offer closes")
+        XCTAssertEqual(closed, 1)
+    }
+
+    func testALateHoverDoesNotReviveAnOfferThatAlreadyRanOut() {
+        let sleeper = VirtualTime()
+        var time = sleeper.now
+        let center = WiltedMacUndoToastCenter(
+            now: { time }, sleep: { try await sleeper.sleep($0) }, prefersLongOffer: { false })
+        let counter = Counter()
+        offer(on: center, counting: counter)
+        time = time.addingTimeInterval(6)
+
+        center.setHeld(true)
+        XCTAssertNil(center.current, "the five seconds were up before the pointer arrived")
+        XCTAssertEqual([counter.undone, counter.closed], [0, 1])
+    }
 }

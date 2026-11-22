@@ -382,6 +382,8 @@ final class WiltedMacModel {
     /// from Larder admission retry state because a decision failure stays
     /// selected and retryable instead of becoming an automatic arrival.
     var pendingFeedDecisionIDs: Set<String> = []
+    /// Soft Skips whose Undo offer is still open in this run, so a launch-time cleanup leaves them alone.
+    @ObservationIgnored var openSoftSkips: [OpenSoftSkip] = []
     var failedFeedDecisionIDs: Set<String> = []
     /// Posts of followed article feeds that no rule or policy decided: the Feeds inbox lists them
     /// beside podcast episodes. In memory; the next refresh offers them again.

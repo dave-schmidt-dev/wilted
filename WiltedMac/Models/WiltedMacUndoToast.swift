@@ -10,7 +10,7 @@ struct WiltedMacUndoOffer: Identifiable, Equatable, Sendable {
     /// The Edit menu's words after "Undo": "Mark Completed".
     let actionName: String
     /// The rows Undo would put back, so the offer can be withdrawn when one of them is gone.
-    let subjects: Set<String>
+    var subjects: Set<String>
     /// When the toast lets go of this offer.
     let offeredUntil: Date
     /// When the undo itself stops working. A held toast never outlasts it.
@@ -61,6 +61,7 @@ final class WiltedMacUndoToastCenter {
     @ObservationIgnored private let prefersLongOffer: @MainActor () -> Bool
     @ObservationIgnored private var actions: [UUID: @MainActor () -> WiltedMacUndoResult] = [:]
     @ObservationIgnored private var closers: [UUID: @MainActor () -> Void] = [:]
+    @ObservationIgnored private var narrowers: [UUID: @MainActor (Set<String>) -> Void] = [:]
     /// Offers whose undo is running right now, so a withdrawal inside it is not a close.
     @ObservationIgnored private var undoing: Set<UUID> = []
     @ObservationIgnored private var registrations: [UUID: Registration] = [:]
@@ -89,6 +90,8 @@ final class WiltedMacUndoToastCenter {
     ///   - subjects: The rows Undo would put back.
     ///   - availableUntil: When the undo stops working; nil allows `holdSeconds`.
     ///   - onClose: Runs once if the offer ends without being taken: it ran out or was withdrawn.
+    ///   - narrow: Given the subjects that left, when only some of the offer's subjects are withdrawn. The
+    ///     offer then stays open for the rest; without it, any withdrawal ends the whole offer.
     ///   - undo: Reverses the action and says whether it did. Returning `.retry` keeps the offer open.
     /// - Returns: The offer's id, or nil when the undo has already stopped working (`onClose` has
     ///   not run then: the caller learns of it from the nil).
@@ -96,6 +99,7 @@ final class WiltedMacUndoToastCenter {
     func offer(
         message: String, actionName: String, subjects: Set<String> = [],
         availableUntil: Date? = nil, onClose: (@MainActor () -> Void)? = nil,
+        narrow: (@MainActor (Set<String>) -> Void)? = nil,
         undo: @escaping @MainActor () -> WiltedMacUndoResult
     ) -> UUID? {
         let start = now()
@@ -109,6 +113,7 @@ final class WiltedMacUndoToastCenter {
         offers.append(offer)
         actions[offer.id] = undo
         closers[offer.id] = onClose
+        narrowers[offer.id] = narrow
         registrations[offer.id] = Registration(offerID: offer.id)
         register(offer)
         scheduleExpiry()
@@ -152,7 +157,17 @@ final class WiltedMacUndoToastCenter {
     func withdraw(subjects: Set<String>) {
         let gone = offers.filter { !$0.subjects.isDisjoint(with: subjects) }
         guard !gone.isEmpty else { return }
-        for offer in gone { forget(offer.id, closing: true) }
+        for offer in gone {
+            let leaving = offer.subjects.intersection(subjects)
+            if let narrow = narrowers[offer.id], leaving != offer.subjects,
+               let index = offers.firstIndex(where: { $0.id == offer.id }) {
+                // Only some of what the offer would put back is gone: the rest stays on offer.
+                offers[index].subjects.subtract(leaving)
+                narrow(leaving)
+            } else {
+                forget(offer.id, closing: true)
+            }
+        }
         scheduleExpiry()
     }
 
@@ -165,6 +180,8 @@ final class WiltedMacUndoToastCenter {
     /// The pointer came to rest on the toast, or left it.
     func setHeld(_ held: Bool) {
         guard held != isHeld else { return }
+        // An offer already past its window under the old rule is over: holding must not revive it.
+        closeExpired()
         isHeld = held
         scheduleExpiry()
     }
@@ -222,11 +239,18 @@ final class WiltedMacUndoToastCenter {
         offers.removeAll { $0.id == id }
         actions[id] = nil
         let closer = closers.removeValue(forKey: id)
+        narrowers[id] = nil
         if let registration = registrations.removeValue(forKey: id), let undoManager {
             // While the undo stack is running this very entry it removes the entry itself.
             if !undoManager.isUndoing { undoManager.removeAllActions(withTarget: registration) }
         }
         if closing, !undoing.contains(id) { closer?() }
+    }
+
+    /// Closes every offer whose window has run out by the clock right now, whether or not its timer has fired.
+    private func closeExpired() {
+        let time = now()
+        for offer in offers where expiry(of: offer) <= time { forget(offer.id, closing: true) }
     }
 
     private func expiry(of offer: WiltedMacUndoOffer) -> Date {
@@ -247,8 +271,7 @@ final class WiltedMacUndoToastCenter {
             } catch { return }
             guard let self, !Task.isCancelled else { return }
             self.expiryTask = nil
-            let time = self.now()
-            for offer in self.offers where self.expiry(of: offer) <= time { self.forget(offer.id, closing: true) }
+            self.closeExpired()
             self.scheduleExpiry()
         }
     }
