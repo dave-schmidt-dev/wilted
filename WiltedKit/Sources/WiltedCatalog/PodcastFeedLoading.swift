@@ -8,6 +8,7 @@ public enum PodcastFeedClientError: Error, Equatable, LocalizedError, Sendable {
     case redirectDowngrade
     case invalidResponse(Int?)
     case responseTooLarge
+    case offline
     case transport(String)
     case malformedXML
     case externalEntity
@@ -15,12 +16,19 @@ public enum PodcastFeedClientError: Error, Equatable, LocalizedError, Sendable {
     case unsupportedEnclosureMediaType(String)
     case cancelled
 
+    public static func transportFailure(_ error: Error) -> Self {
+        if let urlError = error as? URLError,
+           [.notConnectedToInternet, .networkConnectionLost].contains(urlError.code) { return .offline }
+        return .transport(String(describing: error))
+    }
+
     public var errorDescription: String? {
         switch self {
         case .invalidURL: "The podcast feed URL must be a complete HTTPS URL."
         case .redirectDowngrade: "The podcast server redirected to an insecure URL."
         case .invalidResponse: "The podcast server returned an invalid response."
         case .responseTooLarge: "The podcast feed is larger than Wilted's safe limit."
+        case .offline: "No internet connection."
         case .transport: "Wilted could not load the podcast feed."
         case .malformedXML: "The podcast feed contains malformed XML."
         case .externalEntity: "The podcast feed references an external XML entity."
@@ -223,7 +231,7 @@ final class PodcastFeedRequestOperation: NSObject, URLSessionDataDelegate, URLSe
         lock.withLock {
             if let terminalError { finishLocked(.failure(terminalError)) }
             else if let urlError = error as? URLError, urlError.code == .cancelled { finishLocked(.failure(PodcastFeedClientError.cancelled)) }
-            else if let error { finishLocked(.failure(PodcastFeedClientError.transport(String(describing: error)))) }
+            else if let error { finishLocked(.failure(PodcastFeedClientError.transportFailure(error))) }
             else if let response {
                 let finalURL = response.url ?? task.currentRequest?.url ?? task.originalRequest?.url
                 guard let finalURL, PodcastFeedRequestOperation.isHTTPS(finalURL) else {

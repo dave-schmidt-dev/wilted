@@ -427,12 +427,22 @@ struct WiltedMacLastRefreshedLabel: View {
 
     var body: some View {
         TimelineView(.everyMinute) { context in
-            Text("Last refreshed: \(model.lastPodcastRefreshRelativeText(now: context.date))")
-                .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .help(model.lastPodcastRefreshExactText)
-                .accessibilityLabel(model.lastPodcastRefreshExactText)
-                .accessibilityIdentifier(identifier)
+            HStack {
+                Text("Last refreshed: \(model.lastPodcastRefreshRelativeText(now: context.date))")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .help(model.lastPodcastRefreshExactText)
+                    .accessibilityLabel(model.lastPodcastRefreshExactText)
+                    .accessibilityIdentifier(identifier)
+                if let problem = model.automaticRefreshProblem {
+                    Text("· \(problem)")
+                        .wiltedFont(.utility)
+                        .accessibilityIdentifier("wilted-last-refreshed-problem")
+                    Button("Try again") { model.refreshPodcastFeeds() }
+                        .disabled(model.isRefreshingPodcasts || model.automaticFeedRefreshInFlight)
+                        .accessibilityIdentifier("wilted-last-refreshed-try-again")
+                }
+            }
         }
     }
 }

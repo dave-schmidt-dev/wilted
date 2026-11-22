@@ -133,6 +133,7 @@ final class WiltedMacModel {
     /// default because 13pt is the system's body size and this is a window
     /// read across a room as often as at a desk.
     var textScale: WiltedTheme.TextScale = .large
+    var automaticRefreshProblem: String?
     /// What automation is doing, so Settings can show it and a listener can stop it.
     var automationStatus: WiltedAutomationStatus = .idle
     /// Whether the address box is open. It is a sheet-like popover now
@@ -455,6 +456,7 @@ final class WiltedMacModel {
 #if canImport(WiltedProducer)
     var automation: WiltedAutomationCoordinator?
     var automationTask: Task<Void, Never>?
+    var automationWakeObserver: (center: NotificationCenter, token: NSObjectProtocol)?
     var automationTicker: Task<Void, Never>?
     var playbackCheckpointTicker: Task<Void, Never>?
     var ticketDrainTicker: Task<Void, Never>?

@@ -1,11 +1,95 @@
+import AppKit
 import CryptoKit
+import SwiftData
 import Foundation
 import XCTest
 import WiltedDomain
-import WiltedProducer
+@testable import WiltedProducer
 @testable import WiltedMac
 
 extension WiltedMacModelTests {
+    private func followedFeedFixture() async throws -> (WiltedMacModel, LocalLibraryStore, PodcastFeed) {
+        let xml = "<rss><channel><title>Updated title</title><item><guid>post</guid><title>Post</title>"
+            + "<link>https://example.test/post</link></item></channel></rss>"
+        let model = WiltedMacModel(arguments: [], stateDirectoryOverride: temporaryDirectory("automatic-feeds"),
+                                   podcastFeedClient: PodcastFeedClient(loader: FixedBodyLoader(body: Data(xml.utf8))),
+                                   preferences: WiltedMacTestPreferences.ephemeral())
+        addTeardownBlock { await model.close() }
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        await model.waitForAutomation()
+        let store = try XCTUnwrap(model.store)
+        let url = URL(string: "https://example.test/podcast.xml")!
+        let created = Timestamp(Date())
+        let podcast = try PodcastFeed(itemID: ItemID.derivePodcastFeed(from: url), canonicalURL: url,
+                                      title: "Original podcast", createdAt: created)
+        try await store.save(feed: podcast)
+        try await store.save(subscription: PodcastSubscription(feedID: podcast.itemID, subscribedAt: created))
+        model.setAutomationSettings(.init(refreshPolicy: .whileOpen(everyHours: 6), downloadPolicy: .manual,
+                                          processingPolicy: .manual, transcriptPolicy: .bestAvailable, removeAds: true))
+        return (model, store, podcast)
+    }
+
+    func testAutomaticPassRefreshesBothPodcastAndArticleSubscriptions() async throws {
+        let (model, store, podcast) = try await followedFeedFixture()
+        let article = try ArticleFeed(canonicalURL: URL(string: "https://example.test/posts.xml")!,
+                                      title: "Original journal", createdAt: podcast.createdAt)
+        try await store.save(articleFeed: article)
+        try await store.save(subscription: PodcastSubscription(feedID: article.itemID, subscribedAt: podcast.createdAt))
+
+        model.runAutomation(trigger: .launch)
+        await model.waitForAutomation()
+        let updatedPodcast = try await store.podcastFeed(for: podcast.itemID)
+        let updatedArticle = try await store.articleFeed(for: article.itemID)
+        XCTAssertEqual(updatedPodcast?.title, "Updated title")
+        XCTAssertEqual(updatedArticle?.title, "Updated title")
+        XCTAssertEqual(model.feedsOfferedArticles.map(\.title), ["Post"])
+        XCTAssertEqual(model.automationStatus, .finished(refreshed: 2, downloaded: 0, failed: 0))
+        XCTAssertNotNil(model.lastPodcastRefreshAt)
+
+        model.recordAutomaticRefreshFailure(URLError(.notConnectedToInternet))
+        model.refreshPodcastFeeds()
+        await model.waitForPodcastOperations()
+        XCTAssertNil(model.automaticRefreshProblem, "manual retry refreshes the same mixed library")
+    }
+
+    func testUnreadableFeedRecordDoesNotPreventAutomaticRefresh() async throws {
+        let (model, store, podcast) = try await followedFeedFixture()
+        let url = URL(string: "https://example.test/broken.xml")!
+        let broken = try PodcastFeed(itemID: ItemID.derivePodcastFeed(from: url), canonicalURL: url,
+                                     title: "Broken", createdAt: podcast.createdAt)
+        let context = ModelContext(store.container)
+        let record = LocalLibrarySchemaV17Models.PodcastFeedRecord(broken)
+        record.canonicalURL = "https://example.test/wrong-identity.xml"
+        context.insert(record)
+        try context.save()
+        try await store.save(subscription: PodcastSubscription(feedID: broken.itemID, subscribedAt: podcast.createdAt))
+
+        model.runAutomation(trigger: .launch)
+        await model.waitForAutomation()
+        XCTAssertEqual(model.automationStatus, .finished(refreshed: 1, downloaded: 0, failed: 0))
+        let updated = try await store.podcastFeed(for: podcast.itemID)
+        XCTAssertEqual(updated?.title, "Updated title")
+    }
+
+    func testWakeEvaluatesTheOpenWindowPolicyUntilTheTickerStops() async throws {
+        let (model, _, _) = try await followedFeedFixture()
+        model.stopAutomationTicker()
+        let center = NotificationCenter()
+        model.startAutomationTicker(notificationCenter: center)
+        let registration = try XCTUnwrap(model.automationWakeObserver?.token)
+        model.startAutomationTicker(notificationCenter: center)
+        XCTAssertTrue(model.automationWakeObserver?.token === registration)
+        center.post(name: NSWorkspace.didWakeNotification, object: nil)
+        await model.waitForAutomation()
+        XCTAssertEqual(model.automationStatus, .finished(refreshed: 1, downloaded: 0, failed: 0))
+
+        model.stopAutomationTicker()
+        model.automationTask = nil
+        center.post(name: NSWorkspace.didWakeNotification, object: nil)
+        XCTAssertNil(model.automationTask)
+    }
+
     func testDeferredAutomaticPreparationPersistsItsAdmissionOrderWindowAndSnapshot() throws {
         let preferences = try automationSettingsPreferences()
         let window = try offPeakWindow()

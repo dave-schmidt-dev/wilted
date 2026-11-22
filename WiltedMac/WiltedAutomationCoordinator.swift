@@ -113,12 +113,13 @@ actor WiltedAutomationCoordinator {
     static let maximumRetries = 3
     static let baseRetryDelay: TimeInterval = 2
 
-    private let automationLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "Automation")
+    private static let automationLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "Automation")
     private let operations: Operations
     private let now: @Sendable () -> Date
     private let settings: @Sendable () async -> WiltedAutomationSettings
     private let lastRefreshSuccess: @Sendable () async -> Date?
     private let recordRefreshSuccess: @Sendable (Date) async -> Void
+    private let refreshFailure: @Sendable (Error) async -> Void
     private let report: @Sendable (WiltedAutomationStatus) async -> Void
     private let refreshActivity: RefreshActivity
     private let sleep: @Sendable (TimeInterval) async throws -> Void
@@ -134,6 +135,7 @@ actor WiltedAutomationCoordinator {
         lastRefreshSuccess: @escaping @Sendable () async -> Date?,
         recordRefreshSuccess: @escaping @Sendable (Date) async -> Void,
         report: @escaping @Sendable (WiltedAutomationStatus) async -> Void,
+        refreshFailure: @escaping @Sendable (Error) async -> Void = { _ in },
         refreshActivity: RefreshActivity = .untracked,
         now: @escaping @Sendable () -> Date = Date.init,
         sleep: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
@@ -144,6 +146,7 @@ actor WiltedAutomationCoordinator {
         self.settings = settings
         self.lastRefreshSuccess = lastRefreshSuccess
         self.recordRefreshSuccess = recordRefreshSuccess
+        self.refreshFailure = refreshFailure
         self.report = report
         self.refreshActivity = refreshActivity
         self.now = now
@@ -338,13 +341,15 @@ actor WiltedAutomationCoordinator {
             await report(.cancelled)
             return .stopped
         } catch {
+            await refreshFailure(error)
             lastRefreshFailed = true
-            automationLog.error(
+            Self.automationLog.error(
                 "Enabled feed list failed: \(Self.loggableFailure(error), privacy: .public)")
             await report(.failed(Self.failureLabel))
             return .stopped
         }
 
+        var firstFailure: Error?
         var remaining = plan.refreshDownloadBudget
         var claimed: [String] = []
         var refreshed = 0
@@ -368,13 +373,15 @@ actor WiltedAutomationCoordinator {
                 // One unreachable feed is not a reason to abandon the others.
                 // The refresh timestamp below still moves only if something
                 // succeeded, so a total outage stays eligible next time.
+                firstFailure = firstFailure ?? error
                 failed += 1
-                automationLog.error(
-                    "Feed refresh failed for \(feed.host ?? "unknown", privacy: .public): \(Self.loggableFailure(error), privacy: .public)")
+                Self.automationLog.error(
+                    "Feed refresh failed: \(Self.loggableFailure(error), privacy: .private)")
                 continue
             }
         }
         if refreshed > 0 { await recordRefreshSuccess(now()) }
+        if let firstFailure { await refreshFailure(firstFailure) }
         return .refreshed(refreshed, claimed: claimed, failed: failed)
     }
 
@@ -399,12 +406,16 @@ actor WiltedAutomationCoordinator {
                 // The claim stays. A later launch reconciles it rather than
                 // this pass blocking on one episode.
                 failed += 1
-                automationLog.error(
+                Self.automationLog.error(
                     "Download failed to start for \(episodeID, privacy: .public): \(Self.loggableFailure(error), privacy: .public)")
                 continue
             }
         }
         return (completed, failed)
+    }
+
+    static func logSkippedFeed(_ error: Error) {
+        automationLog.error("Skipping unreadable feed: \(loggableFailure(error), privacy: .private)")
     }
 
     /// The error text a log line may carry. A description that spells out a URL
