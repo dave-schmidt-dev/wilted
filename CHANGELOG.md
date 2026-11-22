@@ -4,6 +4,9 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- A rule Skip and the player can no longer race: the Skip takes a short hold on the episode's audio, a load that is already starting blocks the Skip, and an episode on hold cannot start loading. A link made after the Mac last read the library no longer hides a playing twin from the check.
+
 ## [0.7.3] - 2026-11-22
 
 ### Changed

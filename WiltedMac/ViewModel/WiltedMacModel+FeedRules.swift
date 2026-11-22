@@ -168,8 +168,7 @@ extension WiltedMacModel {
                     // skips only by rule; false means it was removed or decided
                     // by the listener since the read above, so it is left alone.
                     guard let ruleID = admission.ruleID,
-                          try await store.retireEpisodeBySkipRule(
-                              id, ruleID: ruleID, at: decidedAt, protecting: livePlaybackEpisodeIDs()) else {
+                          try await retireUnderMediaLease(id, ruleID: ruleID, at: decidedAt, store: store) else {
                         prior.removeValue(forKey: id)
                         continue
                     }
@@ -241,6 +240,23 @@ extension WiltedMacModel {
         if currentPodcastEpisodeID == id.rawValue { return true }
         guard let queue = try? await store.podcastQueueState() else { return true }
         return queue.currentEpisodeID == id
+    }
+
+    /// Retires an episode by a rule Skip, which deletes its audio, while the audio is leased from the
+    /// player: nothing can start loading it between the playing check and the store's removal, and a
+    /// load already under way (which the playing check cannot see) refuses the Skip. False when the
+    /// Skip did not happen, whatever the reason.
+    func retireUnderMediaLease(_ id: ItemID, ruleID: UUID, at decidedAt: Timestamp, store: LocalLibraryStore) async throws -> Bool {
+        let player = playback
+        let members = Set(logicalMemberIDs(id.rawValue).compactMap { try? ItemID(rawValue: $0) }).union([id])
+        let protected = livePlaybackEpisodeIDs()
+        var lease: MediaDeletionLease?
+        if let player {
+            guard let granted = player.leaseMediaForDeletion(members) else { return false }
+            lease = granted
+        }
+        defer { if let lease { player?.release(lease) } }
+        return try await store.retireEpisodeBySkipRule(id, ruleID: ruleID, at: decidedAt, protecting: protected)
     }
 
     /// The episodes the player has loaded or the model names as playing, with their linked members.

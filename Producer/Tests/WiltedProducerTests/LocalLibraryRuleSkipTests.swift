@@ -135,6 +135,29 @@ final class LocalLibraryRuleSkipTests: XCTestCase {
         XCTAssertTrue(skipped)
     }
 
+    /// The caller's playing set names a sibling that was linked to the episode after the caller's
+    /// library snapshot: the store finds the link in its own rows, so the episode is left alone.
+    func testRuleSkipLeavesTheEpisodeWhenAMemberLinkedToItIsPlaying() async throws {
+        let fixture = try await makeFixture()
+        let feedURL = URL(string: "https://podcasts.example.test/rule-skip.xml")!
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let twinEnclosure = URL(string: "https://cdn.example.test/fight-companion-twin.mp3")!
+        let twinID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "fight-twin", enclosureURL: twinEnclosure)
+        let now = Timestamp(Date())
+        try await fixture.store.savePodcastEpisodes([try PodcastEpisode(
+            itemID: twinID, feedID: feedID, feedURL: feedURL, rssGUID: "fight-twin",
+            title: "Fight Companion - October 11, 2026 (repeat)", publishedTime: now,
+            enclosureURL: twinEnclosure, enclosureMediaType: "audio/mpeg", createdAt: now
+        )], admission: .backfill)
+        let preview = try await fixture.store.previewEpisodeAssociation(
+            confirming: PodcastEpisodePairConfirmation(
+                confirmationID: UUID(), feedID: feedID, first: fixture.episodeID, second: twinID, confirmedAt: now),
+            representativeID: fixture.episodeID)
+        _ = try await fixture.store.applyEpisodeAssociation(preview, at: now)
+
+        try await assertLeftAlone(fixture, protecting: [twinID])
+    }
+
     private func insertPlayback(_ fixture: Fixture, positionSeconds: Double, completed: Bool) throws {
         let context = ModelContext(fixture.store.container)
         context.insert(LocalLibrarySchemaV21Models.PlaybackRecord(try PlaybackState(

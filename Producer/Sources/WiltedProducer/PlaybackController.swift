@@ -223,6 +223,10 @@ public final class PlaybackController {
     /// Measured lifetime totals (played and manually skipped time) for the
     /// loaded attempt, plus amounts still waiting to be admitted to the store.
     @ObservationIgnored var lifetimeMeter = PlaybackLifetimeMeter()
+    /// Episodes whose audio is being opened right now, counted from the first line of a load to its last.
+    @ObservationIgnored var loadsInFlight: [ItemID: Int] = [:]
+    /// Episodes whose audio a deletion is about to remove, by lease. See `leaseMediaForDeletion`.
+    @ObservationIgnored var mediaLeases: [UUID: Set<ItemID>] = [:]
     /// Monotonic seconds used to measure active listening. System uptime
     /// stops while the Mac sleeps, so sleep is never counted as listening.
     /// Tests replace it with a fake clock.
@@ -257,6 +261,13 @@ public final class PlaybackController {
     func loadRevision(
         _ revision: AudioRevision, mediaURL: URL, expectedGeneration: UInt64? = nil, isPodcast: Bool = false
     ) async throws -> UInt64 {
+        // Checked and recorded before the first suspension, so a deletion either sees this load or
+        // is seen by it, never neither (see `leaseMediaForDeletion`).
+        guard !isLeasedForDeletion(revision.itemID) else {
+            throw PlaybackControllerError.podcastMediaUnavailable(revision.itemID)
+        }
+        loadsInFlight[revision.itemID, default: 0] += 1
+        defer { endLoadInFlight(revision.itemID) }
         endOutputLossWatch()
         // Admit the outgoing attempt's measured time before it is replaced, so
         // switching items never leaves more than the crash-tail bound unsaved.

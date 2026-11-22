@@ -250,8 +250,7 @@ extension WiltedMacModel {
                 // left undecided. The store also refuses any episode with a
                 // manual decision.
                 guard let ruleID = admission.ruleID, newlySaved.contains(admission.episodeID),
-                      try await store.retireEpisodeBySkipRule(
-                          id, ruleID: ruleID, at: Timestamp(Date()), protecting: livePlaybackEpisodeIDs()) else { continue }
+                      try await retireUnderMediaLease(id, ruleID: ruleID, at: Timestamp(Date()), store: store) else { continue }
                 // Withdrawing writes a cancelled ticket even when none existed,
                 // so only an episode actually waiting in the line is withdrawn.
                 if preparationRequestSequences[admission.episodeID] != nil {
