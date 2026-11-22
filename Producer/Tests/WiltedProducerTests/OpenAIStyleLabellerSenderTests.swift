@@ -78,6 +78,34 @@ struct OpenAIStyleLabellerSenderTests {
         #expect(!bodyString.contains(Self.key), "key leaked into body")
     }
 
+    @Test func providerCheckCapsOutputOmitsReasoningAndAcceptsLengthFinish() async throws {
+        for target in OpenAIStyleLabellerSender.Target.allCases {
+            OpenAIStyleStubProtocol.reset([
+                .respond(status: 200, headers: ["Content-Type": "text/event-stream"]),
+                .send(sseChunk(finishReason: "length")),
+                .send(Data("data: [DONE]\n\n".utf8)),
+            ])
+            let model = target == .openAI ? "gpt-4o-mini" : "openai/gpt-4o-mini"
+            let response = try await makeClient(target: target).send(
+                LabellerRequest(
+                    prompt: "Reply OK.", modelID: model, reasoningLevel: "low", purpose: .providerCheck
+                ),
+                onRequestStarted: {},
+                onProgress: { _ in }
+            )
+
+            #expect(response.text.isEmpty)
+            let captured = try #require(OpenAIStyleStubProtocol.requests.first)
+            let body = try #require(try JSONSerialization.jsonObject(with: captured.body) as? [String: Any])
+            #expect(body["max_completion_tokens"] as? Int == (target == .openAI ? 1 : nil))
+            #expect(body["max_tokens"] as? Int == (target == .openRouter ? 1 : nil))
+            #expect(body["reasoning_effort"] == nil)
+            #expect(body["reasoning"] == nil)
+            let message = try #require((body["messages"] as? [[String: Any]])?.first)
+            #expect(message["content"] as? String == "Reply OK.")
+        }
+    }
+
     @Test func streamsMultiChunkAnswerWithUsageAndProgress() async throws {
         let chunk1 = sseChunk(content: #"{"breaks":["#)
         let chunk2 = sseChunk(content: "]}")

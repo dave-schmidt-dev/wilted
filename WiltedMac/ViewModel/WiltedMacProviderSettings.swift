@@ -14,10 +14,20 @@ extension AdLabellerModelCatalog.ModelInfo: @retroactive Identifiable, @retroact
     }
 }
 
+struct WiltedMacFixtureProviderCheckSender: LabellerSending {
+    func send(
+        _ request: LabellerRequest,
+        onRequestStarted: @escaping @Sendable () -> Void,
+        onProgress: @escaping @Sendable (LabellerProgress) -> Void
+    ) async throws -> LabellerResponse {
+        LabellerResponse(text: "OK", usage: LabellerUsage())
+    }
+}
+
 // MARK: - ViewModel
 
 /// The Provider settings card's model: provider choices, per-provider model and
-/// thinking level, command-line tool readiness check, and saved keys.
+/// thinking level, provider readiness checks, and saved keys.
 @MainActor @Observable
 public final class WiltedMacProviderSettings {
 
@@ -61,6 +71,7 @@ public final class WiltedMacProviderSettings {
     private let preferences: UserDefaults
     private let keyStore: ActiveProviderKeyStore
     private let checkProvider: @Sendable (AdLabellerProvider) async -> LabellerCommandLineStatus
+    private let makeKeySender: @Sendable (AdLabellerProvider, any LabellerKeyStoring) throws -> any LabellerSending
 
     /// Draft text for typed model id.
     public var typedModel: String = ""
@@ -74,17 +85,43 @@ public final class WiltedMacProviderSettings {
 
     private var runningChecks: Set<AdLabellerProvider> = []
     private var commandLineStatuses: [AdLabellerProvider: LabellerCommandLineStatus] = [:]
+    private var keyProviderStatuses: [AdLabellerProvider: KeyProviderStatus] = [:]
+    private var keyStatusGenerations: [AdLabellerProvider: Int] = [:]
+
+    private enum KeyProviderStatus {
+        case noKeySet
+        case ready
+        case rejected
+        case unreachable
+
+        var text: String {
+            switch self {
+            case .noKeySet: "No key set"
+            case .ready: "Ready"
+            case .rejected: "Key rejected"
+            case .unreachable: "Can't reach it"
+            }
+        }
+    }
 
     public init(
         preferences: UserDefaults,
         keyStore: ActiveProviderKeyStore,
         check: @escaping @Sendable (AdLabellerProvider) async -> LabellerCommandLineStatus = {
             await LabellerCommandLineCheck.check(provider: $0)
-        }
+        },
+        makeKeySender: (@Sendable (AdLabellerProvider, any LabellerKeyStoring) throws -> any LabellerSending)? = nil
     ) {
         self.preferences = preferences
         self.keyStore = keyStore
         self.checkProvider = check
+        self.makeKeySender = makeKeySender ?? { provider, keySlot in
+            try LabellerSenderFactory.make(
+                provider: provider,
+                keyStore: keySlot,
+                timeLimit: .seconds(15)
+            )
+        }
         let labeller = AdLabellerPreferences(preferences: preferences)
         self.typedModel = labeller.modelID(for: labeller.provider)
     }
@@ -199,7 +236,21 @@ public final class WiltedMacProviderSettings {
 
         let statusText: String
         if targetProvider.requiresSavedKey {
-            statusText = hasSaved ? "Ready" : "No key saved"
+            if !hasSaved {
+                if case .noKeySet? = keyProviderStatuses[targetProvider] {
+                    statusText = "No key set"
+                } else {
+                    statusText = "No key saved"
+                }
+            } else if runningChecks.contains(targetProvider) {
+                statusText = "Checking..."
+            } else {
+                if case .noKeySet? = keyProviderStatuses[targetProvider] {
+                    statusText = "Ready"
+                } else {
+                    statusText = keyProviderStatuses[targetProvider]?.text ?? "Ready"
+                }
+            }
         } else {
             if runningChecks.contains(targetProvider) {
                 statusText = "Checking..."
@@ -240,6 +291,8 @@ public final class WiltedMacProviderSettings {
         do {
             try keyStore.slot(for: provider).save(trimmed)
             keyMessage = nil
+            keyProviderStatuses.removeValue(forKey: provider)
+            keyStatusGenerations[provider, default: 0] += 1
             revision += 1
         } catch {
             keyMessage = "The key could not be saved."
@@ -248,31 +301,94 @@ public final class WiltedMacProviderSettings {
 
     public func removeKey(for provider: AdLabellerProvider) {
         try? keyStore.slot(for: provider).remove()
+        keyProviderStatuses.removeValue(forKey: provider)
+        keyStatusGenerations[provider, default: 0] += 1
         revision += 1
     }
 
     public func check(_ provider: AdLabellerProvider) async {
-        guard !provider.requiresSavedKey else { return }
         guard !runningChecks.contains(provider) else { return }
+
+        if provider.requiresSavedKey {
+            guard keyStore.savedKeyPresent(for: provider) else {
+                keyProviderStatuses[provider] = .noKeySet
+                revision += 1
+                return
+            }
+            let keyGeneration = keyStatusGenerations[provider, default: 0]
+            runningChecks.insert(provider)
+            revision += 1
+            defer {
+                runningChecks.remove(provider)
+                revision += 1
+            }
+            let status: KeyProviderStatus
+            do {
+                let sender = try makeKeySender(provider, keyStore.slot(for: provider))
+                _ = try await sender.send(
+                    keyCheckRequest(for: provider),
+                    onRequestStarted: {},
+                    onProgress: { _ in }
+                )
+                status = .ready
+            } catch let failure as LabellerFailure {
+                status = failure == .keyRejected ? .rejected : .unreachable
+            } catch {
+                status = .unreachable
+            }
+            if keyGeneration == keyStatusGenerations[provider, default: 0],
+               keyStore.savedKeyPresent(for: provider) {
+                keyProviderStatuses[provider] = status
+            }
+            return
+        }
+
         runningChecks.insert(provider)
+        revision += 1
         defer { runningChecks.remove(provider) }
 
         let result = await checkProvider(provider)
         commandLineStatuses[provider] = result
+        revision += 1
     }
 
-    /// Checks every command-line tool at once, so one press refreshes all their statuses.
+    /// Checks each provider at once, so one press refreshes all seven statuses.
     public func checkAll() async {
-        let tools = AdLabellerProvider.allCases.filter { !$0.requiresSavedKey }
         await withTaskGroup(of: Void.self) { group in
-            for tool in tools {
-                group.addTask { await self.check(tool) }
+            for provider in Self.rowOrder {
+                group.addTask { await self.check(provider) }
             }
         }
     }
 
-    /// Whether any command-line check is still running.
+    /// Whether any provider check is still running.
     public var isCheckingAny: Bool { !runningChecks.isEmpty }
+
+    private func keyCheckRequest(for provider: AdLabellerProvider) -> LabellerRequest {
+        let configuredModel = labeller.modelID(for: provider)
+        let model = configuredModel.isEmpty ? Self.keyCheckFallbackModel(for: provider) : configuredModel
+        return LabellerRequest(
+            prompt: "Reply OK.",
+            modelID: model,
+            reasoningLevel: "low",
+            purpose: .providerCheck
+        )
+    }
+
+    private static func keyCheckFallbackModel(for provider: AdLabellerProvider) -> String {
+        switch provider {
+        case .opencodeGoKey:
+            return AdLabellerPreferences.defaultModelID
+        case .openRouterKey:
+            return "openai/gpt-4o-mini"
+        case .openAIKey:
+            return "gpt-4o-mini"
+        case .anthropicKey:
+            return AdLabellerModelCatalog.modelsByProvider[provider]?.first?.id ?? "claude-sonnet-5-5"
+        case .openCodeCLI, .claudeCodeCLI, .codexCLI:
+            return AdLabellerPreferences.defaultModelID
+        }
+    }
 
     // MARK: - Readiness Line
 

@@ -170,9 +170,9 @@ public struct AnthropicMessagesLabellerSender: LabellerSending, Sendable {
     static func makeRequestBody(_ request: LabellerRequest) throws -> Data {
         let body = RequestBody(
             model: request.modelID,
-            max_tokens: maxTokens,
+            max_tokens: request.purpose == .providerCheck ? 1 : maxTokens,
             messages: [RequestBody.Message(role: "user", content: request.prompt)],
-            output_config: outputConfig(for: request.reasoningLevel),
+            output_config: request.purpose == .providerCheck ? nil : outputConfig(for: request.reasoningLevel),
             stream: true
         )
         return try JSONEncoder().encode(body)
@@ -317,19 +317,14 @@ public struct AnthropicMessagesLabellerSender: LabellerSending, Sendable {
                 throw LabellerFailure.unusableAnswer
             }
             let joinedText = whole.content?.filter { $0.type == "text" }.compactMap { $0.text }.joined() ?? ""
-            if joinedText.isEmpty { throw LabellerFailure.unusableAnswer }
-            if let reason = whole.stop_reason, reason != "end_turn", reason != "stop_sequence" {
-                throw LabellerFailure.unusableAnswer
-            }
+            try request.validateReply(joinedText, reason: whole.stop_reason,
+                                      complete: ["end_turn", "stop_sequence"], tokenLimit: "max_tokens")
             let usage = LabellerUsage(promptTokens: whole.usage?.input_tokens, completionTokens: whole.usage?.output_tokens)
             return LabellerResponse(text: joinedText, usage: usage)
         }
         if let remainder = assembler.flush() { consume(remainder) }
         if !sawDone { throw LabellerFailure.temporary }
-        if text.isEmpty { throw LabellerFailure.unusableAnswer }
-        if let stopReason, stopReason != "end_turn", stopReason != "stop_sequence" {
-            throw LabellerFailure.unusableAnswer
-        }
+        try request.validateReply(text, reason: stopReason, complete: ["end_turn", "stop_sequence"], tokenLimit: "max_tokens")
         let usage = LabellerUsage(promptTokens: promptTokens, completionTokens: completionTokens)
         return LabellerResponse(text: text, usage: usage)
     }

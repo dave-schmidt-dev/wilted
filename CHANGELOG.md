@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-22
+
+Every build installed since 0.6.0 was labelled 0.7.0, and no 0.7.0 section was ever written, so this section holds everything since 0.6.0. From this release on, each push and install raises the version.
+
 ### Removed
 - Online ad finding now accepts confirmed shows regardless of their feed or audio address, publisher title or custom name.
 - The local ad finder (on-device classifier, its recovery rules, corpus replay, placement profiles, the "Find ads on this Mac only" setting, the shadow recorder and "Label now" backfill): ads are cut only on a validated reply from the online labeller.
@@ -13,6 +17,7 @@ All notable changes to this project are documented in this file.
 - Retired the standalone manual ad-gold review page and its commands; ad-reference labeling now uses independent model review and adjudication without requiring owner confirmation.
 
 ### Changed
+- Mac Settings remembers the last of four tabs. Providers now shows one compact row per provider. Check tests one provider, and Check all tests all seven. Checking a saved key sends a short test message.
 - The native gate can record a private, per-leg shell trace with source locations for diagnosing hangs.
 - Online ad finding remembers the model ID and thinking level separately for each provider in user defaults, restoring a provider's choices when switched back.
 - Online ad finding uses the chosen provider and key slot at every request, so setting changes take effect immediately without relaunching the app.

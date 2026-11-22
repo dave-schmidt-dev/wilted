@@ -2,17 +2,38 @@ import Foundation
 
 /// One labelling request, with the whole-episode prompt and selected model settings.
 public struct LabellerRequest: Sendable {
+    public enum Purpose: Equatable, Sendable {
+        case episodeLabelling
+        case providerCheck
+    }
+
     /// The whole-episode prompt built by ``EpisodeLabeller``.
     public var prompt: String
     /// The provider model identifier.
     public var modelID: String
     /// The reasoning effort level, sent as `reasoning_effort`.
     public var reasoningLevel: String
+    /// The operation this request serves. Provider checks use a one-token cap and omit reasoning options.
+    public var purpose: Purpose
 
-    public init(prompt: String, modelID: String, reasoningLevel: String) {
+    public init(
+        prompt: String,
+        modelID: String,
+        reasoningLevel: String,
+        purpose: Purpose = .episodeLabelling
+    ) {
         self.prompt = prompt
         self.modelID = modelID
         self.reasoningLevel = reasoningLevel
+        self.purpose = purpose
+    }
+
+    /// A one-token check can exhaust its budget before emitting visible text.
+    func validateReply(_ text: String, reason: String?, complete: [String], tokenLimit: String) throws {
+        if purpose == .providerCheck, reason == tokenLimit { return }
+        guard !text.isEmpty, reason.map(complete.contains) ?? true else {
+            throw LabellerFailure.unusableAnswer
+        }
     }
 }
 
@@ -215,9 +236,10 @@ public struct LabellerClient: Sendable {
         try JSONEncoder().encode(RequestBody(
             model: request.modelID,
             messages: [RequestBody.Message(role: "user", content: request.prompt)],
-            reasoning_effort: request.reasoningLevel,
+            reasoning_effort: request.purpose == .providerCheck ? nil : request.reasoningLevel,
             stream: true,
-            stream_options: RequestBody.StreamOptions(include_usage: true)))
+            stream_options: RequestBody.StreamOptions(include_usage: true),
+            max_tokens: request.purpose == .providerCheck ? 1 : nil))
     }
 
     static func timeoutInterval(for limit: Duration) -> TimeInterval {
@@ -338,16 +360,13 @@ public struct LabellerClient: Sendable {
                 throw LabellerFailure.unusableAnswer
             }
             let content = whole.choices?.first?.message?.content ?? ""
-            if content.isEmpty { throw LabellerFailure.unusableAnswer }
-            if let reason = whole.choices?.first?.finish_reason, reason != "stop" {
-                throw LabellerFailure.unusableAnswer
-            }
+            try request.validateReply(content, reason: whole.choices?.first?.finish_reason,
+                                      complete: ["stop"], tokenLimit: "length")
             return LabellerResponse(text: content, usage: whole.usage.map { makeUsage(from: $0) } ?? LabellerUsage())
         }
         if let remainder = assembler.flush() { consume(remainder) }
         if !sawDone { throw LabellerFailure.temporary }
-        if text.isEmpty { throw LabellerFailure.unusableAnswer }
-        if let finishReason, finishReason != "stop" { throw LabellerFailure.unusableAnswer }
+        try request.validateReply(text, reason: finishReason, complete: ["stop"], tokenLimit: "length")
         return LabellerResponse(text: text, usage: reportedUsage ?? LabellerUsage())
     }
 
@@ -366,9 +385,10 @@ public struct LabellerClient: Sendable {
     private struct RequestBody: Encodable {
         var model: String
         var messages: [Message]
-        var reasoning_effort: String
+        var reasoning_effort: String?
         var stream: Bool
         var stream_options: StreamOptions
+        var max_tokens: Int?
 
         struct Message: Encodable {
             var role: String

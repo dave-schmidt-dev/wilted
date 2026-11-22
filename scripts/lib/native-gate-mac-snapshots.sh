@@ -4,7 +4,7 @@ validate_pixel_snapshot_baselines() {
   local expected_count expected_state_ids actual_state_ids state_id state_count
   local expected_variants actual_variants variant_count shell_name bad_pngs
   local expected_selectors actual_selectors duplicate_selectors empty_pngs
-  local window_baselines window_name png_path png_name
+  local window_baselines window_name window_baseline_count png_path png_name
   local snapshot_test_source snapshot_render_source method
 
   require_tool file
@@ -33,6 +33,11 @@ validate_pixel_snapshot_baselines() {
     testMacToolbarPixelBaselines; do
     grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" "$snapshot_test_source" ||
       fail "Mac pixel snapshot test method is missing: $method"
+  done
+  for method in testSettingsTabScrollTargetsRenderTheirSections; do
+    grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" \
+      "$root/WiltedMacTests/WiltedPixelSnapshotTests+Reports.swift" ||
+      fail "Mac settings scroll pixel test method is missing: $method"
   done
   for method in testShowSettingsPagePixelBaselines testArticleShowSettingsPixelBaselines; do
     grep -Eq "^[[:space:]]*func[[:space:]]+$method\\(" \
@@ -78,7 +83,7 @@ validate_pixel_snapshot_baselines() {
     "$repo_root/WiltedMacTests/WiltedMacPlaybackJourneyTests.swift" ||
     fail 'Mac persistent compact-player journey selector is missing'
 
-  expected_count=229
+  expected_count=230
   [[ "$(find "$snapshot_dir" -type f -name '*.png' | wc -l | tr -d ' ')" -eq "$expected_count" ]] ||
     fail "Mac pixel baseline count is not $expected_count"
   empty_pngs="$(find "$snapshot_dir" -type f -name '*.png' -size 0c -print)"
@@ -117,9 +122,18 @@ validate_pixel_snapshot_baselines() {
     done <<<"$expected_variants"
   done <<<"$expected_state_ids"
   expected_selectors+=$'mac-shell-library-light\nmac-shell-library-dark\nmac-shell-player-light\nmac-shell-player-dark\nmac-shell-navigation-selection-light\nmac-shell-navigation-selection-dark\nmac-shell-producer-library-light\nmac-shell-producer-library-dark\nmac-shell-producer-url-focus-light\nmac-shell-producer-url-focus-dark\nmac-shell-sidebar-full-light\nmac-shell-sidebar-full-dark\nmac-shell-sidebar-rail-light\nmac-shell-sidebar-rail-dark\nmac-shell-sidebar-counts-light\nmac-shell-sidebar-counts-dark\nmac-shell-toolbar-light\nmac-shell-toolbar-dark\nmac-shell-add-sheet-link-light\nmac-shell-add-sheet-link-dark\nmac-shell-add-sheet-results-light\nmac-shell-add-sheet-results-dark\nmac-shell-add-sheet-followed-light\nmac-shell-add-sheet-followed-dark\nmac-shell-add-sheet-error-light\nmac-shell-add-sheet-error-dark\nmac-shell-add-sheet-import-progress-light\nmac-shell-add-sheet-import-progress-dark\nmac-shell-add-sheet-import-refusal-light\nmac-shell-add-sheet-import-refusal-dark\nmac-shell-show-settings-light\nmac-shell-show-settings-changed-light\nmac-shell-show-settings-article-light\nmac-shell-show-settings-article-dark\nmac-shell-feeds-article-row-light\nmac-shell-feeds-article-row-dark\nmac-shell-feeds-row-light\nmac-shell-feeds-row-dark\nmac-shell-larder-kind-filter-light\nmac-shell-larder-kind-filter-dark\nmac-shell-larder-real-size-minimum-light\nmac-shell-larder-real-size-minimum-dark\nmac-shell-larder-real-size-full-light\nmac-shell-larder-real-size-full-dark\nmac-shell-larder-book-row-light\nmac-shell-larder-book-row-dark\nmac-shell-player-chapters-light\nmac-shell-player-chapters-dark\nmac-shell-sidebar-playlists-light\nmac-shell-sidebar-playlists-dark\nmac-shell-playlist-manual-light\nmac-shell-playlist-manual-dark\nmac-shell-playlist-rules-light\nmac-shell-playlist-rules-dark\nmac-shell-settings-reports-light\nmac-shell-settings-reports-dark\nmac-shell-settings-reports-not-ready-light\nmac-shell-settings-reports-not-ready-dark\nmac-shell-settings-reports-ready-light\nmac-shell-settings-reports-ready-dark\nmac-shell-player-bulletin-banner-light\nmac-shell-player-bulletin-banner-dark\nmac-shell-larder-report-row-light\nmac-shell-larder-report-row-dark\nmac-shell-now-playing-pane-light\nmac-shell-now-playing-pane-dark\nmac-shell-section-devices-synthetic-rows-light\nmac-shell-direct-downloads-device-menu-light\nmac-shell-device-removal-confirmation-light'
-  local section
-  for section in general new-episodes preparing ads providers reports devices about; do
-    expected_selectors+="\nmac-shell-section-$section-light"
+  local settings_snapshot
+  for settings_snapshot in \
+    settings-tab-listening-top \
+    settings-tab-listening-scrolled \
+    settings-tab-feeds-reports-top \
+    settings-tab-feeds-reports-scrolled \
+    settings-tab-ads-providers-top \
+    settings-tab-ads-providers-scrolled \
+    settings-tab-library-sync-top \
+    settings-tab-library-sync-scrolled \
+    settings-providers; do
+    expected_selectors+="\nmac-shell-$settings_snapshot-light"
   done
   expected_selectors="$(printf '%b' "$expected_selectors" | sort)"
   actual_selectors="$(find "$snapshot_dir" -type f -name '*.png' -exec basename {} \; |
@@ -197,6 +211,7 @@ validate_pixel_snapshot_baselines() {
     testNowPlayingPanePixelBaselines.mac-shell-now-playing-pane-light.png \
     testNowPlayingPanePixelBaselines.mac-shell-now-playing-pane-dark.png \
     testDevicesSettingsWithSyntheticDeviceRowsPixels.mac-shell-section-devices-synthetic-rows-light.png \
+    testProvidersSettingsPixels.mac-shell-settings-providers-light.png \
     testDirectDownloadsDeviceMenuPixels.mac-shell-direct-downloads-device-menu-light.png \
     testDeviceRemovalConfirmationPixels.mac-shell-device-removal-confirmation-light.png; do
     [[ -s "$snapshot_dir/$shell_name" ]] || fail "missing Mac shell baseline: $shell_name"
@@ -211,19 +226,22 @@ validate_pixel_snapshot_baselines() {
   window_baselines+=$'\ntestArticleShowSettingsPixelBaselines.mac-shell-show-settings-article-light.png'
   window_baselines+=$'\ntestArticleShowSettingsPixelBaselines.mac-shell-show-settings-article-dark.png'
   for window_name in \
-    testGeneralSettingsPixels.mac-shell-section-general-light.png \
-    testNewEpisodesSettingsPixels.mac-shell-section-new-episodes-light.png \
-    testPreparingSettingsPixels.mac-shell-section-preparing-light.png \
-    testAdsSettingsPixels.mac-shell-section-ads-light.png \
-    testProvidersSettingsPixels.mac-shell-section-providers-light.png \
-    testReportsSettingsPixels.mac-shell-section-reports-light.png \
-    testDevicesSettingsPixels.mac-shell-section-devices-light.png \
-    testAboutSettingsPixels.mac-shell-section-about-light.png; do
+    testGeneralSettingsPixels.mac-shell-settings-tab-listening-top-light.png \
+    testPreparingSettingsPixels.mac-shell-settings-tab-listening-scrolled-light.png \
+    testNewEpisodesSettingsPixels.mac-shell-settings-tab-feeds-reports-top-light.png \
+    testReportsSettingsPixels.mac-shell-settings-tab-feeds-reports-scrolled-light.png \
+    testAdsSettingsPixels.mac-shell-settings-tab-ads-providers-top-light.png \
+    testAdsProvidersScrolledSettingsPixels.mac-shell-settings-tab-ads-providers-scrolled-light.png \
+    testDevicesSettingsPixels.mac-shell-settings-tab-library-sync-top-light.png \
+    testAboutSettingsPixels.mac-shell-settings-tab-library-sync-scrolled-light.png; do
     method="${window_name%%.*}"
     grep -Fq "func $method()" "$root/WiltedMacTests/WiltedPixelSnapshotTests+Reports.swift" ||
       fail "missing Mac Settings snapshot method: $method"
     window_baselines+=$'\n'"$window_name"
   done
+  window_baseline_count="$(printf '%s\n' "$window_baselines" | awk 'NF { count++ } END { print count + 0 }')"
+  [[ "$window_baseline_count" -eq 17 ]] ||
+    fail "Mac window-scale baseline count is not 17: $window_baseline_count"
   while IFS= read -r window_name; do
     [[ -n "$window_name" ]] || continue
     grep -Fq 'PNG image data, 1100 x 700' <<<"$(file "$snapshot_dir/$window_name")" ||
@@ -254,6 +272,7 @@ validate_pixel_snapshot_baselines() {
       testManualPlaylistPixelBaselines.mac-shell-playlist-manual-*.png) expected_size='760 x 420' ;;
       testPlaylistRuleEditorPixelBaselines.mac-shell-playlist-rules-*.png) expected_size='520 x 620' ;;
       testReportsSettingsPixelBaselines.mac-shell-settings-reports-*.png) expected_size='760 x 560' ;;
+      testProvidersSettingsPixels.mac-shell-settings-providers-*.png) expected_size='760 x 700' ;;
       testDirectDownloadsDeviceMenuPixels.mac-shell-direct-downloads-device-menu-*.png) expected_size='360 x 210' ;;
       testDeviceRemovalConfirmationPixels.mac-shell-device-removal-confirmation-*.png) expected_size='520 x 260' ;;
       testBulletinBannerPixelBaselines.mac-shell-player-bulletin-banner-*.png) expected_size='760 x 150' ;;
@@ -265,5 +284,5 @@ validate_pixel_snapshot_baselines() {
     }
   done < <(find "$snapshot_dir" -type f -name '*.png' -print)
   [[ "$bad_pngs" -eq 0 ]] || fail "pixel baselines contain invalid or zero-size images: $bad_pngs"
-  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=77 window_shells=16\n' "$expected_count"
+  printf 'native.snapshots.baselines count=%s states=19 variants=8 shells=78 window_shells=17\n' "$expected_count"
 }

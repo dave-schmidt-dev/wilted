@@ -44,8 +44,10 @@ class SettingsInventory(unittest.TestCase):
 
     def test_sections(self):
         settings = source("WiltedMacSettingsView")
-        self.assertIn("sectionContent", settings, "Settings must render the selected section")
-        layout = source("WiltedMacSettingsSections").split("var sectionContent:")[1]
+        self.assertIn("settingsTabContent", settings, "Settings must render the selected tab")
+        self.assertIn("ForEach(model.settingsTab.sections)", settings)
+        self.assertIn('"wilted-settings-section-\\(section.rawValue)"', settings)
+        layout = source("WiltedMacSettingsSections").split("func settingsSectionContent(for section:", 1)[1]
         # Expand the view declarations reached by each arm of the section switch.
         parts = dict(re.findall(r'case \.(\w+):\n(.*?)(?=\n        (?:case |\}))', layout, re.S))
         declarations = dict(re.findall(r'var (\w+): some View \{\n(.*?)(?=\n    \})', settings, re.S))
@@ -55,8 +57,8 @@ class SettingsInventory(unittest.TestCase):
                      "WiltedMacLifetimeStatisticsCard"):
             declarations[name] = source(name)
         providers_page = source("WiltedMacProvidersSettingsView")
-        declarations["WiltedMacProvidersSettingsView"] = providers_page.split("private struct WiltedMacProviderCard")[0]
-        declarations["WiltedMacProviderCard"] = providers_page.split("private struct WiltedMacProviderCard")[1]
+        declarations["WiltedMacProvidersSettingsView"] = providers_page.split("private struct WiltedMacProviderRow")[0]
+        declarations["WiltedMacProviderRow"] = providers_page.split("private struct WiltedMacProviderRow")[1]
         declarations["WiltedMacAdFindingModelSection"] = source("WiltedMacAdFindingModelSection")
         declarations["WiltedMacGlobalFeedDefaultsControls"] = source("WiltedMacGlobalFeedDefaultsControls").split("struct WiltedMacGlobalFeedDefaultsControls")[1]
         declarations["WiltedMacInheritedFeedDefaults"] = source("WiltedMacFeedsComponents").split("struct WiltedMacInheritedFeedDefaults")[1].split("\nstruct ")[0]
@@ -94,6 +96,30 @@ class SettingsInventory(unittest.TestCase):
         for section, expected in INVENTORY.items():
             with self.subTest(section=section):
                 self.assertCountEqual(expand(parts[section]), expected)
+
+    def test_settings_tabs_cover_each_section_once_in_order(self):
+        tabs = source("WiltedMacSettingsSections").split("enum WiltedMacSettingsTab:", 1)[1]
+        tabs = tabs.split("enum WiltedMacSettingsSection:", 1)[0]
+        sections = {
+            tab: [section.strip().removeprefix(".") for section in values.split(",")]
+            for tab, values in re.findall(r'case \.(\w+): \[([^\]]+)\]', tabs)
+        }
+        self.assertEqual(sections, {
+            "listening": ["general", "preparing"],
+            "feedsAndReports": ["newEpisodes", "reports"],
+            "adsAndProviders": ["ads", "providers"],
+            "libraryAndSync": ["devices", "about"],
+        })
+        flattened = [section for group in sections.values() for section in group]
+        self.assertCountEqual(flattened, [
+            "general", "newEpisodes", "preparing", "ads", "providers", "reports", "devices", "about",
+        ])
+        self.assertEqual(len(flattened), len(set(flattened)))
+
+        view = source("WiltedMacSettingsView")
+        self.assertIn('.accessibilityIdentifier("wilted-settings-tab-\\(tab.id)")', view)
+        self.assertIn('.accessibilityIdentifier("wilted-settings-section-\\(section.rawValue)")', view)
+        self.assertIn('.id(section.rawValue)', view)
 
 
 class ShowSettingsInventory(unittest.TestCase):
@@ -261,9 +287,8 @@ INVENTORY = {
         'wilted-providers-help',
         'wilted-providers-heading-keys',
         'wilted-providers-page',
-        # The page builds the provider card twice (command-line group, key group).
+        # The page builds each provider row twice (command-line group, key group).
         'wilted-providers-in-use-\\(row.provider.rawValue)',
-        'wilted-providers-kind-\\(row.provider.rawValue)',
         'wilted-providers-status-\\(row.provider.rawValue)',
         'wilted-providers-check-\\(row.provider.rawValue)',
         'wilted-providers-key-saved-\\(row.provider.rawValue)',
@@ -273,7 +298,6 @@ INVENTORY = {
         'wilted-providers-key-message-\\(row.provider.rawValue)',
         'wilted-providers-card-\\(row.provider.rawValue)',
         'wilted-providers-in-use-\\(row.provider.rawValue)',
-        'wilted-providers-kind-\\(row.provider.rawValue)',
         'wilted-providers-status-\\(row.provider.rawValue)',
         'wilted-providers-check-\\(row.provider.rawValue)',
         'wilted-providers-key-saved-\\(row.provider.rawValue)',

@@ -78,6 +78,13 @@ enum WiltedMacHeadless {
         text.components(separatedBy: needle).count - 1
     }
 
+    /// A scroll reader needs a window-backed layout pass before its target can be captured.
+    static func offscreenWindow(hosting view: NSView) -> NSWindow {
+        let window = NSWindow(contentRect: view.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.contentView = view
+        return window
+    }
+
     /// Renders `view` offscreen in light mode and returns its bitmap.
     static func render<V: View>(_ view: V, size: CGSize = windowCanvas, scale: Int = 1) throws -> NSBitmapImageRep {
         let hostingView = NSHostingView(
@@ -138,6 +145,12 @@ enum WiltedMacHeadless {
             .frame(width: size.width, height: size.height, alignment: .topLeading)
             .background(Color.white)
         let bitmap = try render(content, size: size, scale: scale)
+        return try recognizedLines(in: bitmap, readEnglish: readEnglish, readColumns: readColumns)
+    }
+
+    static func recognizedLines(
+        in bitmap: NSBitmapImageRep, readEnglish: Bool = false, readColumns: Bool = false
+    ) throws -> [(text: String, top: CGFloat)] {
         let cgImage = try XCTUnwrap(bitmap.cgImage)
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate

@@ -61,8 +61,18 @@ final class WiltedPixelSnapshotTests: XCTestCase {
                 WiltedSnapshotContract.shellName(kind: $0, appearance: appearance)
             }
         }
-        let sectionNames = WiltedMacSettingsSection.allCases.map {
-            WiltedSnapshotContract.shellName(kind: "section-" + $0.rawValue, appearance: .light)
+        let settingsNames = [
+            "settings-tab-listening-top",
+            "settings-tab-listening-scrolled",
+            "settings-tab-feeds-reports-top",
+            "settings-tab-feeds-reports-scrolled",
+            "settings-tab-ads-providers-top",
+            "settings-tab-ads-providers-scrolled",
+            "settings-tab-library-sync-top",
+            "settings-tab-library-sync-scrolled",
+            "settings-providers",
+        ].map {
+            WiltedSnapshotContract.shellName(kind: $0, appearance: .light)
         }
         let deviceNames = [
             "section-devices-synthetic-rows",
@@ -74,7 +84,7 @@ final class WiltedPixelSnapshotTests: XCTestCase {
         let showSettingsNames = ["show-settings", "show-settings-changed"].map {
             WiltedSnapshotContract.shellName(kind: $0, appearance: .light)
         }
-        let names = shellAndStateNames + sectionNames + deviceNames + showSettingsNames
+        let names = shellAndStateNames + settingsNames + deviceNames + showSettingsNames
         XCTAssertEqual(names.count, WiltedSnapshotContract.expectedPixelBaselineCount)
         XCTAssertEqual(Set(names).count, names.count)
         XCTAssertTrue(names.allSatisfy { $0.hasPrefix("state-") || $0.hasPrefix("mac-shell-") })

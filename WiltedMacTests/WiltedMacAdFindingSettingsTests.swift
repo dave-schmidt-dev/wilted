@@ -287,16 +287,32 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         XCTAssertFalse(adsText.contains("Provider key"), "Ads page must not have key field: \(adsText)")
         XCTAssertFalse(adsText.contains("Key saved"), "Ads page must not have Key saved: \(adsText)")
 
-        let providersText = try WiltedMacHeadless.recognizedText(
+        appModel.providers.setProvider(.openAIKey)
+        let fixtureKey = "invented-for-the-render"
+        appModel.providers.saveKey(fixtureKey, for: .openAIKey)
+        let lines = try WiltedMacHeadless.recognizedLines(
             WiltedMacProvidersSettingsView(model: appModel),
-            size: CGSize(width: 700, height: 1_200)
-        ).joined(separator: " ")
+            size: CGSize(width: 700, height: 700)
+        )
+        let providersText = lines.map(\.text).joined(separator: " ")
         XCTAssertTrue(providersText.contains("Command-line tools (use your subscription)"), providersText)
         XCTAssertTrue(providersText.contains("Keys"), providersText)
-        XCTAssertTrue(providersText.contains("OpenCode"), providersText)
-        XCTAssertTrue(providersText.contains("Claude Code"), providersText)
-        XCTAssertTrue(providersText.contains("Codex"), providersText)
-        XCTAssertTrue(providersText.contains("In use for ad finding"), providersText)
+        for provider in ["OpenCode", "Claude Code", "Codex", "OpenCode Go", "OpenRouter", "OpenAI", "Anthropic"] {
+            // The row draws "OpenAI", but in the system font a capital I and a lowercase l are the
+            // same glyph and Vision (no language correction) reads it as "OpenAl".
+            let spellings = provider == "OpenAI" ? ["OpenAI", "OpenAl"] : [provider]
+            let name = try XCTUnwrap(lines.first { line in spellings.contains { line.text.contains($0) } }, provider)
+            let row = lines.filter { abs($0.top - name.top) < 0.012 }.map(\.text).joined(separator: " ")
+            XCTAssertTrue(row.contains("Check"), row)
+            XCTAssertEqual(row.contains("In use"), provider == "OpenAI", row)
+        }
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "In use", in: providersText), 1, providersText)
+        XCTAssertTrue(providersText.contains("Key saved"), providersText)
+        XCTAssertTrue(providersText.contains("Remove"), providersText)
+        XCTAssertTrue(providersText.contains("Save"), providersText)
+        XCTAssertFalse(providersText.contains(fixtureKey))
+        XCTAssertFalse(providersText.contains("Kind"), providersText)
+        XCTAssertFalse(providersText.contains("Command-line tool "), providersText)
     }
 
     // MARK: Helpers

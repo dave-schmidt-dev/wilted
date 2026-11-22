@@ -375,9 +375,9 @@ assert_contains 'self_test_watchos_zero_test_evidence' "$gate"
 # The shipping phone lane keeps the original eight captures, adds the eight Add sheet captures, and verifies pixels, not hidden labels.
 assert_validation_contains 'iOS pixel snapshot method membership must remain exactly twenty-six'
 assert_validation_contains 'iOS pixel test does not verify painted date and Storage geometry'
-assert_validation_contains 'expected_count=229'
-assert_validation_contains 'shells=77'
-assert_validation_contains 'window_shells=16'
+assert_validation_contains 'expected_count=230'
+assert_validation_contains 'shells=78'
+assert_validation_contains 'window_shells=17'
 for snapshot in \
   testShowSettingsPagePixelBaselines.mac-shell-show-settings-light.png \
   testShowSettingsPagePixelBaselines.mac-shell-show-settings-changed-light.png \
@@ -395,10 +395,24 @@ assert_contains 'testDirectDownloadsDeviceMenuPixels.mac-shell-direct-downloads-
   "$repo_root/scripts/lib/native-gate-mac-snapshots.sh"
 assert_contains 'testDeviceRemovalConfirmationPixels.mac-shell-device-removal-confirmation-light.png' \
   "$repo_root/scripts/lib/native-gate-mac-snapshots.sh"
+for settings_snapshot in \
+  settings-tab-listening-top \
+  settings-tab-listening-scrolled \
+  settings-tab-feeds-reports-top \
+  settings-tab-feeds-reports-scrolled \
+  settings-tab-ads-providers-top \
+  settings-tab-ads-providers-scrolled \
+  settings-tab-library-sync-top \
+  settings-tab-library-sync-scrolled \
+  settings-providers; do
+  assert_validation_contains "mac-shell-$settings_snapshot-light"
+done
 for method in testDevicesSettingsWithSyntheticDeviceRowsPixels testDirectDownloadsDeviceMenuPixels \
-  testDeviceRemovalConfirmationPixels; do
+  testDeviceRemovalConfirmationPixels testAdsProvidersScrolledSettingsPixels; do
   assert_contains "func $method" "$repo_root/WiltedMacTests/WiltedPixelSnapshotTests+Reports.swift"
 done
+assert_contains 'func testSettingsTabScrollTargetsRenderTheirSections' \
+  "$repo_root/WiltedMacTests/WiltedPixelSnapshotTests+Reports.swift"
 assert_contains 'VNRecognizeTextRequest()' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
 assert_contains 'value.frame.minY, label.frame.maxY' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
 assert_contains 'assertPaintedLine("Nov 14, 2023", frame: date.frame)' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"

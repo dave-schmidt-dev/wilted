@@ -61,6 +61,29 @@ struct AnthropicMessagesLabellerSenderTests {
         #expect(AnthropicMessagesLabellerSender.maxTokens == 16_384)
     }
 
+    @Test func providerCheckUsesOneTokenWithoutReasoningAndAcceptsEmptyLimitFinish() async throws {
+        AnthropicStubProtocol.reset([
+            .respond(status: 200, headers: ["Content-Type": "text/event-stream"]),
+            .send(sseEvent("message_delta", data: #"{"type":"message_delta","delta":{"stop_reason":"max_tokens"}}"#)),
+            .send(sseEvent("message_stop", data: #"{"type":"message_stop"}"#)),
+        ])
+
+        let response = try await makeClient().send(
+            LabellerRequest(
+                prompt: "Reply OK.", modelID: "claude-sonnet-5-5", reasoningLevel: "low", purpose: .providerCheck
+            ),
+            onRequestStarted: {},
+            onProgress: { _ in }
+        )
+
+        #expect(response.text.isEmpty)
+        let captured = try #require(AnthropicStubProtocol.requests.first)
+        let body = try #require(try JSONSerialization.jsonObject(with: captured.body) as? [String: Any])
+        #expect(body["max_tokens"] as? Int == 1)
+        #expect(body["output_config"] == nil)
+        #expect((body["messages"] as? [[String: Any]])?.first?["content"] as? String == "Reply OK.")
+    }
+
     @Test func streamsMultiChunkAnswerWithUsageAndProgress() async throws {
         AnthropicStubProtocol.reset([
             .respond(status: 200, headers: ["Content-Type": "text/event-stream"]),

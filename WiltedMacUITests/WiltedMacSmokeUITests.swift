@@ -45,7 +45,7 @@ extension WiltedMacJourneyUITests {
         XCTAssertTrue(page.waitForNonExistence(timeout: 5))
 
         navSettings.click()
-        app.buttons["wilted-settings-section-ads"].click()
+        element(app, "wilted-settings-tab-ads-providers").click()
         let consentSummary = app.buttons["wilted-ad-finding-consent-summary"]
         XCTAssertTrue(consentSummary.waitForExistence(timeout: 5))
         consentSummary.click()
@@ -276,16 +276,51 @@ extension WiltedMacJourneyUITests {
         app.typeKey(.escape, modifierFlags: [])
 
         navSettings.click()
-        for (section, control) in [
-            ("general", "wilted-text-scale"), ("new-episodes", "wilted-automation-status"),
-            ("preparing", "wilted-automation-processing-policy"), ("ads", "wilted-automation-remove-ads"),
-            ("reports", "wilted-reports-controls"), ("about", "wilted-lifetime-statistics"),
-            ("devices", "wilted-sync-controls")
+        XCTAssertTrue(element(app, "wilted-settings-tab-listening").waitForExistence(timeout: 5))
+        let tabs = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-settings-tab-'"))
+        XCTAssertEqual(tabs.count, 4)
+        let sectionButtons = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'wilted-settings-section-'"))
+        XCTAssertEqual(sectionButtons.count, 0)
+        var previousTab: XCUIElement?
+        for (tab, sections) in [
+            ("listening", [("general", "wilted-text-scale"), ("preparing", "wilted-automation-processing-policy")]),
+            ("feeds-reports", [("new-episodes", "wilted-automation-status"), ("reports", "wilted-reports-controls")]),
+            ("ads-providers", [("ads", "wilted-automation-remove-ads"), ("providers", "wilted-providers-page")]),
+            ("library-sync", [("devices", "wilted-sync-controls"), ("about", "wilted-lifetime-statistics")])
         ] {
-            let selector = app.buttons["wilted-settings-section-\(section)"]
-            XCTAssertTrue(selector.waitForExistence(timeout: 5), section)
+            let selector = element(app, "wilted-settings-tab-\(tab)")
+            XCTAssertTrue(selector.waitForExistence(timeout: 5), tab)
+            if let previousTab {
+                XCTAssertGreaterThanOrEqual(selector.frame.minX, previousTab.frame.maxX, tab)
+                XCTAssertEqual(selector.frame.midY, previousTab.frame.midY, accuracy: 1, tab)
+            }
+            previousTab = selector
             selector.click()
-            XCTAssertTrue(element(app, control).waitForExistence(timeout: 5), section)
+            for (section, control) in sections {
+                XCTAssertTrue(element(app, "wilted-settings-section-\(section)").waitForExistence(timeout: 5), section)
+                XCTAssertTrue(element(app, control).waitForExistence(timeout: 5), section)
+            }
+            if tab == "ads-providers" {
+                let page = element(app, "wilted-providers-page")
+                let rows = page.descendants(matching: .any).matching(
+                    NSPredicate(format: "identifier BEGINSWITH 'wilted-providers-card-'"))
+                XCTAssertEqual(rows.count, 7)
+                for provider in ["openCodeCLI", "claudeCodeCLI", "codexCLI", "opencodeGoKey",
+                                 "openRouterKey", "openAIKey", "anthropicKey"] {
+                    let row = rows["wilted-providers-card-\(provider)"]
+                    XCTAssertTrue(row.buttons["wilted-providers-check-\(provider)"].exists, provider)
+                    XCTAssertTrue(row.staticTexts["wilted-providers-status-\(provider)"].exists, provider)
+                    let tag = row.staticTexts["wilted-providers-in-use-\(provider)"]
+                    XCTAssertEqual(tag.exists, provider == "opencodeGoKey", provider)
+                    if tag.exists { XCTAssertEqual(tag.label, "In use for ad finding") }
+                }
+                XCTAssertFalse(page.staticTexts["Kind"].exists)
+                let checkAll = page.buttons["wilted-providers-check-all"]
+                XCTAssertTrue(checkAll.exists)
+                app.buttons["wilted-ad-finding-setup-providers"].click()
+                XCTAssertTrue(waitForHittable(checkAll, timeout: 5),
+                              "Set up providers must scroll the row actions into view")
+            }
         }
         XCTAssertTrue(syncControls.waitForExistence(timeout: 5))
         XCTAssertFalse(removedAddHint.exists)

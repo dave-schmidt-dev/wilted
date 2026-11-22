@@ -37,8 +37,68 @@ private final class MockCheckBox: @unchecked Sendable {
     }
 }
 
+private final class MockKeyCheckSender: LabellerSending, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _requests: [LabellerRequest] = []
+    private var _failure: LabellerFailure?
+    private var _delayNanoseconds: UInt64 = 0
+
+    var requests: [LabellerRequest] { lock.withLock { _requests } }
+
+    func setFailure(_ failure: LabellerFailure?) {
+        lock.withLock { _failure = failure }
+    }
+
+    func setDelay(nanoseconds: UInt64) {
+        lock.withLock { _delayNanoseconds = nanoseconds }
+    }
+
+    func send(
+        _ request: LabellerRequest,
+        onRequestStarted: @escaping @Sendable () -> Void,
+        onProgress: @escaping @Sendable (LabellerProgress) -> Void
+    ) async throws -> LabellerResponse {
+        let (failure, delay) = lock.withLock {
+            _requests.append(request)
+            return (_failure, _delayNanoseconds)
+        }
+        onRequestStarted()
+        if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+        if let failure { throw failure }
+        return LabellerResponse(text: "OK", usage: LabellerUsage())
+    }
+}
+
+private final class MockKeySenderFactory: @unchecked Sendable {
+    static let providers: [AdLabellerProvider] = [
+        .opencodeGoKey, .openRouterKey, .openAIKey, .anthropicKey,
+    ]
+
+    private let lock = NSLock()
+    private let senders = Dictionary(uniqueKeysWithValues: providers.map { ($0, MockKeyCheckSender()) })
+    private var _invocations: [AdLabellerProvider] = []
+    private var _slotKeys: [AdLabellerProvider: String] = [:]
+
+    var invocations: [AdLabellerProvider] { lock.withLock { _invocations } }
+    var slotKeys: [AdLabellerProvider: String] { lock.withLock { _slotKeys } }
+
+    func sender(for provider: AdLabellerProvider, keySlot: any LabellerKeyStoring) -> any LabellerSending {
+        let key = try? keySlot.read()
+        lock.withLock {
+            _invocations.append(provider)
+            if let key { _slotKeys[provider] = key }
+        }
+        return senders[provider]!
+    }
+
+    func checkSender(for provider: AdLabellerProvider) -> MockKeyCheckSender {
+        senders[provider]!
+    }
+}
+
 @MainActor
 final class WiltedMacProviderSettingsTests: XCTestCase {
+    private var mockKeySenders = MockKeySenderFactory()
 
     private func makeSettings(
         initialKeys: [AdLabellerProvider: String] = [:]
@@ -47,10 +107,13 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
         let labellerPrefs = AdLabellerPreferences(preferences: preferences)
         let keyStore = ActiveProviderKeyStore.inMemory(preferences: labellerPrefs, initialKeys: initialKeys)
         let mockCheck = MockCheckBox()
+        let mockKeySenders = MockKeySenderFactory()
+        self.mockKeySenders = mockKeySenders
         let settings = WiltedMacProviderSettings(
             preferences: preferences,
             keyStore: keyStore,
-            check: { await mockCheck.check(provider: $0) }
+            check: { await mockCheck.check(provider: $0) },
+            makeKeySender: { mockKeySenders.sender(for: $0, keySlot: $1) }
         )
         return (settings, preferences, keyStore, mockCheck)
     }
@@ -352,6 +415,100 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
         XCTAssertFalse(settings.isCheckingAny)
         XCTAssertEqual(settings.rows.first(where: { $0.id == .openCodeCLI })?.status, "Ready")
         XCTAssertEqual(settings.rows.first(where: { $0.id == .claudeCodeCLI })?.status, "Not signed in")
+    }
+
+    func testKeyCheckWithoutSavedKeyShowsNoKeySetAndSendsNothing() async {
+        let (settings, _, _, mockCheck) = makeSettings()
+
+        for provider in MockKeySenderFactory.providers {
+            await settings.check(provider)
+            XCTAssertEqual(settings.rows.first(where: { $0.id == provider })?.status, "No key set")
+        }
+
+        XCTAssertTrue(mockKeySenders.invocations.isEmpty)
+        XCTAssertEqual(mockCheck.invocationCount, 0)
+    }
+
+    func testKeyChecksUseTinyRequestAndMapOutcomesWithoutShowingKeys() async {
+        let fakeKeys: [AdLabellerProvider: String] = [
+            .opencodeGoKey: "fake-opencode-key",
+            .openRouterKey: "fake-openrouter-key",
+            .openAIKey: "fake-openai-key",
+            .anthropicKey: "fake-anthropic-key",
+        ]
+        let (settings, _, _, _) = makeSettings(initialKeys: fakeKeys)
+        mockKeySenders.checkSender(for: .openAIKey).setFailure(.keyRejected)
+        mockKeySenders.checkSender(for: .anthropicKey).setFailure(.temporary)
+
+        for provider in MockKeySenderFactory.providers {
+            await settings.check(provider)
+        }
+
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .opencodeGoKey })?.status, "Ready")
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .openRouterKey })?.status, "Ready")
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.status, "Key rejected")
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .anthropicKey })?.status, "Can't reach it")
+        XCTAssertEqual(mockKeySenders.invocations, MockKeySenderFactory.providers)
+        XCTAssertEqual(mockKeySenders.slotKeys, fakeKeys)
+
+        for provider in MockKeySenderFactory.providers {
+            let requests = mockKeySenders.checkSender(for: provider).requests
+            XCTAssertEqual(requests.count, 1)
+            XCTAssertEqual(requests.first?.prompt, "Reply OK.")
+            XCTAssertEqual(requests.first?.purpose, .providerCheck)
+            XCTAssertFalse(settings.rows.first(where: { $0.id == provider })!.status.contains(fakeKeys[provider]!))
+        }
+    }
+
+    func testConcurrentKeyChecksSendOnlyOneRequest() async {
+        let (settings, _, _, _) = makeSettings(initialKeys: [.openAIKey: "fake-openai-key"])
+        mockKeySenders.checkSender(for: .openAIKey).setDelay(nanoseconds: 100_000_000)
+
+        let first = Task { await settings.check(.openAIKey) }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.status, "Checking...")
+        await settings.check(.openAIKey)
+        await first.value
+
+        XCTAssertEqual(mockKeySenders.invocations, [.openAIKey])
+        XCTAssertEqual(mockKeySenders.checkSender(for: .openAIKey).requests.count, 1)
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.status, "Ready")
+    }
+
+    func testSavingOrRemovingKeyClearsCachedCheckAndOldInFlightResult() async {
+        let (settings, _, keyStore, _) = makeSettings(initialKeys: [.openAIKey: "fake-old-openai-key"])
+        mockKeySenders.checkSender(for: .openAIKey).setFailure(.keyRejected)
+        await settings.check(.openAIKey)
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.status, "Key rejected")
+
+        mockKeySenders.checkSender(for: .openAIKey).setDelay(nanoseconds: 100_000_000)
+        let staleCheck = Task { await settings.check(.openAIKey) }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        settings.saveKey("fake-new-openai-key", for: .openAIKey)
+        await staleCheck.value
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.status, "Ready")
+
+        settings.removeKey(for: .openAIKey)
+        XCTAssertFalse(keyStore.savedKeyPresent(for: .openAIKey))
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.status, "No key saved")
+    }
+
+    func testCheckAllCoversThreeToolsAndFourSavedKeyProviders() async {
+        let keys: [AdLabellerProvider: String] = Dictionary(
+            uniqueKeysWithValues: MockKeySenderFactory.providers.map { ($0, "fake-\($0.rawValue)-key") }
+        )
+        let (settings, _, _, mockCheck) = makeSettings(initialKeys: keys)
+
+        await settings.checkAll()
+
+        XCTAssertEqual(Set(mockCheck.invocations), [.openCodeCLI, .claudeCodeCLI, .codexCLI])
+        XCTAssertEqual(mockCheck.invocationCount, 3)
+        XCTAssertEqual(Set(mockKeySenders.invocations), Set(MockKeySenderFactory.providers))
+        XCTAssertEqual(mockKeySenders.slotKeys, keys)
+        for provider in MockKeySenderFactory.providers {
+            XCTAssertEqual(mockKeySenders.checkSender(for: provider).requests.count, 1)
+            XCTAssertEqual(settings.rows.first(where: { $0.id == provider })?.status, "Ready")
+        }
     }
 
     // MARK: - ReadinessLine Priority

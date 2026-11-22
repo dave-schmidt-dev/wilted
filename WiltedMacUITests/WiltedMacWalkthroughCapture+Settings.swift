@@ -19,9 +19,9 @@ extension WiltedMacWalkthroughCapture {
         // owner gets, which is why the walkthrough shows it rather than
         // describing it. A fixture launch has its own defaults domain, so
         // driving the picker here cannot reach the owner's own choice.
-        element(app, "wilted-settings-section-ads").click()
+        element(app, "wilted-settings-tab-ads-providers").click()
         XCTAssertTrue(element(app, "wilted-automation-ad-marker").waitForExistence(timeout: 10))
-        element(app, "wilted-settings-section-preparing").click()
+        element(app, "wilted-settings-tab-listening").click()
         let transcriptPolicy = element(app, "wilted-automation-transcript-policy")
         XCTAssertTrue(transcriptPolicy.waitForExistence(timeout: 10))
         transcriptPolicy.click()
@@ -76,7 +76,7 @@ extension WiltedMacWalkthroughCapture {
         settings.click()
         let settingsRoot = element(quarantined, "wilted-mac-settings")
         XCTAssertTrue(settingsRoot.waitForExistence(timeout: 10))
-        element(quarantined, "wilted-settings-section-devices").click()
+        element(quarantined, "wilted-settings-tab-library-sync").click()
         XCTAssertTrue(element(quarantined, "wilted-sync-review-account").waitForExistence(timeout: 10))
         XCTAssertEqual(element(quarantined, "wilted-sync-status").value as? String,
                        "Account changed. Library changes are held for review")

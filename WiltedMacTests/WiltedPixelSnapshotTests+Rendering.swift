@@ -9,7 +9,8 @@ extension WiltedPixelSnapshotTests {
     func render<V: View>(
         _ view: V,
         variant: WiltedVisualVariant,
-        size: CGSize? = nil
+        size: CGSize? = nil,
+        inWindow: Bool = false
     ) -> NSImage {
         let canvas = size ?? self.canvas
         let content = view
@@ -26,8 +27,11 @@ extension WiltedPixelSnapshotTests {
             }
             .frame(width: canvas.width, height: canvas.height)
 
+        if inWindow { Self.settleScrollerStyle() }
         let hostingView = NSHostingView(rootView: content)
         hostingView.frame = NSRect(origin: .zero, size: canvas)
+        let window = inWindow ? WiltedMacHeadless.offscreenWindow(hosting: hostingView) : nil
+        defer { withExtendedLifetime(window) {} }
         hostingView.layoutSubtreeIfNeeded()
         guard let bitmap = NSBitmapImageRep(
             bitmapDataPlanes: nil,
@@ -51,6 +55,23 @@ extension WiltedPixelSnapshotTests {
         let image = NSImage(size: canvas)
         image.addRepresentation(bitmap)
         return image
+    }
+
+    /// The test host reports overlay scrollers until about 150ms after its run
+    /// loop first turns, then the system's real style (legacy on the recording
+    /// Mac). A scroll view built before the switch lays out without the scroller
+    /// gutter every later one has, so the first scrolled capture in a process
+    /// would differ by test order. Once per process, wait (at most a second) for
+    /// the style to change before the first windowed render.
+    @MainActor private static var scrollerStyleSettled = false
+    @MainActor private static func settleScrollerStyle() {
+        guard !scrollerStyleSettled else { return }
+        scrollerStyleSettled = true
+        let initial = NSScroller.preferredScrollerStyle
+        let deadline = Date().addingTimeInterval(1)
+        while NSScroller.preferredScrollerStyle == initial, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        }
     }
 
     func assertSnapshot(_ actual: NSImage, named name: String, testName: String, file: StaticString = #filePath, line: UInt = #line) {

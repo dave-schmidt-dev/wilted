@@ -193,7 +193,10 @@ public struct OpenAIStyleLabellerSender: LabellerSending, Sendable {
             let body = OpenAIRequestBody(
                 model: request.modelID,
                 messages: [OpenAIRequestBody.Message(role: "user", content: request.prompt)],
-                reasoning_effort: openAIReasoningEffort(level: request.reasoningLevel),
+                reasoning_effort: request.purpose == .providerCheck
+                    ? nil
+                    : openAIReasoningEffort(level: request.reasoningLevel),
+                max_completion_tokens: request.purpose == .providerCheck ? 1 : nil,
                 stream: true,
                 stream_options: OpenAIRequestBody.StreamOptions(include_usage: true)
             )
@@ -202,7 +205,10 @@ public struct OpenAIStyleLabellerSender: LabellerSending, Sendable {
             let body = OpenRouterRequestBody(
                 model: request.modelID,
                 messages: [OpenRouterRequestBody.Message(role: "user", content: request.prompt)],
-                reasoning: openRouterReasoning(level: request.reasoningLevel),
+                reasoning: request.purpose == .providerCheck
+                    ? nil
+                    : openRouterReasoning(level: request.reasoningLevel),
+                max_tokens: request.purpose == .providerCheck ? 1 : nil,
                 stream: true,
                 stream_options: OpenRouterRequestBody.StreamOptions(include_usage: true)
             )
@@ -324,16 +330,13 @@ public struct OpenAIStyleLabellerSender: LabellerSending, Sendable {
                 throw LabellerFailure.unusableAnswer
             }
             let content = whole.choices?.first?.message?.content ?? ""
-            if content.isEmpty { throw LabellerFailure.unusableAnswer }
-            if let reason = whole.choices?.first?.finish_reason, reason != "stop" {
-                throw LabellerFailure.unusableAnswer
-            }
+            try request.validateReply(content, reason: whole.choices?.first?.finish_reason,
+                                      complete: ["stop"], tokenLimit: "length")
             return LabellerResponse(text: content, usage: whole.usage.map { makeUsage(from: $0) } ?? LabellerUsage())
         }
         if let remainder = assembler.flush() { consume(remainder) }
         if !sawDone { throw LabellerFailure.temporary }
-        if text.isEmpty { throw LabellerFailure.unusableAnswer }
-        if let finishReason, finishReason != "stop" { throw LabellerFailure.unusableAnswer }
+        try request.validateReply(text, reason: finishReason, complete: ["stop"], tokenLimit: "length")
         return LabellerResponse(text: text, usage: reportedUsage ?? LabellerUsage())
     }
 
@@ -349,7 +352,8 @@ public struct OpenAIStyleLabellerSender: LabellerSending, Sendable {
     private struct OpenAIRequestBody: Encodable {
         var model: String
         var messages: [Message]
-        var reasoning_effort: String
+        var reasoning_effort: String?
+        var max_completion_tokens: Int?
         var stream: Bool
         var stream_options: StreamOptions
 
@@ -360,7 +364,8 @@ public struct OpenAIStyleLabellerSender: LabellerSending, Sendable {
     private struct OpenRouterRequestBody: Encodable {
         var model: String
         var messages: [Message]
-        var reasoning: OpenRouterReasoning
+        var reasoning: OpenRouterReasoning?
+        var max_tokens: Int?
         var stream: Bool
         var stream_options: StreamOptions
 

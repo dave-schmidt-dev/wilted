@@ -221,14 +221,14 @@ assert_snapshot_contract() {
   assert_contains 'source "$repo_root/scripts/lib/native-gate-validation.sh"' "$gate"
   assert_contains 'validate_pixel_snapshot_baselines' "$gate"
   assert_contains 'validate_ios_pixel_snapshot_baselines' "$gate"
-  assert_validation_contains 'expected_count=229'
-  assert_validation_contains 'shells=77'
+  assert_validation_contains 'expected_count=230'
+  assert_validation_contains 'shells=78'
   for state in not-ready ready; do
     for appearance in light dark; do
       assert_validation_contains "testReportsSettingsPixelBaselines.mac-shell-settings-reports-$state-$appearance.png"
     done
   done
-  assert_validation_contains 'window_shells=16'
+  assert_validation_contains 'window_shells=17'
   assert_validation_contains 'mac-shell-show-settings-light'
   assert_validation_contains 'mac-shell-show-settings-changed-light'
   assert_validation_contains 'mac-shell-show-settings-article-light'
@@ -251,6 +251,19 @@ assert_snapshot_contract() {
   assert_validation_contains "expected_size='520 x 560'"
   assert_validation_contains "expected_size='1000 x 560'"
   assert_validation_contains "expected_size='640 x 740'"
+  assert_validation_contains "expected_size='760 x 700'"
+  for settings_snapshot in \
+    settings-tab-listening-top \
+    settings-tab-listening-scrolled \
+    settings-tab-feeds-reports-top \
+    settings-tab-feeds-reports-scrolled \
+    settings-tab-ads-providers-top \
+    settings-tab-ads-providers-scrolled \
+    settings-tab-library-sync-top \
+    settings-tab-library-sync-scrolled \
+    settings-providers; do
+    assert_validation_contains "mac-shell-$settings_snapshot-light"
+  done
   assert_contains 'func testNowPlayingPanePixelBaselines' "$repo_root/WiltedMacTests/WiltedPixelSnapshotTests+NowPlaying.swift"
   for appearance in light dark; do
     assert_validation_contains "testNowPlayingPanePixelBaselines.mac-shell-now-playing-pane-$appearance.png"
@@ -316,6 +329,7 @@ assert_snapshot_contract() {
   for method in \
     testEveryPreviewStateHasLightAndDarkPixelBaselines \
     testPixelSnapshotSelectorsAreUniqueAndComplete \
+    testSettingsTabScrollTargetsRenderTheirSections \
     testLibraryAndPreparingBaselinesContainRenderedControls \
     testMacLibraryShellPixelBaselines \
     testMacPlayerShellPixelBaselines \
@@ -324,6 +338,7 @@ assert_snapshot_contract() {
     testPreparingSettingsPixels \
     testAdsSettingsPixels \
     testProvidersSettingsPixels \
+    testAdsProvidersScrolledSettingsPixels \
     testReportsSettingsPixels \
     testDevicesSettingsPixels \
     testAboutSettingsPixels \

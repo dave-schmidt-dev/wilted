@@ -26,35 +26,76 @@ struct WiltedMacSettingsView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-                ForEach(WiltedMacSettingsSection.allCases, id: \.self) { section in
-                    Button {
-                        model.settingsSection = section
-                    } label: {
-                        Text(section.title)
-                            .wiltedFont(.body)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(WiltedTheme.Spacing.small)
-                            .background {
-                                if model.settingsSection == section {
-                                    RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.16))
-                                }
-                            }
+        VStack(spacing: 0) {
+            settingsTabs
+            GeometryReader { viewport in
+                let position = model.settingsScrollPosition
+                let initialSection = position.wrappedValue.flatMap(WiltedMacSettingsSection.init(rawValue:))
+                ScrollViewReader { reader in
+                    WiltedMacDestination(
+                        title: WiltedScreenCopy.settings,
+                        identifier: "wilted-mac-settings",
+                        watermark: true,
+                        scrollAnchor: position
+                    ) {
+                        settingsTabContent(viewportHeight: viewport.size.height)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityAddTraits(model.settingsSection == section ? .isSelected : [])
-                    .accessibilityIdentifier("wilted-settings-section-\(section.rawValue)")
+                    .onAppear {
+                        if let initialSection {
+                            reader.scrollTo(initialSection.rawValue, anchor: .top)
+                        }
+                    }
                 }
-                Spacer()
+                .id(model.settingsTab)
             }
-            .padding(WiltedTheme.Spacing.small)
-            .frame(width: 136)
-            Divider()
-            WiltedMacDestination(title: WiltedScreenCopy.settings, identifier: "wilted-mac-settings", watermark: true) {
-                sectionContent
+        }
+    }
+
+    private var settingsTabs: some View {
+        HStack(spacing: WiltedTheme.Spacing.xSmall) {
+            ForEach(WiltedMacSettingsTab.allCases) { tab in
+                Button {
+                    model.settingsTab = tab
+                } label: {
+                    Text(tab.title)
+                        .wiltedFont(.utility)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, WiltedTheme.Spacing.xSmall)
+                        .padding(.vertical, WiltedTheme.Spacing.small)
+                        .background {
+                            if model.settingsTab == tab {
+                                RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.16))
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(model.settingsTab == tab ? .isSelected : [])
+                .accessibilityIdentifier("wilted-settings-tab-\(tab.id)")
             }
-            .id(model.settingsSection)
+        }
+        .padding(.horizontal, WiltedTheme.Spacing.small)
+        .padding(.vertical, WiltedTheme.Spacing.xSmall)
+    }
+
+    @ViewBuilder private func settingsTabContent(viewportHeight: CGFloat) -> some View {
+        ForEach(model.settingsTab.sections) { section in
+            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+                if section != .reports {
+                    Text(section.title)
+                        .wiltedFont(.body)
+                        .fontWeight(.semibold)
+                }
+                settingsSectionContent(for: section)
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("wilted-settings-section-\(section.rawValue)")
+            .padding(.bottom, WiltedTheme.Spacing.xLarge)
+            // A short final section still needs enough scroll range to put its heading at the top.
+            .frame(minHeight: section == model.settingsTab.sections.last ? viewportHeight : nil,
+                   alignment: .topLeading)
+            .id(section.rawValue)
         }
     }
 

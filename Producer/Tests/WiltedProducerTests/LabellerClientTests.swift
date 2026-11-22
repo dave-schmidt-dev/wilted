@@ -76,6 +76,30 @@ struct LabellerClientTests {
         #expect(first != second)
     }
 
+    @Test func providerCheckUsesOneTokenWithoutReasoningAndAcceptsLengthFinish() async throws {
+        LabellerStubProtocol.reset([
+            .respond(status: 200, headers: ["Content-Type": "text/event-stream"]),
+            .send(sseChunk(finishReason: "length")),
+            .send(Data("data: [DONE]\n\n".utf8)),
+        ])
+
+        let response = try await client().send(
+            LabellerRequest(
+                prompt: "Reply OK.", modelID: "test-model", reasoningLevel: "low", purpose: .providerCheck
+            ),
+            onRequestStarted: {},
+            onProgress: { _ in }
+        )
+
+        #expect(response.text.isEmpty)
+        let captured = try #require(LabellerStubProtocol.requests.first)
+        let body = try #require(try JSONSerialization.jsonObject(with: captured.body) as? [String: Any])
+        #expect(Set(body.keys) == ["model", "messages", "stream", "stream_options", "max_tokens"])
+        #expect(body["max_tokens"] as? Int == 1)
+        #expect(body["reasoning_effort"] == nil)
+        #expect((body["messages"] as? [[String: Any]])?.first?["content"] as? String == "Reply OK.")
+    }
+
     @Test func acceptsANonStreamedJSONBody() async throws {
         let body = try JSONSerialization.data(withJSONObject: [
             "choices": [["message": ["content": #"{"breaks":[]}"#], "finish_reason": "stop"]],
