@@ -132,7 +132,8 @@ final class WiltedMacAddSession {
             }
         case let .podcastFeed(pasted):
             let feed = resolvedFeed?.url ?? pasted
-            return [feedRow(id: "feed", feed: feed, title: resolvedFeed?.title, detail: "Podcast")]
+            return [feedRow(id: "feed", feed: feed, title: resolvedFeed?.title,
+                            detail: isArticleFeed(feed) ? "Article feed" : "Podcast")]
         case let .article(url):
             var rows = [Row(
                 id: "article", title: Self.display(url), detail: "Article",
@@ -140,7 +141,8 @@ final class WiltedMacAddSession {
             )]
             if let advertisedFeed {
                 rows.append(feedRow(
-                    id: "advertised", feed: advertisedFeed, title: nil, detail: "Podcast feed on this page"
+                    id: "advertised", feed: advertisedFeed, title: nil,
+                    detail: isArticleFeed(advertisedFeed) ? "Article feed on this page" : "Podcast feed on this page"
                 ))
             }
             return rows
@@ -150,11 +152,20 @@ final class WiltedMacAddSession {
     }
 
     /// Whether the feed is already a subscription, by its namespaced feed ID (W-INV-003).
-    func isFollowed(_ feedURL: URL) -> Bool {
+    func isFollowed(_ feedURL: URL) -> Bool { followedSubscription(feedURL) != nil }
+
+    /// The subscription for this feed, as a podcast or as an article feed.
+    private func followedSubscription(_ feedURL: URL) -> WiltedMacSubscription? {
         // A feed without audio is followed as an article feed, under its own ID.
         let ids = [try? ItemID.derivePodcastFeed(from: feedURL), try? ItemID.articleFeed(canonicalFeedURL: feedURL)]
             .compactMap { $0?.rawValue }
-        return model.subscriptions.contains { ids.contains($0.id) }
+        return model.subscriptions.first { ids.contains($0.id) }
+    }
+
+    /// Whether the feed lists posts rather than audio: it is followed as an article feed, or the check found no audio.
+    private func isArticleFeed(_ feedURL: URL) -> Bool {
+        if let followed = followedSubscription(feedURL) { return WiltedMacFeedKind.isArticleSubscription(followed) }
+        return articleOnlyFeeds.contains(feedURL)
     }
 
     /// Opens with a clean intake status and re-evaluates a restored draft.
@@ -231,7 +242,8 @@ final class WiltedMacAddSession {
 
     private func feedRow(id: String, feed: URL, title: String?, detail: String) -> Row {
         Row(
-            id: id, title: title ?? Self.display(feed), detail: detail,
+            // A followed feed reads by the name it is listed under, not its address.
+            id: id, title: title ?? followedSubscription(feed)?.title ?? Self.display(feed), detail: detail,
             action: isFollowed(feed) ? .following : (articleOnlyFeeds.contains(feed) ? .followArticleFeed : .subscribe),
             feedURL: feed, articleURL: nil
         )

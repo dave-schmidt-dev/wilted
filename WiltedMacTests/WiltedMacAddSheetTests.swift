@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import XCTest
 import WiltedDomain
 import WiltedProducer
@@ -92,6 +93,54 @@ final class WiltedMacAddSheetTests: XCTestCase {
         XCTAssertEqual(model.subscriptions.map(\.feedURL), [feed])
         XCTAssertEqual(model.subscriptions.map(\.title), ["Articles only"])
         XCTAssertEqual(session.rows.map(\.action), [.following])
+    }
+
+    func testAnArticleFeedRowSaysArticleFeedAndOnceFollowedShowsTheFeedName() async throws {
+        let model = try await bootedModel("add-sheet-article-feed-label", feedXML: Self.articleFeed)
+        let feed = try XCTUnwrap(URL(string: "https://feeds.example.test/articles.xml"))
+        let session = model.makeAddSession(classify: { _ in .podcastFeed }, linkDebounce: .zero, searchDebounce: .zero)
+        session.text = feed.absoluteString
+        await session.settle()
+        XCTAssertEqual(session.rows.map(\.detail), ["Article feed"], "a feed without audio is not called a podcast")
+
+        session.subscribe(session.rows[0])
+        await model.waitForPodcastOperations()
+        XCTAssertEqual(session.rows.map(\.title), ["Articles only"], "the followed feed reads by its name, not its address")
+        XCTAssertEqual(session.rows.map(\.detail), ["Article feed"])
+
+        // Pasting the address again later reads the same way.
+        let again = model.makeAddSession(classify: { _ in .podcastFeed }, linkDebounce: .zero, searchDebounce: .zero)
+        again.text = feed.absoluteString
+        await again.settle()
+        attachPicture(of: again, named: "add-row-followed-article-feed")
+        XCTAssertEqual(again.rows.map(\.title), ["Articles only"])
+        XCTAssertEqual(again.rows.map(\.detail), ["Article feed"])
+    }
+
+    /// Evidence only: the sheet as the listener sees it, kept with the test results.
+    private func attachPicture(of session: WiltedMacAddSession, named name: String) {
+        let renderer = ImageRenderer(content: WiltedMacAddSheetContent(session: session)
+            .frame(width: 520, height: 240, alignment: .top)
+            .background(WiltedTheme.color(.card, scheme: .light)))
+        renderer.scale = 2
+        guard let image = renderer.nsImage else { return XCTFail("the sheet did not render") }
+        let attachment = XCTAttachment(image: image)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    func testAPodcastFeedRowStillSaysPodcast() async throws {
+        let model = try await bootedModel("add-sheet-podcast-label")
+        let feed = try XCTUnwrap(URL(string: "https://feeds.example.test/show.xml"))
+        let session = model.makeAddSession(classify: { _ in .podcastFeed }, linkDebounce: .zero, searchDebounce: .zero)
+        session.text = feed.absoluteString
+        await session.settle()
+        XCTAssertEqual(session.rows.map(\.detail), ["Podcast"])
+        session.subscribe(session.rows[0])
+        await model.waitForPodcastOperations()
+        XCTAssertEqual(session.rows.map(\.title), ["Followed show"])
+        XCTAssertEqual(session.rows.map(\.detail), ["Podcast"])
     }
 
     func testFeedWithoutAudioOffersFollowAsArticleFeedAndAFeedWithAudioStaysSubscribe() async throws {
