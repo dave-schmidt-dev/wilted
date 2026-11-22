@@ -32,36 +32,32 @@ public enum LocalLibrarySchemaVersion: Int, Codable, Sendable {
     public static let current: LocalLibrarySchemaVersion = .v22
 }
 
-/// Positive equivalence requires the owner's confirmation of these exact two
-/// source IDs in this feed. This is a provenance assertion by an authorized
-/// caller, never a constructor for guessed publisher/title/hash evidence.
-public struct PodcastEpisodePairConfirmation: Codable, Equatable, Sendable {
-    public let confirmationID: UUID
-    public let feedID: ItemID
-    public let first: ItemID
-    public let second: ItemID
-    public let confirmedAt: Timestamp
+struct AssociationStoredState: Codable {
+    let associationID: UUID
+    let feedID: String
+    let representativeID: String
+    let members: Data
+    let evidence: Data
+    let version: Int
+    let isActive: Bool
+    let createdAt: Date
+    let reversedAt: Date?
+    let capturedMemberState: Data
+    let manualChoiceConflicts: Data
 
-    public init(confirmationID: UUID, feedID: ItemID, first: ItemID, second: ItemID,
-                confirmedAt: Timestamp) {
-        self.confirmationID = confirmationID
-        self.feedID = feedID
-        self.first = first
-        self.second = second
-        self.confirmedAt = confirmedAt
+    init(_ record: LocalLibrarySchemaV20Models.EpisodeAssociationRecord) {
+        associationID = record.associationID
+        feedID = record.feedID
+        representativeID = record.representativeID
+        members = record.members
+        evidence = record.evidence
+        version = record.version
+        isActive = record.isActive
+        createdAt = record.createdAt
+        reversedAt = record.reversedAt
+        capturedMemberState = record.capturedMemberState
+        manualChoiceConflicts = record.manualChoiceConflicts
     }
-}
-
-public enum PodcastEpisodeAssociationError: Error, Equatable, Sendable {
-    case invalidPair
-    case crossFeed
-    case episodeUnavailable
-    case overlappingAssociation
-    case stalePreview
-    case staleVersion
-    case conflictingOwnerState
-    case confirmationAlreadyUsed
-    case corruptAssociation
 }
 
 /// The stable representative is a display identity, never a replacement media

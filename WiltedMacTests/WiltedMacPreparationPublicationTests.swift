@@ -2,7 +2,7 @@ import Foundation
 import CryptoKit
 import WiltedDomain
 import WiltedLibrary
-import WiltedProducer
+@testable import WiltedProducer
 import XCTest
 @testable import WiltedMac
 

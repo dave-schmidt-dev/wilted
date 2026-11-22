@@ -85,6 +85,11 @@ extension WiltedMacLarderView {
                         prepareAgainStatus(episode, again, scheme: colorScheme)
                     }
                 }
+                // Shown whatever the row is doing, so a flagged episode that is already
+                // downloading or preparing still offers its two answers.
+                if let earlier = episode.possibleDuplicateOf {
+                    WiltedMacPossibleDuplicateNotice(model: model, episode: episode, earlierTitle: earlier)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             // `circle.grid.2x3.fill` is not in the system symbol set -- the
@@ -171,12 +176,13 @@ extension WiltedMacLarderView {
                 Button(model.prepareAgainMenuTitle(for: episode)) { model.prepareAgain(episode) }
                     .accessibilityIdentifier("wilted-larder-prepare-again-\(episode.id)")
             }
-            if WiltedMacEpisodeIdentityReviewRequest.isAvailable(for: episode) {
+            // Only for a link an earlier version made; Wilted no longer links episodes.
+            if model.linkedEpisodeAssociation(for: episode) != nil {
                 Divider()
-                Button("Review Possible Duplicate\u{2026}") {
-                    reviewTarget = WiltedMacEpisodeIdentityReviewRequest(anchorID: episode.id)
+                Button("Unlink Episodes\u{2026}") {
+                    Task { unlinkReview = await model.prepareLinkedEpisodeUnlink(for: episode) }
                 }
-                .accessibilityIdentifier("wilted-larder-review-duplicate-\(episode.id)")
+                .accessibilityIdentifier("wilted-larder-unlink-\(episode.id)")
             }
         }
     }

@@ -168,6 +168,23 @@ extension WiltedMacModel {
                 .compactMap { ticket in LabellingWait(ticket).map { (ticket.subjectID, $0) } },
             uniquingKeysWith: { first, _ in first }
         )
+        // Possible-duplicate flags, keyed by the flagged episode. One flag that cannot be read is
+        // skipped, so it never hides the others, and a failed read shows no badge rather than
+        // failing the whole library load. The held list the automation gate uses is refreshed here.
+        let heldIDs = await refreshPossibleDuplicateHolds(from: store)
+        var possibleDuplicateOf: [ItemID: String] = Dictionary(
+            ((try? await store.readablePodcastPossibleDuplicateFlags()) ?? []).compactMap { flag in
+                let candidates = flag.candidateIDs.compactMap { id in
+                    snapshot.episodes.first { $0.itemID == id }?.title
+                }.sorted()
+                return (flag.incomingID, candidates.first ?? "")
+            }, uniquingKeysWith: { first, _ in first }
+        )
+        // A held episode whose flag cannot be read, or whose earlier episode is gone, still shows
+        // the badge with its two answers, so the owner can always clear the hold.
+        for raw in heldIDs ?? [] {
+            if let id = try? ItemID(rawValue: raw), possibleDuplicateOf[id] == nil { possibleDuplicateOf[id] = "" }
+        }
         var episodeValues: [WiltedMacEpisode] = []
         // Larder projects every subscribed episode, so its preparation
         // evidence cannot use Prep's display-oriented 200-run default --
@@ -265,7 +282,8 @@ extension WiltedMacModel {
                 ),
                 feedID: episode.feedID.rawValue,
                 feedURL: episode.feedURL,
-                episodeLink: episode.episodeLink
+                episodeLink: episode.episodeLink,
+                possibleDuplicateOf: possibleDuplicateOf[episode.itemID]
             ))
         }
         episodeValues.append(contentsOf: Self.audiobookRows(from: snapshot, mediaAvailability: mediaAvailabilityChecker))

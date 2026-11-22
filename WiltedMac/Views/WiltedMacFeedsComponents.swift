@@ -67,6 +67,9 @@ struct WiltedMacFeedsEpisodeRow: View {
                     lifecycleLabel: episode.lifecyclePresentation.primaryLabel,
                     identifier: "wilted-feeds-metadata-\(episode.id)"
                 )
+                if let earlier = episode.possibleDuplicateOf {
+                    WiltedMacPossibleDuplicateNotice(model: model, episode: episode, earlierTitle: earlier)
+                }
                 if isWaitingForSpace {
                     Text("Waiting for space")
                         .wiltedFont(.utility)

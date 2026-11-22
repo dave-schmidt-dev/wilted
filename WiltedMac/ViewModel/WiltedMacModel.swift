@@ -526,6 +526,9 @@ final class WiltedMacModel {
     /// The snapshot belongs to the job rather than Settings, so changing a
     /// preference cannot rewrite work already waiting for its window.
     var deferredAutomaticPreparations: [DeferredAutomaticPreparation] = []
+    /// Episodes flagged as possible duplicates, as of the last library read.
+    /// nil means the read failed or has not run, and automation then waits.
+    var possibleDuplicateHeldIDs: Set<String>?
     /// One preparation runs at a time; the rest queue. See
     /// `WiltedPreparationGate` for why concurrent runs cost work rather
     /// than saving time.

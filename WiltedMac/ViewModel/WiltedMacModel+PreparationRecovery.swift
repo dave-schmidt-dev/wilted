@@ -33,6 +33,8 @@ extension WiltedMacModel {
                       !episode.isAudiobook, episode.removalKind == nil, episode.retiredAt == nil,
                       !hiddenEpisodeIDs.contains(episode.id), episode.downloadState == .completed,
                       !episode.preparationState.isPrepared else { continue }
+                // A flagged lookalike waits for the owner's answer; its ticket stays pending.
+                guard !automaticWorkIsHeld(episode.id) else { continue }
                 // Malformed persisted policy must never become today's settings.
                 let snapshot: PodcastPreparationPolicySnapshot?
                 let processing: WiltedAutomationProcessingPolicy?
@@ -69,7 +71,7 @@ extension WiltedMacModel {
                     case .prepareNow:
                         adoptAdmittedPreparation(sequence: ticket.requestSequence, for: episode.id)
                         removeDeferredAutomaticPreparation(episode.id)
-                        prepareEpisode(episode, policySnapshot: snapshot)
+                        prepareEpisode(episode, policySnapshot: snapshot, automatic: true)
                     case .deferUntilOffPeak:
                         parkAdmittedPreparation(episode, ticket: ticket, processing: admittedProcessing, snapshot: snapshot)
                     }
@@ -90,7 +92,7 @@ extension WiltedMacModel {
                         || WiltedAutomationCoordinator.preparationPlan(
                             processingPolicy: automationSettings.processingPolicy, at: date) != .skip else { continue }
                     adoptAdmittedPreparation(sequence: ticket.requestSequence, for: episode.id)
-                    if automationSettings.prepareEverythingDownloaded { prepareEpisode(episode) }
+                    if automationSettings.prepareEverythingDownloaded { prepareEpisode(episode, automatic: true) }
                     else { admitAutomaticPreparation(for: episode, at: date) }
                 }
             }

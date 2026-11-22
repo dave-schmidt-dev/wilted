@@ -80,7 +80,7 @@ extension WiltedMacModel {
                 guard !isClosingTemporaryState, !Task.isCancelled else { return }
                 podcastQueueIDs = outcome.queueIDs
                 settleFeedDecision(captured.map(\.id), committed: accepted)
-                for episode in outcome.downloads { downloadEpisode(episode) }
+                for episode in outcome.downloads { downloadEpisode(episode, automatic: true) }
                 podcastOperationMessage = decisionMessage("Kept", changed: changed.count, accepted: accepted.count, unresolved: outcome.unresolved.count)
             case .skip:
                 let retiredAt = originatedAt

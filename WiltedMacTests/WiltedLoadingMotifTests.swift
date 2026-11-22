@@ -97,11 +97,8 @@ final class WiltedLoadingMotifTests: XCTestCase {
 
     func testExistingCompactCallersUseNative20AndNoProgressArtwork() throws {
         let compactPlayer = try WiltedMacHeadless.viewSource("WiltedMacPlayerContent+Sections.swift")
-        let review = try WiltedMacHeadless.viewSource("WiltedMacEpisodeIdentityReview.swift")
         XCTAssertTrue(compactPlayer.contains("WiltedLoadingMotif(size: .compact)"))
         XCTAssertFalse(compactPlayer.contains(".scaleEffect(0.24)"))
-        XCTAssertTrue(review.contains("WiltedLoadingMotif(size: .compact)"))
-        XCTAssertFalse(review.contains(".scaleEffect(0.28)"))
     }
 
     private func elements(_ path: Path, dividedBy scale: CGFloat = 1) -> [[CGFloat]] {

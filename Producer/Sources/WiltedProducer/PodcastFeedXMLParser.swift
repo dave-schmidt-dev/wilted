@@ -329,10 +329,9 @@ final class PodcastRSSParser: NSObject, XMLParserDelegate {
 /// A feed can list one episode twice -- a stitched duplicate item, a re-upload
 /// that keeps its GUID -- and both spellings resolve to the same `ItemID`.
 /// Left in, the repeat would spend two admission slots, two download claims,
-/// and two places under the episode ceiling on one episode. Only the canonical
-/// identity collapses: two items with distinct GUIDs stay distinct even when
-/// their titles, dates, and durations all match, because metadata similarity is
-/// not association proof.
+/// and two places under the episode ceiling on one episode. Distinct IDs pass
+/// through to feed admission, which compares them with retained episodes and
+/// same-refresh peers before scheduling work.
 extension Array where Element == PodcastEpisode {
     func deduplicatedByItemID() -> [PodcastEpisode] {
         var seen: Set<ItemID> = []

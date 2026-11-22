@@ -218,7 +218,13 @@ extension WiltedMacModel {
         let manual = Dictionary(uniqueKeysWithValues: decisions.filter { $0.source == .manual }.map {
             ($0.episodeID.rawValue, $0.decision == .keep ? FeedManualDecision.keep : .skip)
         })
-        let live = feedEpisodes.filter { $0.removalKind == nil && $0.feedID == feedID.rawValue }
+        // A flagged lookalike is the owner's to decide: no rule or policy keeps, skips or
+        // downloads it, and it does not take a kept slot from a real episode. A failed read
+        // throws, so nothing is admitted on a guess.
+        let held = Set(try await store.podcastEpisodeIdentityReviewHeldIDs(in: feedID).map(\.rawValue))
+        let live = feedEpisodes.filter {
+            $0.removalKind == nil && $0.feedID == feedID.rawValue && !held.contains($0.id)
+        }
         let queued = Set(try await store.podcastQueueState().episodeIDs.map(\.rawValue))
         let keptDecisions = Set(decisions.filter { $0.decision == .keep }.map(\.episodeID.rawValue))
         let keptRaw = queued.union(keptDecisions).intersection(live.map(\.id))
@@ -365,6 +371,9 @@ extension WiltedMacModel {
     /// the global override) asks for the download and the episode needs one.
     func commitManualKeep(_ captured: [WiltedMacEpisode], store: LocalLibraryStore, at: Timestamp = Timestamp(Date())) async throws -> ManualKeepOutcome {
         var outcome = ManualKeepOutcome()
+        // The owner's Keep always applies. A flagged lookalike is not downloaded for them
+        // until they have answered the flag; a failed read counts every episode as flagged.
+        let held = try? await store.podcastEpisodeIdentityReviewHeldIDs()
         for episode in captured {
             guard episode.removalKind == nil, let id = try? ItemID(rawValue: episode.id),
                   try await store.podcastEpisode(for: id) != nil else {
@@ -377,6 +386,7 @@ extension WiltedMacModel {
                 feedPolicy = try await store.feedAutomationPolicy(for: feedID)
             }
             let download = !wasKept && Self.larderGroup(for: episode) == .available
+                && !(held?.contains(id) ?? true)
                 && EpisodeAdmissionService.shouldDownloadAfterManualKeep(
                     feedPolicy: feedPolicy, globalDownloadEverything: automationSettings.downloadEverythingOnLarder
                 )

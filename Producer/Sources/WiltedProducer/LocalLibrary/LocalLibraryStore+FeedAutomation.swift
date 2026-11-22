@@ -11,6 +11,9 @@ public enum AutomaticEpisodeAdmissionError: Error, Equatable {
     case manualDecisionExists
     case supersededManualDecision
     case episodeUnavailable
+    /// The episode looks like a copy of an earlier one and waits for the owner's
+    /// answer; no rule or policy may keep, skip, queue or fetch it meanwhile.
+    case possibleDuplicateHeld
 }
 
 extension LocalLibraryStore {
@@ -267,6 +270,11 @@ extension LocalLibraryStore {
         }
         let queueRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastQueueRecord>())
         if value.source != .manual {
+            // A flagged lookalike is the owner's to decide. A failed read
+            // throws, so the row is never admitted on a guess.
+            guard try !Self.hasPendingPossibleDuplicateHold(for: value.episodeID, in: context) else {
+                throw AutomaticEpisodeAdmissionError.possibleDuplicateHeld
+            }
             let decisions = Array(lookup.decisions.values)
             guard decisions.first(where: { $0.episodeID == episodeID })?.source != EpisodeDecisionSource.manual.rawValue else {
                 throw AutomaticEpisodeAdmissionError.manualDecisionExists
@@ -336,7 +344,8 @@ extension LocalLibraryStore {
     /// after it commits. A manual decision is the listener's and always wins:
     /// an episode restored from History carries a manual Keep, so a rule never
     /// retires it again. Returns false, writing nothing, for a missing or
-    /// already removed episode or one with a manual decision.
+    /// already removed episode, one with a manual decision, or one flagged as a
+    /// possible duplicate.
     @discardableResult
     public func retireEpisodeBySkipRule(_ episodeID: ItemID, ruleID: UUID,
                                         at decidedAt: Timestamp = Timestamp(Date())) throws -> Bool {
@@ -347,6 +356,8 @@ extension LocalLibraryStore {
         let existing = try context.fetch(FetchDescriptor<DecisionRecord>()).first { $0.episodeID == identifier }
         guard existing?.source != EpisodeDecisionSource.manual.rawValue else { return false }
         guard try !Self.associationHasManualChoice(for: episodeID, in: context) else { return false }
+        // A flagged lookalike keeps its row and media until the owner answers.
+        guard try !Self.hasPendingPossibleDuplicateHold(for: episodeID, in: context) else { return false }
         episode.retiredAt = decidedAt.date
         episode.removalKind = PodcastEpisodeRemovalKind.retired.rawValue
         if let existing {

@@ -69,10 +69,10 @@ extension WiltedMacModel {
         // through the same bulk admission the matching Larder button uses.
         // Without this the setting would only ever affect later arrivals.
         if settings.downloadEverythingOnLarder, !previous.downloadEverythingOnLarder {
-            downloadAllAvailableLarderEpisodes()
+            downloadAllAvailableLarderEpisodes(automatic: true)
         }
         if settings.prepareEverythingDownloaded, !previous.prepareEverythingDownloaded {
-            prepareAllDownloadedLarderEpisodes()
+            prepareAllDownloadedLarderEpisodes(automatic: true)
         }
     }
 
@@ -409,7 +409,7 @@ extension WiltedMacModel {
                 },
                 startDownload: { [weak self] episodeID in
                     guard let self else { return }
-                    try await self.startClaimedDownload(episodeID)
+                    try await self.startClaimedDownload(episodeID, automatic: true)
                 },
                 unfinishedClaims: { [weak self] in
                     guard let self else { return [] }
@@ -457,12 +457,16 @@ extension WiltedMacModel {
 
     func unfinishedAutomationClaims() async throws -> [String] {
         guard let store else { throw CancellationError() }
+        // A flagged episode's claim waits for the owner's answer. A list that cannot be read
+        // recovers nothing this pass; the next pass asks again.
+        guard let held = await refreshPossibleDuplicateHolds(from: store) else { return [] }
         let unfinished = try await store.unfinishedPodcastDownloads().map(\.episodeID.rawValue)
         // `.queued`/`.downloading` (unfinished) and `.failed`/`.retryable`
         // (resumable) are disjoint statuses, but a `Set` costs nothing and
         // means a future status change here can't silently double-claim.
         let resumable = try await store.resumablePodcastDownloads().map(\.episodeID.rawValue)
         return Self.keptDownloadClaims(Set(unfinished + resumable), queueIDs: podcastQueueIDs)
+            .filter { !held.contains($0) }
     }
 
     /// Only Keep grants authority to resume a durable download claim. This

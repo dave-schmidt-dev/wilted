@@ -208,7 +208,9 @@ extension WiltedMacModel {
                     for itemID in forcedRedownloadEpisodeIDs {
                         guard !Task.isCancelled else { return }
                         guard let episode = self.episodes.first(where: { $0.id == itemID.rawValue }) else { continue }
-                        self.downloadEpisode(episode, ignoringExisting: true, automaticRecovery: true)
+                        self.downloadEpisode(
+                            episode, ignoringExisting: true, automaticRecovery: true, automatic: true
+                        )
                         if let task = self.podcastDownloadTasks[episode.id] {
                             _ = try? await task.value
                         }
@@ -236,6 +238,7 @@ extension WiltedMacModel {
             // After the library is in memory, not in a parallel task: automation
             // resolves a claimed episode ID against `episodes`.
             startAutomationOnLaunch()
+            resumePossibleDuplicateCatchUps()
             startAutomationTicker()
             startPlaybackCheckpointTicker()
             startTicketDrainTicker()

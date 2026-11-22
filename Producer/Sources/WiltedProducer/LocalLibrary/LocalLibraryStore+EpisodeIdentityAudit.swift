@@ -13,7 +13,7 @@ extension LocalLibraryStore {
         /// across feeds on its own.
         case feedURLMoveCandidate
         /// Distinct IDs whose title, publication date, and duration all match.
-        /// Discovery only: metadata similarity never establishes identity.
+        /// Reports exact matches among the selected IDs. Feed ingest also checks uniqueness across the feed.
         case metadataLookalikeCandidate
         /// Durable evidence about this ID disagrees with itself; see the
         /// entry's `conflicts`.
@@ -128,8 +128,7 @@ extension LocalLibraryStore {
     ///
     /// The call is explicitly targeted: only IDs the caller names are
     /// considered, repeated targets are reported rather than silently dropped,
-    /// and no association is ever inferred across feeds. Title, publication
-    /// date, and duration only discover candidates for a human to review.
+    /// and no association is ever inferred across feeds. A targeted audit reports evidence without changing the feed or its episodes.
     public func podcastEpisodeIdentityAudit(
         targetedAt episodeIDs: [ItemID],
         redactingIdentifyingValues: Bool = true

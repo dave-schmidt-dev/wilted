@@ -45,8 +45,13 @@ extension WiltedMacModel {
         let records = try await store.decisions(forFeed: feedID)
         let queue = try await store.podcastQueueState()
         let stored = episodes.filter { $0.feedID == rawFeedID && $0.removalKind != .dismissed }
+        // A flagged lookalike is left as it is until the owner answers, so it is history here too:
+        // the preview counts only what Apply can change. A failed read throws.
+        let held = Set(try await store.podcastEpisodeIdentityReviewHeldIDs(in: feedID).map(\.rawValue))
         // Finished episodes are not candidates for refresh, so they are history here too.
-        let isHistory = { (episode: WiltedMacEpisode) in episode.removalKind != nil || episode.isPlayed }
+        let isHistory = { (episode: WiltedMacEpisode) in
+            episode.removalKind != nil || episode.isPlayed || held.contains(episode.id)
+        }
         let live = stored.filter { !isHistory($0) }
         let playing = Set([currentPodcastEpisodeID, queue.currentEpisodeID?.rawValue].compactMap { $0 })
         return FeedRulesInput(
@@ -113,8 +118,12 @@ extension WiltedMacModel {
             uniquingKeysWith: { first, _ in first }
         )
         let startedNow = Set(episodes.filter { hasStartedEpisode($0) }.map(\.id))
+        // A flagged lookalike is left as it is, so Apply cannot keep, skip or fetch it before
+        // the owner answers. A failed read throws and applies nothing.
+        let held = Set(try await store.podcastEpisodeIdentityReviewHeldIDs(in: feedID).map(\.rawValue))
         let admissions = plan.admissions.filter {
             current[$0.episodeID] == $0.expected && !startedNow.contains($0.episodeID)
+                && !held.contains($0.episodeID)
         }
         guard !admissions.isEmpty else { return FeedRulesApplyResult(counts: plan.counts, undo: nil) }
 
