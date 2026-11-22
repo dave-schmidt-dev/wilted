@@ -7,6 +7,9 @@ if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
   wilted_reexec_bounded "${BASH_SOURCE[0]}" "$@"
 fi
 
+# The extracted run_leg bodies below are not a hosted run: skip the host-state check.
+export WILTED_HOST_STATE_CHECK=0
+
 # Meta-tests for the WILTED_GATE_LEGS single-leg filter in scripts/test-gate.sh.
 # They run the gate in its self-test mode, which stubs every leg, so no app,
 # simulator or XCUITest is launched. (tests/test-native-gate.sh is at the file
@@ -116,7 +119,7 @@ write_run_leg_harness() {
     printf '%s\n' 'wilted_start_logger() { exec 9>"$1"; }' 'wilted_finish_logger() { exec 9>&-; }'
     printf '%s\n' 'wilted_temp_audit_leg() { return 0; }' 'clear_ui_failure_bundle() { echo "cleared $1"; }'
     printf '%s\n' 'retain_ui_failure_bundle() { echo "retained $1"; }' 'errexit_leg() { set -e; return 3; }' 'passing_leg() { return 0; }'
-    printf '%s\n' 'retain_native_success_bundle() { return 0; }'
+    printf '%s\n' 'retain_native_success_bundle() { return 0; }' 'wilted_host_state_preflight() { return 0; }'
     if [[ "$without_watch_retention" == 1 ]]; then
       sed 's/ || "$name" == watchos-\*//' < <(sed -n '/^run_leg() {/,/^}/p' "$gate")
     else
@@ -182,6 +185,7 @@ source {str(ROOT / 'scripts/lib/native-gate-validation.sh')!r}
 GATE_HARNESS_DEFER_ALL_LEGS={1 if action == 'deferred' else 0}
 source {str(ROOT / 'tests/lib/gate-harness-stubs.sh')!r}
 wilted_temp_prepare_leg() {{ WILTED_TEMP_LEG_WORK="$tmp_root"; }}
+wilted_host_state_preflight() {{ return 0; }}
 is_forced_failure() {{ return 1; }}; is_forced_zero() {{ return 1; }}
 wilted_start_logger() {{ exec 9>"$1"; }}; wilted_finish_logger() {{ exec 9>&-; touch "$tmp_root/logger-finished"; }}
 wilted_temp_audit_leg() {{ return 0; }}

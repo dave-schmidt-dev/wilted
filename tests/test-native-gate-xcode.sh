@@ -645,8 +645,8 @@ exit "$result"
         result=self.session(dict(self.env, WILTED_TEST_TIMEOUT_SECONDS='3', FAKE_TEST_DELAY='60'))
         self.assertEqual(result.returncode, 124, result.stderr)
         self.assertIn('phase=test', result.stderr)
-        self.assertIn('owned-pid=', result.stderr)
-        self.assertIn('executable=', result.stderr)
+        self.assertIn('timeout-evidence path=', result.stderr)
+        self.assertEqual([sorted(p.name for p in d.iterdir()) for d in (self.root / '.logs' / 'timeouts').iterdir()], [['gate-lock-owner', 'process-tree', 'sample']])
         self.assertNotIn('FAKE_TEST_DELAY', result.stderr)
         self.assertIn('simctl shutdown', self.events.read_text())
     def test_signal_during_readiness_cleans_up_owned_boot(self):

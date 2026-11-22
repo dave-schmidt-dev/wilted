@@ -91,7 +91,7 @@ class HostStateTests(unittest.TestCase):
 
     def test_refuses_another_hosted_xcodebuild(self) -> None:
         self.env["HOST_PROCESS_TABLE"] = self.process_table(
-            "400 1 Ss 00:05 /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test-without-building"
+            "400 1 Ss 00:05 /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test-without-building -project Wilted.xcodeproj"
         )
 
         result = self.invoke("ios-unit-tests")
@@ -100,10 +100,20 @@ class HostStateTests(unittest.TestCase):
         self.assertIn("xcodebuild_other=1", result.stderr)
         self.assertIn("native.environment.refused reason=another-hosted-run", result.stderr)
 
+    def test_ignores_another_projects_hosted_xcodebuild(self) -> None:
+        self.env["HOST_PROCESS_TABLE"] = self.process_table(
+            "400 1 Ss 00:05 /Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild test -project Other.xcodeproj"
+        )
+
+        result = self.invoke("ios-unit-tests")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("native.environment.refused", result.stderr)
+
     def test_parallel_gate_returns_preflight_status(self) -> None:
         self.env.update({
             "PATH": str(self.stubs) + os.pathsep + self.env["PATH"],
-            "HOST_PROCESS_TABLE": "400 1 S 00:05 xcodebuild test",
+            "HOST_PROCESS_TABLE": "400 1 S 00:05 xcodebuild test -project Wilted.xcodeproj",
             "NATIVE_SELF_TEST": "1",
             "WILTED_BOUNDED_ENTRY": "1",
             "WILTED_GATE_LEGS": "macos-unit-tests",

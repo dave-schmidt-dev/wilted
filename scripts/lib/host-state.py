@@ -96,6 +96,9 @@ def _is_hosted_xcodebuild(process: Process) -> bool:
     args = _argv(process.command)
     if not args or Path(args[0]).name != "xcodebuild":
         return False
+    # Another project's test run cannot kill ours; only a Wilted run counts.
+    if "wilted" not in process.command.lower():
+        return False
     return any(arg in {"test", "test-without-building"} for arg in args[1:])
 
 

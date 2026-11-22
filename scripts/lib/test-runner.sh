@@ -179,3 +179,19 @@ wilted_trace_locations() {
   set +T
   return "$rc"
 }
+
+# Print one host-state line before a hosted leg and refuse the leg, recording it
+# as a failed preflight (the gate then exits 2), when a Touch ID prompt is pending
+# or another Wilted hosted run is live. Returns 1 when the leg was refused.
+wilted_host_state_preflight() {
+  local name="$1" refused=0
+  if [[ "${WILTED_HOST_STATE_CHECK:-1}" != 0 && ( "$native_self_test" != 1 || -n "${WILTED_HOST_STATE_PS:-}" ) ]]; then
+    TMPDIR="$WILTED_TEMP_LEG_WORK" python3 "$repo_root/scripts/lib/host-state.py" "$name" "$$" || refused=$?
+  fi
+  [[ "$refused" -ne 0 ]] || return 0
+  : >"$native_audit_root/preflight-refused"
+  wilted_temp_audit_leg "$tmp_root" "$name" || true
+  failed_legs=$((failed_legs + 1)); completed_legs=$((completed_legs + 1))
+  status "native.leg.complete name=$name status=$refused reason=preflight-refused"
+  return 1
+}
