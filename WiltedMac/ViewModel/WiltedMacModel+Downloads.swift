@@ -331,13 +331,16 @@ extension WiltedMacModel {
     /// Asks again for each landed download whose flag list could not be read. Called every tick.
     func retryArrivalPreparationsAwaitingFlagList() async {
         for id in arrivalPreparationsAwaitingFlagList.sorted() {
-            guard !isClosingTemporaryState,
-                  let episode = episodes.first(where: { $0.id == id }), episode.removalKind == nil,
-                  episode.downloadState == .completed, !episode.preparationState.isPrepared,
-                  podcastPreparationTasks[id] == nil else {
+            guard !isClosingTemporaryState else { return }
+            // Only a settled episode leaves the list: gone, removed, prepared or already preparing.
+            guard let episode = episodes.first(where: { $0.id == id }), episode.removalKind == nil,
+                  !episode.preparationState.isPrepared, podcastPreparationTasks[id] == nil else {
                 arrivalPreparationsAwaitingFlagList.remove(id)
                 continue
             }
+            // The row may not show the landed download yet (the reload after arrival is still
+            // running). That is not a reason to forget the episode: wait for the next tick.
+            guard episode.downloadState == .completed else { continue }
             await applyArrivalPreparationVerdict(for: episode)
         }
     }

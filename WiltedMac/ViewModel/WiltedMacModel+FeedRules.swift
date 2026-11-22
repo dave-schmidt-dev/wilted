@@ -154,6 +154,10 @@ extension WiltedMacModel {
         do {
             for admission in admissions {
                 let id = try ItemID(rawValue: admission.episodeID)
+                // A skip deletes the episode's audio, so playback is checked again right here, after
+                // every read and write before this one: something that began playing since the
+                // reads above is left alone, and so is anything whose state cannot be read.
+                if admission.decision == .skip, await hasStartedSincePreview(id, store: store) { continue }
                 prior[id] = admission.expected
                 let record = EpisodeDecisionRecord(
                     episodeID: id, decision: admission.decision, source: admission.source,
@@ -226,6 +230,15 @@ extension WiltedMacModel {
                 issued: issued, withdrawn: withdrawn, retired: retired
             )
         )
+    }
+
+    /// Whether the episode is playing, was played or is the queue's current one right now.
+    /// An unreadable queue counts as started.
+    private func hasStartedSincePreview(_ id: ItemID, store: LocalLibraryStore) async -> Bool {
+        if let row = episodes.first(where: { $0.id == id.rawValue }), hasStartedEpisode(row) { return true }
+        if currentPodcastEpisodeID == id.rawValue { return true }
+        guard let queue = try? await store.podcastQueueState() else { return true }
+        return queue.currentEpisodeID == id
     }
 
     // MARK: Undo

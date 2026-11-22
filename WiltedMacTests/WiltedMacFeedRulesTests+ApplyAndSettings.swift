@@ -69,24 +69,45 @@ extension WiltedMacFeedRulesTests {
     }
 
     /// The owner decides an episode after Apply has read the decisions but before it writes. The store
-    /// refuses that write, so Apply neither counts it nor offers to undo it.
+    /// refuses that Keep, so Apply neither counts it nor offers to undo it. "a" is planned as a rule Keep.
     func testApplyDoesNotCountOrUndoAKeepTheStoreRefusedAtCommit() async throws {
         let fixture = try await makeFixture(mixed)
-        let b = try ItemID(rawValue: fixture.id("b"))
+        let a = try ItemID(rawValue: fixture.id("a"))
         let result = try await fixture.model.applyFeedRules(
             feedID: fixture.feedID.rawValue, rules: fixture.editor.rules, progress: { _, _ in },
             beforeWriteForTesting: {
                 try? await fixture.store.save(episodeDecision: EpisodeDecisionRecord(
-                    episodeID: b, decision: .keep, source: .manual, decidedAt: Timestamp(Date())
+                    episodeID: a, decision: .skip, source: .manual, decidedAt: Timestamp(Date())
                 ))
             }
         )
-        XCTAssertEqual(result.counts.totalChanges, 4, "five were planned and one was refused")
+        XCTAssertEqual(result.counts.totalChanges, 4, "five were planned and one Keep was refused")
+        XCTAssertEqual(result.counts.keeps, 2, "the refused Keep is not in the Keep count")
         let undo = try XCTUnwrap(result.undo)
-        XCTAssertNil(undo.applied[b], "the refused Keep is not offered an Undo")
-        XCTAssertNil(undo.prior[b])
+        XCTAssertNil(undo.applied[a], "the refused Keep is not offered an Undo")
+        XCTAssertNil(undo.prior[a])
         let after = try await fixture.decisions()
-        XCTAssertEqual(after[fixture.id("b")]?.source, .manual, "the owner's decision stands")
+        XCTAssertEqual(after[fixture.id("a")]?.decision, .skip)
+        XCTAssertEqual(after[fixture.id("a")]?.source, .manual, "the owner's decision stands")
+    }
+
+    /// Playback begins after Apply's last check and before its write. A skip would delete the audio,
+    /// so the episode is left as it was. "b" is planned as a rule Skip.
+    func testApplyDoesNotSkipAnEpisodeThatStartedPlayingDuringTheCommit() async throws {
+        let fixture = try await makeFixture(mixed)
+        let b = try ItemID(rawValue: fixture.id("b"))
+        let before = try await fixture.decisions()
+        let result = try await fixture.model.applyFeedRules(
+            feedID: fixture.feedID.rawValue, rules: fixture.editor.rules, progress: { _, _ in },
+            beforeWriteForTesting: { fixture.model.currentPodcastEpisodeID = b.rawValue }
+        )
+        XCTAssertEqual(result.counts.totalChanges, 4, "the skip that was left alone is not counted")
+        let undo = try XCTUnwrap(result.undo)
+        XCTAssertNil(undo.applied[b])
+        let after = try await fixture.decisions()
+        XCTAssertEqual(after[fixture.id("b")], before[fixture.id("b")], "its decision is unchanged")
+        let row = try XCTUnwrap(fixture.model.episodes.first { $0.id == b.rawValue })
+        XCTAssertNil(row.removalKind, "it was not retired")
     }
 
     func testReplacingChangesCountsEachWrittenAdmissionByKind() throws {

@@ -193,13 +193,19 @@ final class WiltedMacPossibleDuplicateFlagTests: XCTestCase {
         XCTAssertEqual(model.preferences.stringArray(forKey: WiltedMacModel.possibleDuplicateCatchUpKey), [second.rawValue])
     }
 
-    /// Makes `second` a kept, queued, downloaded episode that is still waiting for preparation.
-    private func downloadedKeptEpisode(_ model: WiltedMacModel, _ second: ItemID) async throws {
+    /// Makes `second` a kept, queued episode, without a download.
+    private func keptEpisode(_ model: WiltedMacModel, _ second: ItemID) async throws {
         let store = try XCTUnwrap(model.store)
         try await store.save(episodeDecision: EpisodeDecisionRecord(
             episodeID: second, decision: .keep, source: .manual, decidedAt: Timestamp(created)
         ))
         try await store.addPodcastQueueEpisode(second)
+        await model.reloadLibraryRows()
+    }
+
+    /// Completes the download in the store only: the model's rows do not show it until a reload.
+    private func landDownload(_ model: WiltedMacModel, _ second: ItemID) async throws {
+        let store = try XCTUnwrap(model.store)
         let media = wiltedTemporaryDirectory("possible-duplicate-media").appendingPathComponent("episode.m4a")
         try Data("audio".utf8).write(to: media)
         let hash = "sha256:" + String(repeating: "b", count: 64)
@@ -213,6 +219,12 @@ final class WiltedMacPossibleDuplicateFlagTests: XCTestCase {
                 episodeID: second, status: .completed, bytesReceived: 5, expectedByteCount: 5,
                 localURL: media, contentHash: hash, updatedAt: Timestamp(created))
         )
+    }
+
+    /// Makes `second` a kept, queued, downloaded episode that is still waiting for preparation.
+    private func downloadedKeptEpisode(_ model: WiltedMacModel, _ second: ItemID) async throws {
+        try await keptEpisode(model, second)
+        try await landDownload(model, second)
         await model.reloadLibraryRows()
     }
 
@@ -237,19 +249,28 @@ final class WiltedMacPossibleDuplicateFlagTests: XCTestCase {
     }
 
     /// A download lands while the flag list cannot be read: its preparation is neither admitted nor
-    /// cancelled, and the next tick asks again instead of waiting for a relaunch.
+    /// cancelled, and the next tick asks again instead of waiting for a relaunch. A tick that comes
+    /// while the library reload after the arrival is still running sees a row that does not show the
+    /// download yet, and must not drop the episode.
     func testAnArrivalWithAnUnreadableFlagListIsRetriedLater() async throws {
         let (model, _, second) = try await flaggedModel()
-        try await downloadedKeptEpisode(model, second)
         _ = try await XCTUnwrap(model.store).clearPodcastEpisodePossibleDuplicate(second)
-        await model.reloadLibraryRows()
-        let episode = try XCTUnwrap(model.episodes.first { $0.id == second.rawValue })
+        try await keptEpisode(model, second)
+        let staleRow = try XCTUnwrap(model.episodes.first { $0.id == second.rawValue })
+        XCTAssertNotEqual(staleRow.downloadState, .completed, "the row has not been reloaded since the download")
         let sequence = model.reservePreparationRequest(for: second.rawValue)
         model.possibleDuplicateHoldReadFailsForTesting = { true }
-        await model.applyArrivalPreparationVerdict(for: episode)
+        await model.applyArrivalPreparationVerdict(for: staleRow)
         XCTAssertEqual(model.arrivalPreparationsAwaitingFlagList, [second.rawValue])
         XCTAssertEqual(model.preparationRequestSequences[second.rawValue], sequence, "the waiting request stays")
+
+        // The download has landed in the store, the reload has not finished, and a tick comes.
+        try await landDownload(model, second)
         model.possibleDuplicateHoldReadFailsForTesting = nil
+        await model.retryArrivalPreparationsAwaitingFlagList()
+        XCTAssertEqual(model.arrivalPreparationsAwaitingFlagList, [second.rawValue], "a stale row does not drop the retry")
+
+        await model.reloadLibraryRows()
         await model.retryArrivalPreparationsAwaitingFlagList()
         XCTAssertTrue(model.arrivalPreparationsAwaitingFlagList.isEmpty, "the retry settled it")
     }
