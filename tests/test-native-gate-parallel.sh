@@ -28,9 +28,9 @@ repo_root="$1"; tmp_root="$2"
 source "$repo_root/scripts/lib/test-runner.sh"
 source "$repo_root/scripts/lib/native-gate-parallel.sh"
 source "$repo_root/scripts/lib/native-gate-legs.sh"
+source "$repo_root/tests/lib/gate-harness-stubs.sh"
 failed_legs=0; completed_legs=0; deferred_legs=0; deferred_leg_names=()
 status() { printf '%s\\n' "$1" >&2; }
-is_deferred_leg() { return 1; }
 trap 'wilted_gate_stop_parallel' EXIT
 trap 'exit 143' TERM
 run_leg() {

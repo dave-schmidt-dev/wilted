@@ -2,6 +2,8 @@
 # Snapshot and audit a gate's inherited temporary root. Callers retain output
 # under their already-owned root (or .logs) and never use this helper to sweep.
 
+source "${BASH_SOURCE[0]%/*}/canonical-path.sh"
+
 wilted_temp_snapshot() {
   local root="$1" output="$2"
   python3 "$WILTED_TEMP_LEAK_CHECKER" snapshot "$root" "$output"
@@ -17,7 +19,7 @@ wilted_temp_mark_owned() {
   local root="$1"
   local canonical_root started
   [[ -d "$root" && ! -L "$root" ]] || return 1
-  canonical_root="$(cd -P "$root" 2>/dev/null && pwd)" || return 1
+  canonical_root="$(wilted_canonical_path "$root")" || return 1
   [[ -n "$canonical_root" && -d "$canonical_root" && ! -L "$canonical_root" ]] || return 1
   started="$(ps -o lstart= -p "$$" 2>/dev/null)" || return 1
   printf 'pid=%s\nstarted=%s\npath=%s\n' "$$" "$started" "$canonical_root" >"$canonical_root/.wilted-temp-owned"
@@ -26,9 +28,9 @@ wilted_temp_mark_owned() {
 wilted_temp_owned_child() {
   local candidate="$1" parent="$2" prefix="$3" canonical="" canonical_parent=""
   [[ -n "$candidate" && -n "$parent" && -d "$candidate" && ! -L "$candidate" ]] || return 1
-  canonical="$(cd -P "$candidate" 2>/dev/null && pwd)" || return 1
+  canonical="$(wilted_canonical_path "$candidate")" || return 1
   [[ "$canonical" == "$candidate" ]] || return 1
-  canonical_parent="$(cd -P "$canonical/.." 2>/dev/null && pwd)" || return 1
+  canonical_parent="$(wilted_canonical_path "$canonical/..")" || return 1
   [[ "$canonical_parent" == "$parent" && "$(basename -- "$canonical")" == "$prefix"* ]]
 }
 
@@ -43,7 +45,7 @@ wilted_temp_remove_owned_pair() {
 }
 
 wilted_temp_prepare_parent() {
-  mkdir -p "$1" && cd -P "$1" 2>/dev/null && pwd
+  mkdir -p "$1" && wilted_canonical_path "$1"
 }
 
 wilted_temp_save_output_streams() { exec 7>&1 8>&2; }
@@ -95,7 +97,7 @@ wilted_temp_audit_leg() {
 _wilted_full_run_owned_dir() {
   local candidate="$1" expected="$2" canonical=""
   [[ -n "$candidate" && -n "$expected" && -d "$candidate" && ! -L "$candidate" ]] || return 1
-  canonical="$(cd -P "$candidate" 2>/dev/null && pwd)" || return 1
+  canonical="$(wilted_canonical_path "$candidate")" || return 1
   [[ "$canonical" == "$expected" ]]
 }
 
@@ -103,7 +105,7 @@ _wilted_full_run_owned_audit() {
   local candidate="$1" expected_parent="$2" canonical=""
   [[ -n "$candidate" && -n "$expected_parent" && "$candidate" == "$expected_parent"/full-run-temp-audit.* ]] || return 1
   _wilted_full_run_owned_dir "$candidate" "$candidate" || return 1
-  canonical="$(cd -P "$candidate/.." 2>/dev/null && pwd)" || return 1
+  canonical="$(wilted_canonical_path "$candidate/..")" || return 1
   [[ "$canonical" == "$expected_parent" ]]
 }
 
@@ -260,12 +262,12 @@ _wilted_full_run_worker() {
     exit "$result"
   }
   trap cleanup_full_run EXIT
-  wilted_full_run_repo="$(cd -P "$wilted_full_run_repo_input" 2>/dev/null && pwd)" || exit 1
+  wilted_full_run_repo="$(wilted_canonical_path "$wilted_full_run_repo_input")" || exit 1
   wilted_full_run_root="${TMPDIR:?TMPDIR must be set}"
   trap 'wilted_full_run_signal_status=130; [[ "$wilted_full_run_launching" == 1 ]] || exit 130' INT
   trap 'wilted_full_run_signal_status=143; [[ "$wilted_full_run_launching" == 1 ]] || exit 143' TERM
   mkdir -p "$wilted_full_run_repo/.logs" "$wilted_full_run_repo/.build"
-  wilted_full_run_build="$(cd -P "$wilted_full_run_repo/.build" 2>/dev/null && pwd)" || exit 1
+  wilted_full_run_build="$(wilted_canonical_path "$wilted_full_run_repo/.build")" || exit 1
   [[ "$wilted_full_run_build" == "$wilted_full_run_repo/.build" ]] || exit 1
   wilted_full_run_lock="$wilted_full_run_build/full-run.lock"
   wilted_full_run_recovery="$wilted_full_run_lock.recovery"
@@ -350,9 +352,9 @@ _wilted_full_run_worker() {
   # Write the record atomically so an observer never reads an empty pid file.
   printf 'pid=%s\nstarted=%s\n' "$wilted_full_run_owner_pid" "$wilted_full_run_owner_started" >"$wilted_full_run_lock/pid.tmp" || exit 1
   mv -f "$wilted_full_run_lock/pid.tmp" "$wilted_full_run_lock/pid" || exit 1
-  wilted_full_run_audit_parent="$(cd -P "$wilted_full_run_repo/.logs" 2>/dev/null && pwd)" || exit 1
+  wilted_full_run_audit_parent="$(wilted_canonical_path "$wilted_full_run_repo/.logs")" || exit 1
   wilted_full_run_audit="$(mktemp -d "$wilted_full_run_audit_parent/full-run-temp-audit.XXXXXX")" || exit 1
-  wilted_full_run_audit="$(cd -P "$wilted_full_run_audit" 2>/dev/null && pwd)" || exit 1
+  wilted_full_run_audit="$(wilted_canonical_path "$wilted_full_run_audit")" || exit 1
   _wilted_full_run_owned_audit "$wilted_full_run_audit" "$wilted_full_run_audit_parent" || exit 1
   wilted_temp_snapshot "$wilted_full_run_root" "$wilted_full_run_audit/before.json" || exit 1
   wilted_full_run_runner="$wilted_full_run_repo/scripts/run-bounded.py"

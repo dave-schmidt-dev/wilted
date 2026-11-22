@@ -2,25 +2,40 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
 
-RUNTIME = 'com.apple.CoreSimulator.SimRuntime.iOS-26-0'
+PROJECT_SPEC = (Path(__file__).resolve().parents[1] / "project.yml").read_text()
+IOS_VERSION = re.search(r'^    iOS: "([0-9.]+)"$', PROJECT_SPEC, re.MULTILINE)[1]
+RUNTIME = 'com.apple.CoreSimulator.SimRuntime.iOS-' + IOS_VERSION.replace('.', '-')
 TYPE = 'com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro'
 UDID = '11111111-1111-1111-1111-111111111111'
 # Backstop for event-driven waits: far above the whole file's runtime under load, below the 1800 s phase0 leg budget.
 SAFETY_SECONDS = 900
+
+def project_metadata(project_yml):
+    """Read the XcodeGen project name from the real spec."""
+    source = project_yml.read_text()
+    name = re.search(r"(?m)^name:\s*([^\s#]+)", source)
+    if name is None:
+        raise ValueError('project.yml must define name')
+    return name.group(1).strip('"\'')
 
 class XcodeFixture:
     """Copy canonical helpers and provision fake tools inside an owned temp root."""
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='wilted-xcode-meta-', dir=os.environ['TMPDIR'])
         self.root = Path(self.temp.name).resolve()
+        self.project_name = project_metadata(self.repository_root / 'project.yml')
+        (self.root / 'project.yml').write_bytes((self.repository_root / 'project.yml').read_bytes())
+        stubs = self.root / 'tests/lib'; stubs.mkdir(parents=True)
+        shutil.copy(self.repository_root / 'tests/lib/gate-harness-stubs.sh', stubs / 'gate-harness-stubs.sh')
         scripts = self.root / 'scripts'; (scripts / 'lib').mkdir(parents=True)
-        for path in ['run-bounded.py', 'build-with-cache.py', 'check-temp-leaks.py', 'lib/native-gate-simulator.sh', 'lib/simctl_gate_lib.sh', 'lib/native-gate-xcode.sh', 'lib/mac-test-parent.sh', 'lib/test-runner.sh', 'select-ios-simulator.py']:
+        for path in ['run-bounded.py', 'build-with-cache.py', 'check-temp-leaks.py', 'lib/native-gate-simulator.sh', 'lib/simctl_gate_lib.sh', 'lib/native-gate-xcode.sh', 'lib/mac-test-parent.sh', 'lib/test-runner.sh', 'lib/canonical-path.sh', 'lib/canonical_path.py', 'select-ios-simulator.py']:
             shutil.copy(self.repository_root / 'scripts' / path, scripts / path)
         self.bin = self.root / 'bin'; self.bin.mkdir()
         self.state = self.root / 'devices.json'; self.events = self.root / 'events'
@@ -133,31 +148,26 @@ raise SystemExit(int(os.environ.get('FAKE_TEST_STATUS','0')) if phase=='test' el
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
     def write_ios_leg_script(self):
-        project = self.root / 'generated/Project.xcodeproj'
+        project = self.root / 'generated' / (self.project_name + '.xcodeproj')
         schemes = project / 'xcshareddata/xcschemes'
         schemes.mkdir(parents=True, exist_ok=True)
         (schemes / 'WiltediOS.xcscheme').write_text('<Scheme><TestAction /></Scheme>')
         script = self.root / 'leg.sh'
         script.write_text('''#!/bin/bash
 set -Eeuo pipefail
-repo_root="$1"; tmp_root="$repo_root"; native_project="$repo_root/generated/Project.xcodeproj"
+repo_root="$1"; tmp_root="$repo_root"; native_project="$repo_root/generated/__PROJECT_NAME__.xcodeproj"
 build_with_cache="$repo_root/scripts/build-with-cache.py"
 xcode_test_timeout_seconds=3; WILTED_TEMP_LEG_WORK="$repo_root"; integration_root="$repo_root"
 source "$repo_root/scripts/lib/test-runner.sh"
 source "$repo_root/scripts/lib/mac-test-parent.sh"
 source "$repo_root/scripts/lib/native-gate-simulator.sh"
 source "$repo_root/scripts/lib/native-gate-xcode.sh"
-require_tool() { :; }
-assert_test_sources() { :; }
-build_cache_path() { python3 "$build_with_cache" path "$@"; }
-find_project() { printf '%s\\n' "$native_project"; }
+source "$repo_root/tests/lib/gate-harness-stubs.sh"
 status() { printf '%s\\n' "$1" >&2; }
-run_with_build_cache() {
- local kind="$1" key="$2"; shift 2
- WILTED_TEST_TIMEOUT_SECONDS=10 WILTED_WORK_PHASE=build python3 "$build_with_cache" run "$kind" "$key" -- "$@"
-}
+GATE_HARNESS_PROJECT_PATH="$native_project"
+GATE_HARNESS_BUILD_TIMEOUT_SECONDS=10
 xcode_test_leg ios-unit-tests "$repo_root" WiltediOS "platform=iOS Simulator,id=11111111-1111-1111-1111-111111111111" WiltediOSTests
-''')
+'''.replace('__PROJECT_NAME__', self.project_name))
         return script
     def session(self, env=None, key="native-ios-unit-tests"):
         return self.invoke('bash', str(self.root / 'scripts/lib/native-gate-simulator.sh'), 'run', str(self.root), UDID,

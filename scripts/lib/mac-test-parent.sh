@@ -2,11 +2,12 @@
 # Configure generated macOS XCTest schemes without exporting a host-owned
 # temporary parent into the sandboxed UI-test runner.
 # This file is sourced by native test and snapshot/capture runners.
+source "${BASH_SOURCE[0]%/*}/canonical-path.sh"
 
 wilted_mac_test_parent_is_canonical() {
   local parent="$1" canonical
   [[ "$parent" == /* && -d "$parent" && ! -L "$parent" ]] || return 1
-  canonical="$(cd -P "$parent" 2>/dev/null && pwd)" || return 1
+  canonical="$(wilted_canonical_path "$parent")" || return 1
   [[ "$canonical" == "$parent" && -d "$canonical" && ! -L "$canonical" ]]
 }
 
@@ -120,7 +121,7 @@ wilted_mac_test_scheme_configure() {
     return 1
   }
 
-  python3 - "$scheme" "$parent" "$@" <<'PY'
+  WILTED_CANONICAL_PATH_LIBRARY="${BASH_SOURCE[0]%/*}" python3 - "$scheme" "$parent" "$@" <<'PY'
 import copy
 import os
 from pathlib import Path
@@ -128,8 +129,11 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
+sys.path.insert(0, os.environ["WILTED_CANONICAL_PATH_LIBRARY"])
+from canonical_path import canonical_path
+
 scheme, parent, *assignments = sys.argv[1:]
-if not os.path.isabs(parent) or os.path.realpath(parent) != parent or not os.path.isdir(parent) or os.path.islink(parent):
+if not os.path.isabs(parent) or canonical_path(parent) != parent or not os.path.isdir(parent) or os.path.islink(parent):
     raise SystemExit("mac-test-parent.error invalid canonical parent")
 
 updates = {}

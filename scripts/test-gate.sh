@@ -1,6 +1,22 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+leg_names=(
+  xcodegen-reproducible
+  wiltedkit-tests
+  cloudsync-tests
+  playback-tests
+  wiltedproducer-tests
+  macos-unit-tests
+  ios-unit-tests
+  macos-ui-tests
+  ios-pixel-snapshot-tests
+)
+if [[ "${1:-}" == --list-legs ]]; then
+  printf '%s\n' "${leg_names[@]}"
+  exit 0
+fi
+
 if [[ "${WILTED_BOUNDED_ENTRY:-0}" != "1" ]]; then
   repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   source "$repo_root/scripts/lib/test-runner.sh"
@@ -127,17 +143,6 @@ source "$repo_root/scripts/lib/simctl_gate_lib.sh"
   printf '%s\n' 'native.error WILTED_XCODE_BUILD_AND_TEST_TIMEOUT_SECONDS must be a positive integer' >&2
   exit 2
 }
-leg_names=(
-  xcodegen-reproducible
-  wiltedkit-tests
-  cloudsync-tests
-  playback-tests
-  wiltedproducer-tests
-  macos-unit-tests
-  ios-unit-tests
-  macos-ui-tests
-  ios-pixel-snapshot-tests
-)
 leg_reports=(none xctest xctest xctest xctest count count count count)
 # shellcheck source=lib/native-gate-staging.sh
 source "$repo_root/scripts/lib/native-gate-staging.sh"

@@ -26,6 +26,34 @@ MKTEMP = re.compile(
     r"""(?:^|[;&|({]|\$\()\s*mktemp\b((?:\s+-[A-Za-z]+)*)(?:\s+("[^"]*"|'[^']*'|[^\s;&|)]+))?"""
 )
 TMPDIR_WILTED_ROOT = re.compile(r"""^["']?\$\{?TMPDIR\b[^/]*/wilted-""")
+TMPDIR_PATH = re.compile(r'\$\{?TMPDIR\b[^\s/]*/|environment\["TMPDIR"\]')
+COMPARISON = re.compile(r'\s(?:==|!=)\s')
+SHELL_ASSIGNMENT = re.compile(r'^\s*(?:local\s+)?(\w+)=(.*)')
+
+
+def raw_scratch_comparison(line: str, scratch_names: set[str]) -> bool:
+    """Detect direct paths and shell variables assigned a TMPDIR mktemp result."""
+    if line.lstrip().startswith(("#", "//")):
+        return False
+    assignment = SHELL_ASSIGNMENT.match(line)
+    if assignment:
+        name, value = assignment.groups()
+        if MKTEMP.search(value) and TMPDIR_PATH.search(value):
+            scratch_names.add(name)
+        else:
+            scratch_names.discard(name)
+    if line.lstrip().startswith(("[", "test ")):
+        line = line.replace(" = ", " == ")
+    if not COMPARISON.search(line):
+        return False
+    for side in COMPARISON.split(line):
+        if re.search(r'\b(?:wilted_canonical_path\s+|canonical_path\()', side):
+            continue
+        if TMPDIR_PATH.search(side) or any(
+            re.search(r'\$\{?' + name + r'\b', side) for name in scratch_names
+        ):
+            return True
+    return False
 
 
 def selected(relative: Path) -> bool:
@@ -40,6 +68,8 @@ def selected(relative: Path) -> bool:
         return True
     if relative.suffix == ".py":
         return "tests" not in relative.parts and not relative.name.startswith("test_")
+    if relative.suffix == ".swift":
+        return "scripts" in relative.parts or "tests" in relative.parts
     return False
 
 
@@ -67,6 +97,7 @@ def mktemp_findings(line: str) -> list[str]:
 def violations(relative: Path, contents: str) -> list[str]:
     """Return source locations that point at a global temp root or escape TMPDIR."""
     findings = []
+    scratch_names: set[str] = set()
     for number, line in enumerate(contents.splitlines(), 1):
         # Embedded image bytes in archived HTML are data, not an instruction.
         text = re.sub(r'data:image/[^"\s]+', 'data:image/embedded', line)
@@ -74,6 +105,10 @@ def violations(relative: Path, contents: str) -> list[str]:
             findings.append(f"{relative}:{number}: absolute global temp path")
         if shell_source(relative):
             findings.extend(f"{relative}:{number}: {reason}" for reason in mktemp_findings(text))
+        if (shell_source(relative) or relative.suffix == ".swift") and raw_scratch_comparison(text, scratch_names):
+            findings.append(
+                f"{relative}:{number}: TMPDIR scratch paths must use the canonical-path helper before comparison"
+            )
     return findings
 
 

@@ -78,7 +78,8 @@ print(cache)
 PY
 )"
 # The helper resolves symlinks; a checkout under $TMPDIR is /var -> /private/var.
-[[ "$cache_root" == "$(cd -P "$repo_root" && pwd)/.build/xcode/native-macos-ui-tests" ]] || fail "Mac UI cache resolves outside the checkout: $cache_root"
+expected_cache_root="$(wilted_canonical_path "$repo_root/.build/xcode/native-macos-ui-tests")"
+[[ "$cache_root" == "$expected_cache_root" ]] || fail "Mac UI cache resolves outside the checkout: $cache_root"
 pass 'Mac UI products resolve inside the checkout-owned .build/xcode/native-macos-ui-tests cache'
 
 # 4. Synthetic owned products.

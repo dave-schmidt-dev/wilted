@@ -371,7 +371,8 @@ cp "$repo_root/scripts/record-mac-snapshots.sh" "$repo_root/scripts/record-walkt
   "$repo_root/scripts/build-with-cache.py" "$capture_repo/scripts/"
 cp "$repo_root/scripts/run-bounded.py" "$repo_root/scripts/check-temp-leaks.py" "$capture_repo/scripts/"
 cp "$repo_root/scripts/lib/test-runner.sh" "$repo_root/scripts/lib/test-temp-state.sh" \
-  "$repo_root/scripts/lib/mac-test-parent.sh" "$repo_root/scripts/lib/native-gate-xcode.sh" "$capture_repo/scripts/lib/"
+  "$repo_root/scripts/lib/mac-test-parent.sh" "$repo_root/scripts/lib/native-gate-xcode.sh" \
+  "$repo_root/scripts/lib/canonical-path.sh" "$repo_root/scripts/lib/canonical_path.py" "$capture_repo/scripts/lib/"
 printf 'fixture\n' >"$capture_repo/project.yml"
 for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests WiltediOSIntents WiltediOSUITests WiltedWatch WiltedWatchTests; do
   mkdir -p "$capture_repo/$directory"

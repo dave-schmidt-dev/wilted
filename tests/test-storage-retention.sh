@@ -62,6 +62,7 @@ missing_scripts="$test_root/missing-runner/scripts"
 mkdir -p "$missing_scripts/lib"
 cp "$wrapper" "$missing_scripts/with-spec-scratch.sh"
 cp "$root/scripts/lib/test-temp-state.sh" "$missing_scripts/lib/test-temp-state.sh"
+cp "$root/scripts/lib/canonical-path.sh" "$root/scripts/lib/canonical_path.py" "$missing_scripts/lib/"
 set +e
 env TMPDIR="$missing_root" bash "$missing_scripts/with-spec-scratch.sh" true
 missing_status=$?

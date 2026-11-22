@@ -18,6 +18,7 @@ snapshots=WiltediOSUITests/__Snapshots__/WiltediOSPixelSnapshotTests
 mkdir -p "$fixture/scripts/lib" "$fixture/$snapshots" "$root/bin" "$root/scratch"
 cp "$repo_root/scripts/record-ios-snapshots.sh" "$fixture/scripts/"
 cp "$repo_root/scripts/lib/test-temp-state.sh" "$fixture/scripts/lib/"
+cp "$repo_root/scripts/lib/canonical-path.sh" "$repo_root/scripts/lib/canonical_path.py" "$fixture/scripts/lib/"
 cp "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift" "$fixture/WiltediOSUITests/"
 printf '%s\n' fixture >"$fixture/project.yml"
 for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests WiltediOSIntents WiltedWatch WiltedWatchTests; do mkdir -p "$fixture/$directory"; done
@@ -61,6 +62,8 @@ cat >"$fixture/scripts/build-with-cache.py" <<'PYBUILD'
 import os, sys
 from pathlib import Path
 args = sys.argv
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+from canonical_path import canonical_path
 assert args[1:4] == ["run", "xcode", "native-ios-pixel-snapshot-tests"], "recorder.guard.shared-cache-rejected"
 project = Path(args[args.index("-project") + 1]).parent
 products = project.parent / "products"
@@ -69,7 +72,7 @@ expected = "CONFIGURATION_BUILD_DIR=" + str(products) + suffix
 settings = [arg for arg in args if arg.startswith("CONFIGURATION_BUILD_DIR=")]
 value = settings[0].partition("=")[2] if len(settings) == 1 else ""
 prefix = value[:-len(suffix)] if value.endswith(suffix) else ""
-assert len(settings) == 1 and prefix and Path(prefix).resolve() == products.resolve(), (
+assert len(settings) == 1 and prefix and canonical_path(prefix) == canonical_path(products), (
     "recorder.guard.foreign-products-rejected " + repr({"settings": settings, "expected": expected}))
 assert products.is_dir(), "recorder.guard.owned-products-missing"
 fresh = project / "WiltediOSUITests/__Snapshots__/WiltediOSPixelSnapshotTests"

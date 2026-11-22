@@ -109,9 +109,10 @@ assert_absent 'native.results.prepare' "$log"
 write_run_leg_harness() {
   local harness="$1" without_watch_retention="$2"
   {
-    printf '%s\n' 'set -Eeuo pipefail' 'tmp_root="$1"; native_self_test=0; declare -i completed_legs=0 failed_legs=0'
+    printf '%s\n' 'set -Eeuo pipefail' 'tmp_root="$1"; repo_root="$2"; native_self_test=0; declare -i completed_legs=0 failed_legs=0'
+    printf '%s\n' 'source "$repo_root/tests/lib/gate-harness-stubs.sh"'
     printf '%s\n' 'status() { printf "%s\n" "$*"; }' 'wilted_temp_prepare_leg() { WILTED_TEMP_LEG_WORK="$tmp_root"; }'
-    printf '%s\n' 'is_deferred_leg() { return 1; }' 'is_forced_failure() { return 1; }' 'is_forced_zero() { return 1; }'
+    printf '%s\n' 'is_forced_failure() { return 1; }' 'is_forced_zero() { return 1; }'
     printf '%s\n' 'wilted_start_logger() { exec 9>"$1"; }' 'wilted_finish_logger() { exec 9>&-; }'
     printf '%s\n' 'wilted_temp_audit_leg() { return 0; }' 'clear_ui_failure_bundle() { echo "cleared $1"; }'
     printf '%s\n' 'retain_ui_failure_bundle() { echo "retained $1"; }' 'errexit_leg() { set -e; return 3; }' 'passing_leg() { return 0; }'
@@ -137,7 +138,7 @@ write_run_leg_harness() {
 harness="$tmp_dir/run-leg-harness.sh"
 write_run_leg_harness "$harness" 0
 mkdir -p "$tmp_dir/run-leg-root"
-bash "$harness" "$tmp_dir/run-leg-root" >"$tmp_dir/run-leg.log" 2>&1 || { cat "$tmp_dir/run-leg.log" >&2; exit 1; }
+bash "$harness" "$tmp_dir/run-leg-root" "$repo_root" >"$tmp_dir/run-leg.log" 2>&1 || { cat "$tmp_dir/run-leg.log" >&2; exit 1; }
 for name in macos-unit-tests ios-unit-tests watchos-unit-tests; do
   assert_contains "retained $name" "$tmp_dir/run-leg.log"
   assert_contains "cleared $name" "$tmp_dir/run-leg.log"
@@ -151,7 +152,7 @@ assert_contains 'after failed_legs=4' "$tmp_dir/run-leg.log"
 # failed Watch result. It only transforms the scratch copy; the source gate is untouched.
 negative_harness="$tmp_dir/run-leg-no-watch-retention.sh"
 write_run_leg_harness "$negative_harness" 1
-bash "$negative_harness" "$tmp_dir/run-leg-root" >"$tmp_dir/run-leg-negative.log" 2>&1 || {
+bash "$negative_harness" "$tmp_dir/run-leg-root" "$repo_root" >"$tmp_dir/run-leg-negative.log" 2>&1 || {
   cat "$tmp_dir/run-leg-negative.log" >&2; exit 1;
 }
 assert_absent 'retained watchos-unit-tests' "$tmp_dir/run-leg-negative.log"
@@ -178,8 +179,9 @@ native_results_dir={str(evidence) if destination else ''!r}
 native_self_test=0; declare -i completed_legs=0 failed_legs=0 deferred_legs=0; deferred_leg_names=()
 status() {{ printf '%s\\n' "$*"; }}
 source {str(ROOT / 'scripts/lib/native-gate-validation.sh')!r}
+GATE_HARNESS_DEFER_ALL_LEGS={1 if action == 'deferred' else 0}
+source {str(ROOT / 'tests/lib/gate-harness-stubs.sh')!r}
 wilted_temp_prepare_leg() {{ WILTED_TEMP_LEG_WORK="$tmp_root"; }}
-is_deferred_leg() {{ [[ {action!r} == deferred ]]; }}
 is_forced_failure() {{ return 1; }}; is_forced_zero() {{ return 1; }}
 wilted_start_logger() {{ exec 9>"$1"; }}; wilted_finish_logger() {{ exec 9>&-; touch "$tmp_root/logger-finished"; }}
 wilted_temp_audit_leg() {{ return 0; }}
@@ -353,9 +355,9 @@ xcode_test_timeout_seconds=1
 xcode_build_and_test_timeout_seconds=1
 record_argv="$tmp_root/argv-$label.txt"
 mkdir -p "$tmp_root/fake/Fake.xcodeproj" "$WILTED_TEMP_LEG_WORK"
-require_tool() { return 0; }
-assert_test_sources() { return 0; }
-find_project() { printf '%s\n' "$tmp_root/fake/Fake.xcodeproj"; }
+GATE_HARNESS_PROJECT_PATH="$tmp_root/fake/Fake.xcodeproj"
+GATE_HARNESS_BUILD_ARGUMENTS_FILE="$tmp_root/build-argv-$label.txt"
+source "$repo_root/tests/lib/gate-harness-stubs.sh"
 wilted_mac_test_scheme_configure() { return 0; }
 wilted_mac_test_cleanup_roots() { return 0; }
 wilted_stop_active_ui_lock() { return 0; }
@@ -363,7 +365,6 @@ wilted_stop_active_supervisor() { return 0; }
 wilted_wait_active_supervisor() { wait "$WILTED_ACTIVE_SUPERVISOR_PID"; }
 gate_ui_test_lock() { printf '%s\n' "$@" >"$record_argv"; }
 wilted_gate_simulator_session() { printf '%s\n' "$@" >"$record_argv"; }
-run_with_build_cache() { printf '%s\n' "$@" >"$tmp_root/build-argv-$label.txt"; }
 # shellcheck source=/dev/null
 source "$repo_root/scripts/lib/native-gate-xcode.sh"
 wilted_testmanagerd_preflight() { :; }

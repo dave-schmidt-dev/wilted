@@ -384,6 +384,8 @@ class BuildWithCacheTests(unittest.TestCase):
         (scripts / "lib").mkdir(parents=True)
         shutil.copy(ROOT / "scripts/lib/test-runner.sh", scripts / "lib/test-runner.sh")
         shutil.copy(ROOT / "scripts/lib/test-temp-state.sh", scripts / "lib/test-temp-state.sh")
+        shutil.copy(ROOT / "scripts/lib/canonical-path.sh", scripts / "lib/canonical-path.sh")
+        shutil.copy(ROOT / "scripts/lib/canonical_path.py", scripts / "lib/canonical_path.py")
         shutil.copy(ROOT / "scripts/lib/temp-sweep.sh", scripts / "lib/temp-sweep.sh")
         shutil.copy(ROOT / "scripts/check-temp-leaks.py", scripts / "check-temp-leaks.py")
         shutil.copy(HELPER, scripts / "build-with-cache.py")

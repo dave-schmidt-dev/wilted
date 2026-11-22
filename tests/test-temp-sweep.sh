@@ -35,7 +35,7 @@ source "$repo_root/scripts/lib/test-temp-state.sh"
 
 mark_dead_owned() {
     local canonical
-    canonical="$(cd -P "$1" 2>/dev/null && pwd)" || return 1
+    canonical="$(wilted_canonical_path "$1")" || return 1
     printf 'pid=99999\nstarted=dead-owner\npath=%s\n' "$canonical" >"$canonical/.wilted-temp-owned"
 }
 
@@ -136,7 +136,7 @@ wilted_sweep_stale_temp_dirs "$sweep_root" 24 >/dev/null 2>&1
 active_owner="$sweep_root/wilted-active-owner"
 active_child="$sweep_root/wilted-active-child"
 mkdir "$active_owner" "$active_child"
-active_owner_canonical="$(cd -P "$active_owner" 2>/dev/null && pwd)"
+active_owner_canonical="$(wilted_canonical_path "$active_owner")"
 printf 'pid=%s\nstarted=%s\npath=%s\n' "$$" "$(ps -o lstart= -p "$$")" "$active_owner_canonical" >"$active_owner/.wilted-temp-owned"
 mark_dead_owned "$active_child"
 backdate "$active_owner" 48
@@ -186,7 +186,7 @@ slash_owned="$slash_parent/wilted-slash-spelling"
 mkdir -p "$slash_owned"
 wilted_temp_mark_owned "$slash_owned/"
 marker_path="$(sed -n 's/^path=//p' "$slash_owned/.wilted-temp-owned")"
-slash_owned_canonical="$(cd -P "$slash_owned" 2>/dev/null && pwd)"
+slash_owned_canonical="$(wilted_canonical_path "$slash_owned")"
 [[ "$marker_path" == "$slash_owned_canonical" ]] || fail 'owned marker did not canonicalize its path'
 printf 'pid=99999\nstarted=dead-owner\npath=%s\n' "$marker_path" >"$slash_owned/.wilted-temp-owned"
 backdate "$slash_owned" 48

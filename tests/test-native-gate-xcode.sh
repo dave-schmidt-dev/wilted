@@ -24,6 +24,8 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 RUNTIME, TYPE, UDID = fixture.RUNTIME, fixture.TYPE, fixture.UDID
 
+DEVICE_NAME = "wilted-persistent-" + RUNTIME.rsplit(".", 1)[1]
+
 class XcodeLifecycleTests(fixture.XcodeFixture, unittest.TestCase):
     repository_root = ROOT
     def managed_root(self, host=None):
@@ -49,19 +51,21 @@ class XcodeLifecycleTests(fixture.XcodeFixture, unittest.TestCase):
         for name in ['leg_wiltedkit_tests', 'leg_wiltedproducer_tests']:
             match = re.search(r'^' + name + r'\(\) \{\n.*?^\}', source, re.MULTILINE | re.DOTALL)
             self.assertIsNotNone(match); functions.append(match.group())
-        for directory in ['WiltedKit/Tests/WiltedDomainTests/Fixtures',
-                          'Producer/Tests', 'contracts/fixtures']:
-            (self.root / directory).mkdir(parents=True, exist_ok=True)
-        for relative in ['contracts/fixtures/sample.json', 'WiltedKit/Tests/WiltedDomainTests/Fixtures/sample.json']:
-            (self.root / relative).write_text('{}')
+        for manifest in ROOT.glob('*/Package.swift'):
+            (self.root / manifest.parent.name / 'Tests').mkdir(parents=True, exist_ok=True)
+        authority = ROOT / 'contracts/fixtures'
+        manifest, = ROOT.glob('*/Tests/*/Fixtures/FixtureManifest.json')
+        for directory in [authority, manifest.parent]:
+            shutil.copytree(directory, self.root / directory.relative_to(ROOT), dirs_exist_ok=True)
         harness = self.root / 'package-leg.sh'
         harness.write_text("""#!/bin/bash
 set -Eeuo pipefail
 repo_root="$FAKE_REPO"; tmp_root="$FAKE_REPO"
 fail() { echo "$1" >&2; exit 91; }
-assert_test_sources() { :; }; require_tool() { :; }
-build_cache_path() { printf '%s\\n' "$FAKE_REPO/cache"; }
-run_with_build_cache() { echo build >>"$FAKE_EVENTS"; return "$FAKE_BUILD_STATUS"; }
+GATE_HARNESS_CACHE_PATH="$FAKE_REPO/cache"
+GATE_HARNESS_BUILD_EVENTS_FILE="$FAKE_EVENTS"
+GATE_HARNESS_BUILD_STATUS="$FAKE_BUILD_STATUS"
+source "$repo_root/tests/lib/gate-harness-stubs.sh"
 run_package_xctest_bundles() {
  echo cached >>"$FAKE_EVENTS"
  printf '%s\\n' 'testFixtureManifestPinsAllAuthoritativeCopies' 'testPublishDecodeFixture' >"$3"
@@ -71,7 +75,7 @@ run_package_xctest_bundles() {
         return harness
 
     def ios_admission_leg(self, label, require_products=False, require_sdk_products=False):
-        project = self.root / 'generated/Project.xcodeproj'
+        project = self.root / 'generated' / (self.project_name + '.xcodeproj')
         schemes = project / 'xcshareddata/xcschemes'; schemes.mkdir(parents=True, exist_ok=True)
         scheme = schemes / 'WiltediOS.xcscheme'
         if not scheme.exists():
@@ -122,13 +126,12 @@ repo_root="$1";tmp_root="$1";WILTED_TEMP_LEG_WORK="$1/legs/$2/work";mkdir -p "$W
 source "$1/scripts/lib/test-runner.sh"
 source "$1/scripts/lib/mac-test-parent.sh"
 source "$1/scripts/lib/native-gate-simulator.sh"
+source "$1/tests/lib/gate-harness-stubs.sh"
 source "$1/scripts/lib/native-gate-xcode.sh"
-require_tool() { :; };assert_test_sources() { :; }
-find_project() { printf '%s\\n' "$repo_root/generated/Project.xcodeproj"; }
-build_cache_path() { python3 "$build_with_cache" path "$@"; }
-run_with_build_cache() { local kind="$1" key="$2"; shift 2; WILTED_TEST_TIMEOUT_SECONDS=10 WILTED_WORK_PHASE=build python3 "$build_with_cache" run "$kind" "$key" -- "$@"; }
+GATE_HARNESS_PROJECT_PATH="$repo_root/generated/{project_name}.xcodeproj"
+GATE_HARNESS_BUILD_TIMEOUT_SECONDS=10
 xcode_test_leg "$2" "$repo_root" WiltediOS "platform=iOS Simulator,id=11111111-1111-1111-1111-111111111111" "$3"
-''')
+'''.replace('{project_name}', self.project_name))
         source = (ROOT / 'project.yml').read_text()
         embed_block = source.split('      - name: Embed the Watch app (not in Release)\n', 1)[1].split('    settings:', 1)[0]
         embed = '\n'.join(line[10:] for line in embed_block.split('        script: |\n', 1)[1].splitlines())
@@ -144,7 +147,7 @@ xcode_test_leg "$2" "$repo_root" WiltediOS "platform=iOS Simulator,id=11111111-1
     def test_ios_unit_has_owned_signed_embedded_framework_admission(self):
         self.select()
         record = self.ios_admission_leg('ios-unit-tests')
-        self.assertEqual(record['project'], str(self.root / 'ios-unit-tests-project/Project.xcodeproj'))
+        self.assertEqual(record['project'], str(self.root / 'ios-unit-tests-project' / (self.project_name + '.xcodeproj')))
         self.assertIn('CODE_SIGNING_ALLOWED=YES', record['args'])
         self.assertIn('CODE_SIGN_IDENTITY=-', record['args'])
         expected = str(self.root / 'legs/ios-unit-tests/products/Debug-iphonesimulator/WiltediOS.app/Frameworks')
@@ -155,7 +158,7 @@ xcode_test_leg "$2" "$repo_root" WiltediOS "platform=iOS Simulator,id=11111111-1
         self.select()
         self.ios_admission_leg('ios-unit-tests')
         record = self.ios_admission_leg('ios-pixel-snapshot-tests')
-        self.assertEqual(record['project'], str(self.root / 'generated/Project.xcodeproj'))
+        self.assertEqual(record['project'], str(self.root / 'generated' / (self.project_name + '.xcodeproj')))
         self.assertFalse(any(arg.startswith('CODE_SIGN') for arg in record['args']))
         self.assertFalse(any(item['key'].startswith('DYLD_') for item in record['environment']))
         self.assertIn('-only-testing:WiltediOSUITests/WiltediOSPixelSnapshotTests', record['args'])
@@ -362,30 +365,29 @@ xcode_test_leg "$2" "$repo_root" WiltediOS "platform=iOS Simulator,id=11111111-1
 
     def managed_mac_leg(self, delay='0', status='0', extra_env=None):
         parent=self.root / 'work';parent.mkdir(exist_ok=True)
-        project=self.root / 'generated/Project.xcodeproj'
+        project=self.root / 'generated' / (self.project_name + '.xcodeproj')
         (project / 'xcshareddata/xcschemes').mkdir(parents=True,exist_ok=True)
         (project / 'xcshareddata/xcschemes/WiltedMac.xcscheme').write_text('<Scheme><TestAction /></Scheme>')
         script=self.root / 'mac-leg.sh'
         script.write_text('''#!/bin/bash
 set -Eeuo pipefail
 repo_root="$1";tmp_root="$1";WILTED_TEMP_LEG_WORK="$1/work";build_with_cache="$1/scripts/build-with-cache.py"
+native_project="$repo_root/generated/{project_name}.xcodeproj"
 source "$1/scripts/lib/test-runner.sh"
 source "$1/scripts/lib/simctl_gate_lib.sh"
 source "$1/scripts/lib/mac-test-parent.sh"
+source "$1/tests/lib/gate-harness-stubs.sh"
 source "$1/scripts/lib/native-gate-xcode.sh"
 printf 'pid=%s\\nstarted=%s\\npath=%s\\n' "$$" "$(ps -o lstart= -p "$$")" "$1" >"$1/.wilted-temp-owned"
 trap '[[ ! -e "$repo_root/work/wilted-mac-test-from-host" ]] || exit 125; echo audit >>"$FAKE_EVENTS"; exit 143' TERM
-require_tool() { :; };assert_test_sources() { :; }
-find_project() { printf '%s\\n' "$repo_root/generated/Project.xcodeproj"; }
+GATE_HARNESS_PROJECT_PATH="$native_project"
 xcode_test_timeout_seconds=2
-build_cache_path() { python3 "$build_with_cache" path "$@"; }
-run_with_build_cache() { local kind="$1" key="$2";shift 2;WILTED_WORK_PHASE=build python3 "$build_with_cache" run "$kind" "$key" -- "$@"; }
 result=0
 xcode_test_leg macos-unit-tests "$repo_root" WiltedMac platform=macOS WiltedMacTests || result=$?
 [[ ! -e "$1/work/wilted-mac-test-from-host" ]] || exit 125
 echo audit >>"$FAKE_EVENTS"
 exit "$result"
-''')
+'''.replace('{project_name}', self.project_name))
         return subprocess.Popen(['bash',str(script),str(self.root)],env=dict(self.env,FAKE_MANAGED_PARENT=str(parent),FAKE_TEST_DELAY=delay,FAKE_TEST_STATUS=status,**(extra_env or {})),text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
 
     def test_mac_unit_delivers_own_embedded_frameworks_with_owner_proof(self):
@@ -393,7 +395,7 @@ exit "$result"
         process=self.managed_mac_leg(extra_env=dict(FAKE_REQUIRE_FRAMEWORK='1',FAKE_EXPECTED_FRAMEWORK=str(expected)))
         out,err=process.communicate(timeout=60)
         self.assertEqual(process.returncode,0,err)
-        self.assertNotIn('DYLD_PRINT_', (self.root / 'macos-unit-tests-project/Project.xcodeproj/xcshareddata/xcschemes/WiltedMac.xcscheme').read_text())
+        self.assertNotIn('DYLD_PRINT_', (self.root / 'macos-unit-tests-project' / (self.project_name + '.xcodeproj') / 'xcshareddata/xcschemes/WiltedMac.xcscheme').read_text())
 
     def test_headless_transactions_disable_optional_diagnostics_and_preserve_results(self):
         self.select()
@@ -540,7 +542,7 @@ exit "$result"
                 if process.poll() is None: process.terminate(); process.wait(timeout=fixture.SAFETY_SECONDS)
 
     def test_exact_owned_selection_rejects_wrong_type_and_duplicate(self):
-        wrong={'udid':'22222222-2222-2222-2222-222222222222', 'name':'wilted-persistent-iOS-26-0',
+        wrong={'udid':'22222222-2222-2222-2222-222222222222', 'name':DEVICE_NAME,
                'state':'Shutdown','deviceTypeIdentifier':'wrong-type','isAvailable':True}
         self.state.write_text(json.dumps({'devices': {RUNTIME:[wrong]}}))
         self.assertEqual(self.select(), UDID)
@@ -561,14 +563,14 @@ exit "$result"
         result=self.invoke('bash', '-c', code, '_', str(self.root))
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn('selector returned empty runtime/device type purpose=fixture', result.stderr)
-        code='source "$1/scripts/lib/native-gate-simulator.sh"; repo_root="$1"; require_tool() { [[ "$1" != python3 ]] || { echo "native.error missing required tool: python3" >&2; return 1; }; }; select_ios_simulator_spec'
+        code='source "$1/scripts/lib/native-gate-simulator.sh"; repo_root="$1"; source "$1/tests/lib/gate-harness-stubs.sh"; GATE_HARNESS_MISSING_TOOL=python3; select_ios_simulator_spec'
         result=self.invoke('bash', '-c', code, '_', str(self.root))
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn('missing required tool: python3', result.stderr)
 
     def test_initial_inventory_timeout_reports_phase_and_reaps_descendants(self):
         pids = self.root / 'inventory.pids'
-        code = 'set -o pipefail; repo_root="$1"; xcode_build_timeout_seconds=3; require_tool() { command -v "$1" >/dev/null; }; source "$repo_root/scripts/lib/native-gate-simulator.sh"; create_gate_simulator fixture'
+        code = 'set -o pipefail; repo_root="$1"; xcode_build_timeout_seconds=3; source "$1/tests/lib/gate-harness-stubs.sh"; GATE_HARNESS_CHECK_PATH=1; source "$repo_root/scripts/lib/native-gate-simulator.sh"; create_gate_simulator fixture'
         self.select()
         state = json.loads(self.state.read_text())
         state['devices'][RUNTIME].append({'udid': '99999999-9999-9999-9999-999999999999',
@@ -601,7 +603,7 @@ exit "$result"
                   'isAvailable':True,'supportedDeviceTypes':[]}]
         runtimes.write_text(json.dumps({'runtimes':choices}))
         self.state.write_text(json.dumps({'devices': {runtime: []}}))
-        code='repo_root="$1"; source "$1/scripts/lib/native-gate-simulator.sh"; require_tool() { :; }; create_watch_gate_simulator'
+        code='repo_root="$1"; source "$1/scripts/lib/native-gate-simulator.sh"; source "$1/tests/lib/gate-harness-stubs.sh"; create_watch_gate_simulator'
         result=self.invoke('bash','-c',code,'_',str(self.root),env=dict(self.env,FAKE_RUNTIMES=str(runtimes)))
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertIn('simctl create wilted-persistent-watchOS-27-0 '+kind+' '+runtime,self.events.read_text())
@@ -695,7 +697,7 @@ exit "$result"
         before=self.root / 'before'; before.write_text('')
         code = r'''source "$1/scripts/lib/simctl_gate_lib.sh"
 _gate_lib_list_devices() {
- printf 'OWNED\tClone 1 of wilted-persistent-iOS-26-0\t%s/owned/data\tShutdown\n' "$2"
+ printf 'OWNED\tClone 1 of %s\t%s/owned/data\tShutdown\n' "$GATE_OWNED_SIMULATOR_NAME" "$2"
  printf 'FOREIGN\tClone 2 of peer-app\t%s/foreign/data\tShutdown\n' "$2"
 }
 _gate_lib_reap_new_clones "$2" "$3" 10
@@ -704,7 +706,7 @@ _gate_lib_reap_new_clones "$2" "$3" 10
         code=code.replace('"$2"\n printf', '"$CLONE_SET"\n printf').replace('"$2"\n}', '"$CLONE_SET"\n}')
         result=self.invoke('bash', '-c', code, '_', str(self.root), str(clone_set), str(before),
                            env=dict(self.env, GATE_PROJECT_OWNED_CLONES_ONLY='1',
-                                    GATE_OWNED_SIMULATOR_NAME='wilted-persistent-iOS-26-0', CLONE_SET=str(clone_set)))
+                                    GATE_OWNED_SIMULATOR_NAME=DEVICE_NAME, CLONE_SET=str(clone_set)))
         self.assertEqual(result.returncode, 0, result.stderr)
         events=self.events.read_text()
         self.assertIn('delete OWNED', events)
@@ -715,7 +717,7 @@ _gate_lib_reap_new_clones "$2" "$3" 10
         clone_set=self.root / 'clones'; clone_set.mkdir()
         clones=self.root / 'clones.json'
         clones.write_text(json.dumps({'devices': {RUNTIME: [
-            {'udid':'OWNED', 'name':'Clone 1 of wilted-persistent-iOS-26-0', 'state':'Booted', 'dataPath':str(clone_set / 'owned/data')},
+            {'udid':'OWNED', 'name':'Clone 1 of ' + DEVICE_NAME, 'state':'Booted', 'dataPath':str(clone_set / 'owned/data')},
             {'udid':'PEER', 'name':'Clone 2 of peer-app', 'state':'Shutdown', 'dataPath':str(clone_set / 'peer/data')}]}}))
         result=self.session(dict(self.env, GATE_XCTEST_DEVICE_SET=str(clone_set), FAKE_CLONE_STATE=str(clones)))
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -729,7 +731,7 @@ _gate_lib_reap_new_clones "$2" "$3" 10
         clones=self.root / 'clones.json'
         def reset():
             clones.write_text(json.dumps({'devices': {RUNTIME:[{'udid':'OWNED',
-                'name':'Clone 1 of wilted-persistent-iOS-26-0','state':'Shutdown','dataPath':str(clone_set / 'owned/data')}]}}))
+                'name':'Clone 1 of ' + DEVICE_NAME,'state':'Shutdown','dataPath':str(clone_set / 'owned/data')}]}}))
         for test_status, test_delay, expected in [('17','0',17), ('0','60',124), ('0','0',125)]:
             with self.subTest(expected=expected):
                 reset()

@@ -160,10 +160,12 @@ assert_capability_source_contract
 # is executed, not merely present, and pin its floor so an empty suite cannot
 # pass either.
 assert_macos_ui_leg_is_executed() {
-  assert_contains 'leg_macos_ui_tests()' "$gate"
-  assert_contains 'leg_macos_ui_tests' "$gate"
-  assert_contains 'wilted_gate_parallel_launch "$name" "${leg_reports[$i]}" "${leg_fns[$i]}"' "$repo_root/scripts/lib/native-gate-legs.sh"
-  assert_contains '  macos-ui-tests' "$gate"
+  local legs
+  legs="$(bash "$gate" --list-legs)"
+  local expected
+  expected="$(printf '%s\n' xcodegen-reproducible wiltedkit-tests cloudsync-tests playback-tests wiltedproducer-tests \
+    macos-unit-tests ios-unit-tests macos-ui-tests ios-pixel-snapshot-tests)"
+  [[ "$legs" == "$expected" ]] || { printf 'unexpected default gate legs:\n%s\n' "$legs" >&2; return 1; }
   assert_validation_contains 'macos-ui-tests) mac_ui_declared_test_count ;;'
   assert_validation_contains 'WiltedMacSmokeUITests WiltedMacSidebarChromeUITests WiltedMacQuitUITests WiltedMacEpisodeInfoUITests WiltedMacPlaylistUITests'
   assert_validation_contains '^WiltedMacUITests/WiltedMacJourneyUITests/test[A-Za-z0-9_]+$'
