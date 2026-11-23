@@ -62,20 +62,17 @@ struct WiltedMacShowSettingsResetControl: View {
     var body: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
             if !customizedNames.isEmpty {
-                HStack(alignment: .top, spacing: WiltedTheme.Spacing.medium) {
-                    Text("Customized: \(customizedNames.joined(separator: ", "))")
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("wilted-show-settings-customized-list")
-                    Spacer(minLength: WiltedTheme.Spacing.small)
-                    Button("Reset all") {
-                        undo = board.resetAllOverrides(for: feedID)
-                        undoFailed = false
-                    }
-                    .disabled(isUndoing)
-                    .accessibilityIdentifier("wilted-show-settings-reset-all")
+                Text("Customized: \(customizedNames.joined(separator: ", "))")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("wilted-show-settings-customized-list")
+                Button("Reset all") {
+                    undo = board.resetAllOverrides(for: feedID)
+                    undoFailed = false
                 }
+                .disabled(isUndoing)
+                .accessibilityIdentifier("wilted-show-settings-reset-all")
             }
             if let undo {
                 HStack(spacing: WiltedTheme.Spacing.medium) {

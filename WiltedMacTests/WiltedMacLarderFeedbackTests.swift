@@ -35,6 +35,7 @@ final class WiltedMacLarderFeedbackTests: XCTestCase {
         try await store.save(feed: try PodcastFeed(
             itemID: feedID, canonicalURL: feedURL, title: "Show", createdAt: created
         ))
+        try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
         var ids: [ItemID] = []
         for guid in guids {
             let enclosure = URL(string: "https://media.example.test/\(guid).mp3")!

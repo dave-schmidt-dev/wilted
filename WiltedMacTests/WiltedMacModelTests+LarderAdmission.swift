@@ -423,7 +423,7 @@ extension WiltedMacModelTests {
         let skipped = try preparationRun(withRemovalKinds: [], workerOutcome: "disabled",
                                          workerWarning: "Online ad finding is off.")
         XCTAssertEqual(WiltedMacModel.preparedSummary(of: skipped, timing: .none),
-                       "Ready · Ad check skipped · Online ad finding is off. · transcript unavailable")
+                       "Ready · Ad check skipped · Online ad finding is off. · audio transcript unavailable")
 
         let noAds = try preparationRun(withRemovalKinds: [], workerOutcome: "noAds")
         XCTAssertEqual(WiltedMacModel.preparedSummary(of: noAds, timing: .aligned, hasText: true),
@@ -442,7 +442,7 @@ extension WiltedMacModelTests {
         let uncertain = try preparationRun(withRemovalKinds: [], workerOutcome: "uncertain",
                                            workerWarning: "Some ads may remain: The provider did not answer.")
         XCTAssertEqual(WiltedMacModel.preparedSummary(of: uncertain, timing: .none),
-                       "Ready · Some ads may remain · The provider did not answer. · transcript unavailable")
+                       "Ready · Some ads may remain · The provider did not answer. · audio transcript unavailable")
     }
 
     func testLegacyPreparedSummariesDoNotClaimUnverifiedAdsOrOldWarningCopy() throws {

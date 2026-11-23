@@ -256,7 +256,7 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         ).joined(separator: " ")
 
         XCTAssertTrue(text.contains("1 of 2 podcasts selected for ad finding"), text)
-        XCTAssertTrue(text.contains("All shows") || text.contains("A11 shows"), text)
+        XCTAssertTrue(text.range(of: #"\bA[l1]{2} shows\b"#, options: .regularExpression) != nil, text)
     }
 
     func testAdsSummaryFitsAtSnapshotWidth() async throws {

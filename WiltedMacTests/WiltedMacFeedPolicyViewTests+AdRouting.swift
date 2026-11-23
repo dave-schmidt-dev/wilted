@@ -103,7 +103,7 @@ extension WiltedMacFeedPolicyViewTests {
         let shown = try WiltedMacHeadless.showSectionText(fixture.content, .ads).joined(separator: " ")
         XCTAssertTrue(shown.contains("Daily ad-check limit reached"), shown)
         XCTAssertFalse(shown.contains("Not sent"), shown)
-        XCTAssertTrue(shown.contains("Selected for online ad finding"), shown)
+        XCTAssertFalse(shown.contains("Selected for online ad finding"), shown)
     }
 
     // MARK: Fixture

@@ -608,7 +608,7 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
             "Episodes that need an ad check use a local transcript timed to their audio. "
             + "When ad finding is skipped, Wilted can use a transcript from the feed."
         case (.alwaysTranscribe, _):
-            "Wilted makes a local transcript from each episode's audio, even when the feed provides one."
+            "Wilted makes a local transcript timed to each episode's audio, even when the feed provides one."
         case (.noLocalSTT, false):
             "Uses a transcript from the feed when available. Episodes can finish without a transcript."
         case (.noLocalSTT, true):

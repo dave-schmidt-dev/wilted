@@ -137,7 +137,7 @@ extension WiltedMacModelTests {
         let transcript = try XCTUnwrap(model.currentTranscript)
         XCTAssertTrue(transcript.isSynchronized, "playing an episode has to surface its timed transcript")
         XCTAssertEqual(transcript.cues.map(\.text), ["First line.", "Second line."])
-        XCTAssertEqual(transcript.disclosureTitle, "Transcript \u{00B7} synced from the feed")
+        XCTAssertEqual(transcript.disclosureTitle, "Transcript \u{00B7} from the feed")
         XCTAssertEqual(transcript.cueIndex(at: 0.6), 1)
 
         // What preparation cut, placed where the listener meets it: the

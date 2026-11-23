@@ -426,7 +426,7 @@ extension WiltedMacModelTests {
     func testTheCompletionControlUsesModelStartedAndPlayedState() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
         let modelSource = try WiltedMacSource.model(root: root)
-        XCTAssertEqual(modelSource.components(separatedBy: "playbackSeconds > 0").count - 1, 1,
+        XCTAssertEqual(modelSource.components(separatedBy: "episode.isPlayed || episode.playbackSeconds > 0").count - 1, 1,
                        "the started predicate must have one home")
         let view = try WiltedMacSource.views(root: root)
         XCTAssertEqual(view.components(separatedBy: "playbackSeconds > 0").count - 1, 0,

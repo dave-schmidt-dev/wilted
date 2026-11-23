@@ -357,7 +357,7 @@ extension WiltedMacModelTests {
         XCTAssertEqual(relaunched.automationSettings.transcriptPolicy, .noLocalSTT)
         XCTAssertTrue(relaunched.automationSettings.removeAds)
         XCTAssertTrue(relaunched.automationSettings.transcriptPolicyExplanation
-            .contains("Episodes sent for ad finding cannot finish"))
+            .contains("Episodes that need an ad check cannot finish"))
     }
 
     func testPreparationPolicySnapshotMapsEveryFutureWorkerChoice() throws {

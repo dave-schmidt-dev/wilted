@@ -343,11 +343,11 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
 
         XCTAssertTrue(adFinding.contains("Text(\"All shows\")"), adFinding)
         XCTAssertTrue(adFinding.contains("WiltedMacFeedKind.isArticleSubscription"), adFinding)
-        XCTAssertTrue(adFinding.contains("allowed for ad finding"), adFinding)
+        XCTAssertTrue(adFinding.contains("podcasts selected for ad finding"), adFinding)
         XCTAssertFalse(adFinding.contains("waitingRow"), adFinding)
         XCTAssertFalse(adFinding.contains("wilted-ad-finding-review"), adFinding)
         XCTAssertTrue(adFinding.contains("Button(\"Confirm\")"), "the global switch confirmation remains")
-        XCTAssertTrue(adFinding.contains("Shows you add later are not sent"), adFinding)
+        XCTAssertTrue(adFinding.contains("For shows you add later, turn on ad finding in Show settings."), adFinding)
     }
 
     /// A revisit is a fresh Feeds view over the board the first visit loaded. It draws that capacity

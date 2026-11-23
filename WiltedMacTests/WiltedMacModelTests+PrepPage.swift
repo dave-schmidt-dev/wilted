@@ -265,7 +265,7 @@ extension WiltedMacModelTests {
                 run: try terminalRun(outcome: .succeeded, terminalRevisionID: revisionID),
                 readyRevisionID: revisionID, transcript: nil
             ),
-            .prepared(summary: "Audio ready · Transcript unavailable")
+            .prepared(summary: "Ready · Ad check skipped · transcript unavailable")
         )
         // Completed but superseded: this run's own terminal result names an
         // older revision the ready revision has since moved past, but the
@@ -277,7 +277,7 @@ extension WiltedMacModelTests {
                 run: try terminalRun(outcome: .succeeded, terminalRevisionID: supersededRevisionID),
                 readyRevisionID: revisionID, transcript: nil
             ),
-            .prepared(summary: "Audio ready · Transcript unavailable"),
+            .prepared(summary: "Ready · Ad check skipped · transcript unavailable"),
             "A proven outcome for the current ready revision must not be demoted by an older run's own result."
         )
         // Committed, died before the terminal write: the run is still open
@@ -293,7 +293,7 @@ extension WiltedMacModelTests {
                 run: nonTerminalRun(stage: .saving),
                 readyRevisionID: revisionID, transcript: nil
             ),
-            .prepared(summary: "Audio ready · Transcript unavailable"),
+            .prepared(summary: "Ready · Ad check skipped · transcript unavailable"),
             "A durable outcome for the current ready revision must win even while its own run is still open."
         )
     }
