@@ -252,13 +252,11 @@ struct WiltedMacSettingsView: View {
                 }
             }
             .accessibilityIdentifier("wilted-automation-transcript-policy")
-            if model.automationSettings.transcriptPolicyBlocksAdRemoval {
-                Text(WiltedAutomationSettings.transcriptPolicyBlocksAdRemovalExplanation)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.degraded, scheme: colorScheme))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("wilted-automation-transcript-conflict")
-            }
+            Text(model.automationSettings.transcriptPolicyExplanation)
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("wilted-automation-transcript-explanation")
         }
     }
 

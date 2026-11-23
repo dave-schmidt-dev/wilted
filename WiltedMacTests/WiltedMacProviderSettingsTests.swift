@@ -300,36 +300,39 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
         // Key provider initial states
         let openCodeGoRow = try XCTUnwrap(settings.rows.first(where: { $0.id == .opencodeGoKey }))
         XCTAssertEqual(openCodeGoRow.kind, "Key")
-        XCTAssertEqual(openCodeGoRow.status, "No key saved")
+        XCTAssertEqual(openCodeGoRow.status, "Not ready")
 
         let anthropicRow = try XCTUnwrap(settings.rows.first(where: { $0.id == .anthropicKey }))
         XCTAssertEqual(anthropicRow.kind, "Key")
-        XCTAssertEqual(anthropicRow.status, "No key saved")
+        XCTAssertEqual(anthropicRow.status, "Not ready")
 
         try? keyStore.slot(for: .anthropicKey).save("sk-ant-test")
         let anthropicReadyRow = try XCTUnwrap(settings.rows.first(where: { $0.id == .anthropicKey }))
-        XCTAssertEqual(anthropicReadyRow.status, "Ready")
+        XCTAssertEqual(anthropicReadyRow.status, "Readiness unknown")
+        XCTAssertNil(anthropicReadyRow.lastCheckResult)
 
         try? keyStore.slot(for: .opencodeGoKey).save("sk-open-test")
         let openCodeGoReadyRow = try XCTUnwrap(settings.rows.first(where: { $0.id == .opencodeGoKey }))
-        XCTAssertEqual(openCodeGoReadyRow.status, "Ready")
+        XCTAssertEqual(openCodeGoReadyRow.status, "Readiness unknown")
 
         // Command-line provider initial state
         let cliRowInitial = try XCTUnwrap(settings.rows.first(where: { $0.id == .openCodeCLI }))
         XCTAssertEqual(cliRowInitial.kind, "Command-line tool")
-        XCTAssertEqual(cliRowInitial.status, "Not checked yet")
+        XCTAssertEqual(cliRowInitial.status, "Readiness unknown")
 
         // Mock check returning notFound
         mockCheck.setStatus(.notFound, for: .openCodeCLI)
         await settings.check(.openCodeCLI)
         let cliNotFoundRow = try XCTUnwrap(settings.rows.first(where: { $0.id == .openCodeCLI }))
-        XCTAssertEqual(cliNotFoundRow.status, "Tool not found on this Mac")
+        XCTAssertEqual(cliNotFoundRow.status, "Not ready")
+        XCTAssertEqual(cliNotFoundRow.lastCheckResult, "Tool not found on this Mac")
 
         // Mock check returning notSignedIn
         mockCheck.setStatus(.notSignedIn, for: .claudeCodeCLI)
         await settings.check(.claudeCodeCLI)
         let cliNotSignedInRow = try XCTUnwrap(settings.rows.first(where: { $0.id == .claudeCodeCLI }))
-        XCTAssertEqual(cliNotSignedInRow.status, "Not signed in")
+        XCTAssertEqual(cliNotSignedInRow.status, "Not ready")
+        XCTAssertEqual(cliNotSignedInRow.lastCheckResult, "Not signed in")
 
         // Mock check returning ready
         mockCheck.setStatus(.ready, for: .codexCLI)
@@ -341,7 +344,8 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
         mockCheck.setStatus(.failed("Custom error description"), for: .openCodeCLI)
         await settings.check(.openCodeCLI)
         let cliFailedRow = try XCTUnwrap(settings.rows.first(where: { $0.id == .openCodeCLI }))
-        XCTAssertEqual(cliFailedRow.status, "Custom error description")
+        XCTAssertEqual(cliFailedRow.status, "Not ready")
+        XCTAssertEqual(cliFailedRow.lastCheckResult, "Custom error description")
     }
 
     // MARK: - Key Storage Safety
@@ -414,7 +418,7 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
         XCTAssertEqual(mockCheck.invocationCount, 3)
         XCTAssertFalse(settings.isCheckingAny)
         XCTAssertEqual(settings.rows.first(where: { $0.id == .openCodeCLI })?.status, "Ready")
-        XCTAssertEqual(settings.rows.first(where: { $0.id == .claudeCodeCLI })?.status, "Not signed in")
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .claudeCodeCLI })?.status, "Not ready")
     }
 
     func testKeyCheckWithoutSavedKeyShowsNoKeySetAndSendsNothing() async {
@@ -422,7 +426,7 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
 
         for provider in MockKeySenderFactory.providers {
             await settings.check(provider)
-            XCTAssertEqual(settings.rows.first(where: { $0.id == provider })?.status, "No key set")
+            XCTAssertEqual(settings.rows.first(where: { $0.id == provider })?.status, "Not ready")
         }
 
         XCTAssertTrue(mockKeySenders.invocations.isEmpty)
@@ -437,6 +441,10 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
             .anthropicKey: "fake-anthropic-key",
         ]
         let (settings, _, _, _) = makeSettings(initialKeys: fakeKeys)
+        settings.setProvider(.openRouterKey)
+        settings.setModel("anthropic/claude-3.5-sonnet")
+        settings.setProvider(.openAIKey)
+        settings.setModel("gpt-4o")
         mockKeySenders.checkSender(for: .openAIKey).setFailure(.keyRejected)
         mockKeySenders.checkSender(for: .anthropicKey).setFailure(.temporary)
 
@@ -446,8 +454,11 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
 
         XCTAssertEqual(settings.rows.first(where: { $0.id == .opencodeGoKey })?.status, "Ready")
         XCTAssertEqual(settings.rows.first(where: { $0.id == .openRouterKey })?.status, "Ready")
-        XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.status, "Key rejected")
-        XCTAssertEqual(settings.rows.first(where: { $0.id == .anthropicKey })?.status, "Can't reach it")
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.status, "Not ready")
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .anthropicKey })?.status, "Not ready")
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .opencodeGoKey })?.lastCheckResult, "Passed")
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.lastCheckResult, "Key rejected")
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .anthropicKey })?.lastCheckResult, "Service unavailable")
         XCTAssertEqual(mockKeySenders.invocations, MockKeySenderFactory.providers)
         XCTAssertEqual(mockKeySenders.slotKeys, fakeKeys)
 
@@ -460,8 +471,53 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
         }
     }
 
+    func testKeyCheckFailuresHaveDistinctReadinessAndLastCheckResult() async throws {
+        let keys = Dictionary(uniqueKeysWithValues: MockKeySenderFactory.providers.map { ($0, "key-\($0.rawValue)") })
+        let (settings, _, _, _) = makeSettings(initialKeys: keys)
+        settings.setProvider(.openRouterKey)
+        settings.setModel("example/model")
+        settings.setProvider(.openAIKey)
+        settings.setModel("gpt-4o")
+        mockKeySenders.checkSender(for: .opencodeGoKey).setFailure(.rateLimited(retryAfter: 30))
+        mockKeySenders.checkSender(for: .openRouterKey).setFailure(.usageLimit)
+        mockKeySenders.checkSender(for: .openAIKey).setFailure(.modelUnavailable)
+        mockKeySenders.checkSender(for: .anthropicKey).setFailure(.unusableAnswer)
+
+        for provider in MockKeySenderFactory.providers {
+            await settings.check(provider)
+        }
+
+        let expected: [AdLabellerProvider: String] = [
+            .opencodeGoKey: "Too many requests",
+            .openRouterKey: "Provider usage limit",
+            .openAIKey: "Model unavailable",
+            .anthropicKey: "No usable response",
+        ]
+        for (provider, result) in expected {
+            let row = try XCTUnwrap(settings.rows.first(where: { $0.provider == provider }))
+            XCTAssertEqual(row.status, "Not ready")
+            XCTAssertEqual(row.lastCheckResult, result)
+        }
+    }
+
+    func testCheckDoesNotSendWhenSavedProviderModelIsInvalid() async {
+        let (settings, _, _, _) = makeSettings(initialKeys: [.openAIKey: "fake-openai-key"])
+        settings.setProvider(.openAIKey)
+        settings.setModel("")
+
+        let succeeded = await settings.check(.openAIKey)
+
+        XCTAssertFalse(succeeded)
+        XCTAssertTrue(mockKeySenders.invocations.isEmpty)
+        let row = settings.rows.first(where: { $0.id == .openAIKey })
+        XCTAssertEqual(row?.status, "Not ready")
+        XCTAssertNil(row?.lastCheckResult)
+    }
+
     func testConcurrentKeyChecksSendOnlyOneRequest() async {
         let (settings, _, _, _) = makeSettings(initialKeys: [.openAIKey: "fake-openai-key"])
+        settings.setProvider(.openAIKey)
+        settings.setModel("gpt-4o")
         mockKeySenders.checkSender(for: .openAIKey).setDelay(nanoseconds: 100_000_000)
 
         let first = Task { await settings.check(.openAIKey) }
@@ -475,22 +531,43 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
         XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.status, "Ready")
     }
 
+    func testChangingModelWhileKeyCheckRunsDropsTheOldResult() async {
+        let (settings, _, _, _) = makeSettings(initialKeys: [.openRouterKey: "fake-openrouter-key"])
+        settings.setProvider(.openRouterKey)
+        settings.setModel("vendor/first-model")
+        mockKeySenders.checkSender(for: .openRouterKey).setDelay(nanoseconds: 100_000_000)
+
+        let checking = Task { await settings.check(.openRouterKey) }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        settings.setModel("vendor/second-model")
+        let succeeded = await checking.value
+
+        let row = settings.rows.first(where: { $0.id == .openRouterKey })
+        XCTAssertFalse(succeeded, "a stale check cannot clear a provider pause")
+        XCTAssertEqual(row?.status, "Readiness unknown")
+        XCTAssertNil(row?.lastCheckResult)
+    }
+
     func testSavingOrRemovingKeyClearsCachedCheckAndOldInFlightResult() async {
         let (settings, _, keyStore, _) = makeSettings(initialKeys: [.openAIKey: "fake-old-openai-key"])
+        settings.setProvider(.openAIKey)
+        settings.setModel("gpt-4o")
         mockKeySenders.checkSender(for: .openAIKey).setFailure(.keyRejected)
         await settings.check(.openAIKey)
-        XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.status, "Key rejected")
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.status, "Not ready")
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.lastCheckResult, "Key rejected")
 
         mockKeySenders.checkSender(for: .openAIKey).setDelay(nanoseconds: 100_000_000)
         let staleCheck = Task { await settings.check(.openAIKey) }
         try? await Task.sleep(nanoseconds: 10_000_000)
         settings.saveKey("fake-new-openai-key", for: .openAIKey)
         await staleCheck.value
-        XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.status, "Ready")
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.status, "Readiness unknown")
+        XCTAssertNil(settings.rows.first(where: { $0.id == .openAIKey })?.lastCheckResult)
 
         settings.removeKey(for: .openAIKey)
         XCTAssertFalse(keyStore.savedKeyPresent(for: .openAIKey))
-        XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.status, "No key saved")
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.status, "Not ready")
     }
 
     func testCheckAllCoversThreeToolsAndFourSavedKeyProviders() async {
@@ -498,6 +575,10 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
             uniqueKeysWithValues: MockKeySenderFactory.providers.map { ($0, "fake-\($0.rawValue)-key") }
         )
         let (settings, _, _, mockCheck) = makeSettings(initialKeys: keys)
+        settings.setProvider(.openRouterKey)
+        settings.setModel("anthropic/claude-3.5-sonnet")
+        settings.setProvider(.openAIKey)
+        settings.setModel("gpt-4o")
 
         await settings.checkAll()
 
@@ -508,6 +589,7 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
         for provider in MockKeySenderFactory.providers {
             XCTAssertEqual(mockKeySenders.checkSender(for: provider).requests.count, 1)
             XCTAssertEqual(settings.rows.first(where: { $0.id == provider })?.status, "Ready")
+            XCTAssertEqual(settings.rows.first(where: { $0.id == provider })?.lastCheckResult, "Passed")
         }
     }
 
@@ -518,39 +600,39 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
 
         // Priority 1: No model chosen
         settings.setProvider(.openRouterKey)
-        XCTAssertEqual(settings.readinessLine, "Type a model id.")
+        XCTAssertEqual(settings.readinessLine, "Not ready: OpenRouter · Choose a valid model and thinking level.")
 
         // Priority 2: Key provider with no key
         settings.setModel("anthropic/claude-3.5-sonnet")
-        XCTAssertEqual(settings.readinessLine, "No key saved. Add one in Providers.")
+        XCTAssertEqual(settings.readinessLine, "Not ready: OpenRouter · No key saved.")
 
         try? keyStore.slot(for: .openRouterKey).save("sk-openrouter-key")
-        XCTAssertEqual(settings.readinessLine, "Ready: OpenRouter · anthropic/claude-3.5-sonnet · Low")
+        XCTAssertEqual(settings.readinessLine, "Readiness unknown: OpenRouter · Check it in Providers.")
 
         // Priority 3: Command-line provider not found or not signed in per last check (if checked)
         settings.setProvider(.claudeCodeCLI)
 
-        // Before check: falls through to Ready
-        XCTAssertEqual(settings.readinessLine, "Ready: Claude Code · Claude Sonnet 5.5 · Low")
+        // Before check: readiness is unknown
+        XCTAssertEqual(settings.readinessLine, "Readiness unknown: Claude Code · Check it in Providers.")
 
         // When checked and not found
         mockCheck.setStatus(.notFound, for: .claudeCodeCLI)
         await settings.check(.claudeCodeCLI)
-        XCTAssertEqual(settings.readinessLine, "Tool not found on this Mac.")
+        XCTAssertEqual(settings.readinessLine, "Not ready: Claude Code · Last provider check: Tool not found on this Mac.")
 
         // When checked and not signed in
         mockCheck.setStatus(.notSignedIn, for: .claudeCodeCLI)
         await settings.check(.claudeCodeCLI)
-        XCTAssertEqual(settings.readinessLine, "Not signed in.")
+        XCTAssertEqual(settings.readinessLine, "Not ready: Claude Code · Last provider check: Not signed in.")
 
         // When checked and failed
         mockCheck.setStatus(.failed("Service timeout"), for: .claudeCodeCLI)
         await settings.check(.claudeCodeCLI)
-        XCTAssertEqual(settings.readinessLine, "Service timeout")
+        XCTAssertEqual(settings.readinessLine, "Not ready: Claude Code · Last provider check: Service timeout.")
 
         // When checked and ready -> Priority 4
         mockCheck.setStatus(.ready, for: .claudeCodeCLI)
         await settings.check(.claudeCodeCLI)
-        XCTAssertEqual(settings.readinessLine, "Ready: Claude Code · Claude Sonnet 5.5 · Low")
+        XCTAssertEqual(settings.readinessLine, "Ready: Claude Code · Last provider check passed.")
     }
 }

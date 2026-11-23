@@ -171,14 +171,14 @@ extension PodcastPreparationPipeline {
             report(Self.resultProgress(payload))
             for (index, ad) in payload.adSegments.enumerated() { report(Self.adProgress(ad, ordinal: index + 1)) }
 
-            if payload.adRemovalOutcome == "uncertain" {
+            if payload.adRemovalOutcome == "uncertain" || payload.warning != nil {
                 guard URL(fileURLWithPath: payload.audioPath).resolvingSymlinksInPath().standardizedFileURL
                         == staged.url.resolvingSymlinksInPath().standardizedFileURL else {
                     throw PodcastPreparationError.malformedWorkerResponse("uncertain result changed the original audio path")
                 }
-                // A not-sent show says why; a labelled stop keeps its own wording.
-                let summary = route.notSent.map { "Kept the existing cut. \($0.sentence)" }
-                    ?? "Kept the existing cut: the current engine could not tell which parts were ads"
+                let label = PodcastPreparationResult.adCheckLabel(outcome: payload.adRemovalOutcome)
+                let detail = payload.warning.map { $0.hasPrefix(label) ? $0 : "\(label). \($0)" } ?? label
+                let summary = "Kept the existing cut. \(detail)"
                 await recordUnchanged(summary, provenanceOf: stagedRevision)
                 return .keptExisting(summary)
             }
@@ -312,7 +312,7 @@ extension PodcastPreparationPipeline {
             var lifetimeStatistics = [LifetimeStatisticContribution(
                 id: LifetimeStatisticEventID.podcastAudioProcessed(sourceRevisionID: stagedRevision.revisionID),
                 kind: .audioProcessed, seconds: stagedRevision.durationSeconds)]
-            if payload.adRemovalOutcome == "cut", payload.audioChanged,
+        if payload.adRemovalOutcome == "cut", payload.audioChanged,
                payload.removedSeconds.isFinite, payload.removedSeconds > 0 {
                 lifetimeStatistics.append(LifetimeStatisticContribution(
                     id: LifetimeStatisticEventID.podcastAdRemoved(revisionID: revisionID),

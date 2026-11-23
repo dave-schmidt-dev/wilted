@@ -80,7 +80,7 @@ extension PodcastPreparationPipeline {
             // Reported and flushed first: once deferred, the store refuses this generation's journal rows.
             onStatus(PodcastPreparationProgress(
                 stage: "ads.label.wait",
-                detail: "Waiting to ask the labelling provider again",
+                detail: reason.waitLabel,
                 evidence: try? PreparationEvidence(kind: "labeller-wait", fields: [
                     "failureKind": kind,
                     "nextAttemptAt": until.formatted(.iso8601),

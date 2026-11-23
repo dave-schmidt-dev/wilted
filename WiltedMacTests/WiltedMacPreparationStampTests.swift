@@ -214,7 +214,7 @@ final class WiltedMacPreparationStampTests: XCTestCase {
                      "engine-only staleness must not show the earlier-setting line")
     }
 
-    func testAdsLeftInAppearsOnlyWhenPreparedRunHasLabelStop() throws {
+    func testStoppedCheckNamesItsReasonWithoutClaimingItFoundAnAd() throws {
         let itemID = try makeItemID()
         let revisionID = try makeRevisionID("c")
         let outcome = makeOutcome(itemID: itemID, revisionID: revisionID)
@@ -226,8 +226,8 @@ final class WiltedMacPreparationStampTests: XCTestCase {
             labelStopDetail: sentence)
         let stamp = try XCTUnwrap(WiltedMacPreparationStamp.make(
             outcome: outcome, readyRevisionID: revisionID, runs: [withStop]))
-        XCTAssertEqual(stamp.adsLeftIn, "Ads left in: \(sentence)")
-        XCTAssertTrue(try XCTUnwrap(stamp.displayText).contains("Ads left in: \(sentence)"))
+        XCTAssertEqual(stamp.stoppedAdCheck, "Ad check stopped. \(sentence)")
+        XCTAssertTrue(try XCTUnwrap(stamp.displayText).contains("Ad check stopped. \(sentence)"))
 
         let withoutStop = try succeededRun(
             itemID: itemID, revisionID: revisionID,
@@ -235,10 +235,55 @@ final class WiltedMacPreparationStampTests: XCTestCase {
                     codeRevision: nil))
         let plain = try XCTUnwrap(WiltedMacPreparationStamp.make(
             outcome: outcome, readyRevisionID: revisionID, runs: [withoutStop]))
-        XCTAssertNil(plain.adsLeftIn)
+        XCTAssertNil(plain.stoppedAdCheck)
+    }
+
+    func testOnlyTheReadyRunsPassagesAreShownOnTheOriginalClock() throws {
+        let item = try makeItemID()
+        let revision = try makeRevisionID("c")
+        let current = try succeededRun(itemID: item, revisionID: revision, stamp: nil, passages: [
+            ["ordinal": "2", "reason": "malformed"],
+            ["ordinal": "1", "reason": "house-promotion-disabled", "startSeconds": "65", "endSeconds": "80"]
+        ])
+        let other = try succeededRun(itemID: item, revisionID: makeRevisionID("d"), stamp: nil, passages: [
+            ["ordinal": "1", "reason": "acceptable-cut", "startSeconds": "2", "endSeconds": "5"]
+        ])
+        let keptExisting = try succeededRun(
+            itemID: item, revisionID: revision, stamp: nil, updatedAt: later, keptExisting: true)
+        let outcome = makeOutcome(itemID: item, revisionID: revision)
+        let runs = [keptExisting, other, current]
+        XCTAssertEqual(WiltedMacPreparationStamp.preparedRun(
+            outcome: outcome, readyRevisionID: revision, runs: runs), current)
+        let stamp = try XCTUnwrap(WiltedMacPreparationStamp.make(
+            outcome: outcome, readyRevisionID: revision, runs: runs))
+        XCTAssertEqual(stamp.passagesLeftIn, [
+            "1:05–1:20 · Show promotion removal is off", "Time unavailable · Unusable break label or timing"
+        ])
     }
 
     // MARK: Episode info
+
+    func testOlderSkippedCheckKeepsItsReasonAfterReload() throws {
+        let item = try makeItemID()
+        let request = "legacy-skip"
+        let reason = RemoteLabellingNotSent.noKey.sentence
+        let evidence = [
+            try PreparationEvidence(kind: RemoteLabellingNotSent.noKey.kind, fields: [:]),
+            try PreparationEvidence(kind: "worker-result", fields: [
+                "adRemovalOutcome": "uncertain", "warning": "original audio includes ads: \(reason)"
+            ])
+        ]
+        let entries = try evidence.enumerated().map { index, evidence in
+            PreparationJournalEntry(id: "\(request)-\(index)", itemID: item, requestID: request,
+                                    status: try PreparationStatus(stage: .preparing, detail: reason,
+                                                                  cancellable: true, emittedAt: when, evidence: evidence))
+        }
+        let run = PreparationRunSummary(requestID: request, itemID: item, startedAt: when, updatedAt: when,
+                                        stage: .completed, detail: "Prepared.", fraction: nil, isTerminal: true,
+                                        outcome: .succeeded, failure: nil, entries: entries)
+        XCTAssertEqual(WiltedMacModel.recordedSummary(of: run),
+                       "Ready · Ad check skipped · \(reason) · transcript unavailable")
+    }
 
     func testEpisodeInfoCarriesTheEpisodesStamp() throws {
         let itemID = try makeItemID()
@@ -290,7 +335,9 @@ final class WiltedMacPreparationStampTests: XCTestCase {
         itemID: ItemID, revisionID: RevisionID, stamp: BuildStamp?,
         updatedAt: Timestamp? = nil,
         policyDigest: String? = nil,
-        labelStopDetail: String? = nil
+        labelStopDetail: String? = nil,
+        passages: [[String: String]] = [],
+        keptExisting: Bool = false
     ) throws -> PreparationRunSummary {
         let requestID = WiltedMacModel.podcastRequestPrefix + itemID.rawValue + "|success"
         var entries: [PreparationJournalEntry] = []
@@ -300,6 +347,20 @@ final class WiltedMacPreparationStampTests: XCTestCase {
                 status: try PreparationStatus(
                     stage: .preparing, detail: "Starting", cancellable: true,
                     emittedAt: when, evidence: try makeEvidence(stamp, policyDigest: policyDigest))))
+        }
+        if keptExisting {
+            entries.append(PreparationJournalEntry(
+                id: requestID + "|kept", itemID: itemID, requestID: requestID,
+                status: try PreparationStatus(
+                    stage: .assembling, detail: "Kept the previous audio", cancellable: true, emittedAt: when,
+                    evidence: try PreparationEvidence(kind: "prepare-again-kept", fields: [:]))))
+        }
+        for (index, fields) in passages.enumerated() {
+            entries.append(PreparationJournalEntry(
+                id: requestID + "|left-\(index)", itemID: itemID, requestID: requestID,
+                status: try PreparationStatus(
+                    stage: .assembling, detail: "Passage kept", cancellable: true,
+                    emittedAt: when, evidence: try PreparationEvidence(kind: "advertisement-left-in", fields: fields))))
         }
         if let labelStopDetail {
             entries.append(PreparationJournalEntry(

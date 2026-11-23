@@ -274,7 +274,7 @@ extension PodcastPreparationPipelineTests {
             episodeID: fixture.episodeID, attempt: try await startTicket(fixture, clock: clock),
             onStatus: { status.append($0.stage, detail: $0.detail) })
         #expect(result.adRemovalOutcome == "uncertain")
-        #expect(result.warning == "original audio includes ads: The labelling model is unavailable.")
+        #expect(result.warning == "Some ads may remain: The labelling model is unavailable.")
         #expect(status.stages.contains("ads.label.stop"))
         #expect(try await ticket(fixture).state == .running, "a stop never defers")
         #expect(try await ticket(fixture).deferralCount == 1, "only the first failure deferred")
@@ -301,7 +301,7 @@ extension PodcastPreparationPipelineTests {
         let result = try await pipeline.prepare(
             episodeID: fixture.episodeID, attempt: try await startTicket(fixture, clock: clock))
         #expect(result.adRemovalOutcome == "uncertain")
-        #expect(result.warning == "original audio includes ads: The provider did not answer in time.")
+        #expect(result.warning == "Some ads may remain: The provider did not answer in time.")
         #expect(try await ticket(fixture).deferralCount == 1)
         #expect(labelling.preferences.providerPauseCount == 1)
     }
@@ -367,8 +367,8 @@ extension PodcastPreparationPipelineTests {
         let worker = retryWorker(try writeCueFile(to: fixture.workDirectory), fixture: fixture)
         let result = try await retryPipeline(fixture, runner: worker, labelling: labelling, clock: clock)
             .prepare(episodeID: fixture.episodeID, attempt: try await startTicket(fixture, clock: clock))
-        #expect(result.adRemovalOutcome == "uncertain")
-        #expect(result.warning == "original audio includes ads: The daily limit for online labelling was reached.")
+        #expect(result.adRemovalOutcome == "disabled")
+        #expect(result.warning == "The daily limit for online labelling was reached.")
         #expect(sender.requestCount == 0)
         #expect(try await stageCounts(worker) == (0, 0, 1))
         #expect(try await ticket(fixture).deferralCount == nil)
@@ -411,7 +411,7 @@ extension PodcastPreparationPipelineTests {
         let result = try await retryPipeline(fixture, runner: worker, labelling: labelling, clock: clock)
             .prepare(episodeID: fixture.episodeID)
         #expect(result.adRemovalOutcome == "uncertain")
-        #expect(result.warning == "original audio includes ads: The provider did not answer in time.")
+        #expect(result.warning == "Some ads may remain: The provider did not answer in time.")
         #expect(labelling.preferences.providerPauseCount == 0, "no ticket, so nothing counts toward a pause")
         #expect(!FileManager.default.fileExists(atPath: fixture.workDirectory
             .appendingPathComponent("labeller-cues").path))
@@ -432,8 +432,8 @@ extension PodcastPreparationPipelineTests {
         let worker = retryWorker(try writeCueFile(to: fixture.workDirectory), fixture: fixture)
         let result = try await retryPipeline(fixture, runner: worker, labelling: labelling, clock: clock)
             .prepare(episodeID: fixture.episodeID)
-        #expect(result.adRemovalOutcome == "uncertain")
-        #expect(result.warning == "original audio includes ads: The daily limit for online labelling was reached.")
+        #expect(result.adRemovalOutcome == "disabled")
+        #expect(result.warning == "The daily limit for online labelling was reached.")
         #expect(sender.requestCount == 0)
     }
 
@@ -472,7 +472,7 @@ extension PodcastPreparationPipelineTests {
         let (paused, pausedSender, _) = try await episode([.fail(.temporary)])
         #expect(pausedSender.requestCount == 1)
         #expect(paused.warning?.contains("The provider has not answered since") == true)
-        #expect(paused.warning?.hasSuffix("Check the model name in Settings.") == true)
+        #expect(paused.warning?.hasSuffix("Choose Retry in Ad finding settings to check it again.") == true)
         #expect(preferences.providerPauseCount == 3, "a paused stop adds nothing")
 
         let (cut, _, after) = try await episode([

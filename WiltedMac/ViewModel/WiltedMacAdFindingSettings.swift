@@ -32,6 +32,7 @@ final class WiltedMacAdFindingSettings {
 
     var hasKey: Bool { keyStore.hasKey() }
     private(set) var isOnlineFindingOn: Bool
+    private var providerPauseRevision = 0
 
     /// The global confirmation sheet and the eligible feed IDs it previews.
     private(set) var isConfirming = false
@@ -95,8 +96,8 @@ final class WiltedMacAdFindingSettings {
     }
 
     func confirmationNotSentMessage(for show: Show) -> String {
-        if labeller.keptBackFeedIDs.contains(show.feedID) { return "Kept local" }
-        return "Not included in this confirmation"
+        if labeller.keptBackFeedIDs.contains(show.feedID) { return "Ad finding is off for this show" }
+        return "Not selected when this list opened"
     }
 
     /// Confirms the eligible shows previewed when the owner enabled the global switch.
@@ -135,9 +136,18 @@ final class WiltedMacAdFindingSettings {
 
     /// Listener-facing paused sentence while `providerPausedSince` is stored; nil once cleared.
     var providerPausedSentence: String? {
+        _ = providerPauseRevision
         guard let since = labeller.providerPausedSince else { return nil }
         return LabellerStopReason.providerPaused(since: since).sentence(formatTime: {
             $0.formatted(date: .omitted, time: .shortened)
         })
+    }
+
+    /// Clears the repeated-failure pause only after a successful current provider check.
+    func retryProviderPause(check: @MainActor () async -> Bool) async {
+        guard labeller.providerPausedSince != nil else { return }
+        guard await check() else { return }
+        labeller.clearProviderPause()
+        providerPauseRevision += 1
     }
 }

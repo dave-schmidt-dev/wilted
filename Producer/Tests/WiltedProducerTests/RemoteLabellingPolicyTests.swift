@@ -100,7 +100,7 @@ struct RemoteLabellingPolicyTests {
             let notSent = RemoteLabellingNotSent(reason)
             #expect(notSent?.kind == value?.kind, "\(reason)")
             #expect(notSent?.sentence == value?.sentence, "\(reason)")
-            #expect(notSent?.warning == value.map { "original audio includes ads: \($0.sentence)" }, "\(reason)")
+            #expect(notSent?.warning == value?.sentence, "\(reason)")
         }
     }
 

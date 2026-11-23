@@ -178,7 +178,9 @@ extension WiltedMacModel {
             }
             let library = try await loadLibrary(from: configuredStore)
             articles = library.articles
-            applyEpisodes(library.episodes, allowsAutomaticAdmissions: false)
+            if applyEpisodes(library.episodes, allowsAutomaticAdmissions: false) {
+                providerEpisodeReplies = library.episodes.latestProviderReplies
+            }
             subscriptions = library.subscriptions
             dismissedEpisodes = try await loadDismissedEpisodes(from: configuredStore)
             // A deferred job predating a forced redownload must never start on

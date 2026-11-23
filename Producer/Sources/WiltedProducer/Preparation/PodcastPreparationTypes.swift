@@ -225,44 +225,83 @@ public struct PodcastPreparationResult: Sendable {
     public let adSegments: [PodcastAdSegment]
     public let removedSeconds: Double
     public let adRemovalOutcome: String
+    public let adsMayRemain: Bool
+    /// The transcript source the worker used, retained when commit cannot save its cues.
+    public let sourceTiming: TranscriptTiming
     public var warning: String? = nil
     public var audioWasCut: Bool { removedSeconds > 0 }
 
-    /// What the run did, for the row: "Ready · 5 ads removed (7:22) ·
-    /// transcript synced". Leads with the completion state and then names
-    /// each step's result, so a reader can see the run finished and where
-    /// it fell short ("transcript not synced") without knowing the
-    /// pipeline. Journalled as the run's terminal detail so the answer
-    /// outlives the process that knew it.
+    /// The ad-check result and transcript source shown for the finished episode.
     public var summary: String {
         Self.summary(advertisements: adSegments.count, secondsRemoved: removedSeconds, timing: transcript.timing,
-                     adRemovalOutcome: adRemovalOutcome, warning: warning)
+                     adRemovalOutcome: adRemovalOutcome, warning: warning, adsMayRemain: adsMayRemain,
+                     hasText: transcript.availability == .available || transcript.availability == .stale,
+                     sourceTiming: sourceTiming)
     }
 
     public static let readyLabel = "Ready"
 
+    public static func adCheckLabel(outcome: String?, adsMayRemain: Bool = false) -> String {
+        if outcome == "disabled" { return "Ad check skipped" }
+        if outcome == "uncertain" || adsMayRemain { return "Some ads may remain" }
+        if outcome == "noAds" { return "No ads found" }
+        if outcome == "cut" { return "Ads removed" }
+        return "Ad check skipped"
+    }
+
     public static func summary(advertisements: Int, secondsRemoved: Double, timing: TranscriptTiming,
-                               adRemovalOutcome: String? = nil, warning: String? = nil) -> String {
+                               adRemovalOutcome: String? = nil, warning: String? = nil,
+                               adsMayRemain: Bool = false, hasText: Bool? = nil,
+                               sourceTiming: TranscriptTiming? = nil) -> String {
         var parts: [String] = [readyLabel]
-        if adRemovalOutcome == "disabled" {
-            parts.append("ad removal disabled")
-        } else if adRemovalOutcome == "uncertain" {
-            parts.append(warning ?? "original audio includes ads; ad removal could not be verified")
-        } else if advertisements > 0, secondsRemoved > 0 {
-            let removed = clock(secondsRemoved)
-            parts.append(advertisements == 1 ? "1 ad removed (\(removed))" : "\(advertisements) ads removed (\(removed))")
-        } else {
-            parts.append("no ads found")
+        let outcome = adRemovalOutcome ?? (advertisements > 0 && secondsRemoved > 0 ? "cut" : nil)
+        let adCheckLabel = Self.adCheckLabel(outcome: outcome, adsMayRemain: adsMayRemain)
+        parts.append(adCheckLabel)
+        if adCheckLabel == "Ad check skipped", adRemovalOutcome == "disabled",
+           let warning, !warning.isEmpty {
+            parts.append(warning)
+        } else if adCheckLabel == "Some ads may remain" {
+            if let reason = warningReason(warning) { parts.append(reason) }
+            if advertisements > 0, secondsRemoved > 0 {
+                parts.append("Ads removed")
+                parts.append(removedSummary(advertisements: advertisements, secondsRemoved: secondsRemoved))
+            }
+        } else if adCheckLabel == "Ads removed", advertisements > 0, secondsRemoved > 0 {
+            parts.append(removedSummary(advertisements: advertisements, secondsRemoved: secondsRemoved))
         }
-        parts.append(transcriptStep(timing))
+        parts.append(transcriptStep(timing, hasText: hasText, sourceTiming: sourceTiming))
         return parts.joined(separator: " · ")
     }
 
-    public static func transcriptStep(_ timing: TranscriptTiming) -> String {
-        switch timing {
-        case .published: "transcript synced from the feed"
-        case .aligned: "transcript synced"
-        case .none: "transcript not synced"
+    /// Formats a count when an older journal has no usable removal duration.
+    public static func removedSummary(advertisements: Int, secondsRemoved: Double) -> String {
+        let count = advertisements == 1 ? "1 ad" : "\(advertisements) ads"
+        guard secondsRemoved.isFinite, secondsRemoved > 0, secondsRemoved < Double(Int.max) else { return count }
+        return "\(count) (\(clock(secondsRemoved)))"
+    }
+
+    private static func warningReason(_ warning: String?) -> String? {
+        guard let warning, warning.hasPrefix("Some ads may remain:") else { return nil }
+        let reason = warning.dropFirst("Some ads may remain:".count)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return reason.isEmpty ? nil : reason
+    }
+
+    public static func transcriptStep(
+        _ timing: TranscriptTiming, hasText: Bool? = nil, sourceTiming: TranscriptTiming? = nil
+    ) -> String {
+        let hasSavedText = hasText ?? (timing != .none)
+        if timing == .none, let sourceTiming, sourceTiming != .none {
+            if hasSavedText {
+                let source = sourceTiming == .aligned ? "audio" : "the feed"
+                return "untimed transcript from \(source)"
+            }
+            return sourceTiming == .aligned ? "audio transcript unavailable" : "feed transcript unavailable"
+        }
+        return switch timing {
+        case .published: hasSavedText ? "transcript from the feed" : "feed transcript unavailable"
+        case .aligned: hasSavedText ? "transcript from audio" : "audio transcript unavailable"
+        case .none: hasSavedText ? "untimed transcript" : "transcript unavailable"
         }
     }
 

@@ -43,7 +43,7 @@ extension WiltedMacFeedPolicyViewTests {
 
         let shown = try WiltedMacHeadless.showSectionText(fixture.content, .ads).joined(separator: " ")
         XCTAssertTrue(shown.contains("Send this show for ad finding"), shown)
-        XCTAssertTrue(shown.contains("Transcripts are sent to the labelling provider"), shown)
+        XCTAssertTrue(shown.contains("Selected for online ad finding"), shown)
         XCTAssertFalse(shown.contains("Not sent"), shown)
         let header = try WiltedMacHeadless.recognizedText(fixture.content, size: CGSize(width: 800, height: 620))
         XCTAssertTrue(header.joined(separator: " ").contains("The Night Ledger Premium"), "\(header)")
@@ -52,7 +52,7 @@ extension WiltedMacFeedPolicyViewTests {
     func testUnconfirmedShowRendersTheWaitingLineBesideTheOrdinaryCaption() throws {
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/unconfirmed.xml"))
         let fixture = try sendForAdFindingFixture(
-            feedURL: feedURL, title: "The Morning Ledger", suffix: "local-only-unconfirmed", hasKey: true
+            feedURL: feedURL, title: "The Morning Ledger", suffix: "ad-check-unconfirmed", hasKey: true
         )
         let labeller = AdLabellerPreferences(preferences: fixture.model.preferences)
         labeller.isEnabled = true
@@ -62,15 +62,15 @@ extension WiltedMacFeedPolicyViewTests {
 
         let shown = try WiltedMacHeadless.showSectionText(fixture.content, .ads).joined(separator: " ")
         XCTAssertTrue(shown.contains("Send this show for ad finding"), shown)
-        XCTAssertTrue(shown.contains("When on, this show's transcripts go to the labelling provider and its ads are removed. When off, nothing is sent and its ads stay in."), shown)
-        XCTAssertTrue(shown.contains("Not sent"), shown)
+        XCTAssertTrue(shown.contains("When on, the selected service checks episode transcripts and the preparation removes the breaks chosen for this show. When off, ad checking is skipped."), shown)
+        XCTAssertTrue(shown.contains("Not selected for ad finding"), shown)
         XCTAssertFalse(shown.contains("Needs your confirmation"), shown)
     }
 
     func testConfirmedShowRendersTheSwitchOnAndRemoteRouteLine() throws {
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/confirmed.xml"))
         let fixture = try sendForAdFindingFixture(
-            feedURL: feedURL, title: "The Evening Ledger", suffix: "local-only-confirmed", hasKey: true
+            feedURL: feedURL, title: "The Evening Ledger", suffix: "ad-check-confirmed", hasKey: true
         )
         let labeller = AdLabellerPreferences(preferences: fixture.model.preferences)
         labeller.isEnabled = true
@@ -81,13 +81,13 @@ extension WiltedMacFeedPolicyViewTests {
 
         let shown = try WiltedMacHeadless.showSectionText(fixture.content, .ads).joined(separator: " ")
         XCTAssertTrue(shown.contains("Send this show for ad finding"), shown)
-        XCTAssertTrue(shown.contains("Transcripts are sent to the labelling provider"), shown)
+        XCTAssertTrue(shown.contains("Selected for online ad finding"), shown)
         XCTAssertFalse(shown.contains("Not sent"), shown)
         let header = try WiltedMacHeadless.recognizedText(fixture.content, size: CGSize(width: 800, height: 620))
         XCTAssertTrue(header.joined(separator: " ").contains("The Evening Ledger"), "\(header)")
     }
 
-    /// Regression: a confirmed show at the daily limit names the limit and keeps the prior route line.
+    /// A confirmed show at the daily limit identifies the wait and keeps its selection state.
     func testConfirmedShowAtTheDailyLimitNamesTheLimitNotNotSent() throws {
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/capped.xml"))
         let fixture = try sendForAdFindingFixture(
@@ -101,9 +101,9 @@ extension WiltedMacFeedPolicyViewTests {
 
         XCTAssertEqual(fixture.board.adRoute(for: fixture.feedID), .notSent(.dailyCapReached))
         let shown = try WiltedMacHeadless.showSectionText(fixture.content, .ads).joined(separator: " ")
-        XCTAssertTrue(shown.contains("limit for online labelling is reached"), shown)
+        XCTAssertTrue(shown.contains("Daily ad-check limit reached"), shown)
         XCTAssertFalse(shown.contains("Not sent"), shown)
-        XCTAssertTrue(shown.contains("Transcripts are sent to the labelling provider"), shown)
+        XCTAssertTrue(shown.contains("Selected for online ad finding"), shown)
     }
 
     // MARK: Fixture

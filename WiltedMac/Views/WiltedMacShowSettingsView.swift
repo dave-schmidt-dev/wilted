@@ -275,7 +275,7 @@ struct WiltedMacShowSettingsView: View {
                 get: { board.isAdFree(feedID) }, set: { board.setRemoveAdsOverride($0, for: feedID) }
             )) {
                 Text("Same as default").tag(false)
-                Text("Off (Custom)").tag(true)
+                Text("This show is already ad-free").tag(true)
             }
             .labelsHidden()
             .pickerStyle(.menu)
@@ -334,7 +334,7 @@ struct WiltedMacShowSettingsView: View {
         ) {
             HStack(alignment: .center, spacing: WiltedTheme.Spacing.large) {
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                    Text("When on, this show's transcripts go to the labelling provider and its ads are removed. When off, nothing is sent and its ads stay in.")
+                    Text("When on, the selected service checks episode transcripts and the preparation removes the breaks chosen for this show. When off, ad checking is skipped.")
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .fixedSize(horizontal: false, vertical: true)
@@ -360,17 +360,17 @@ struct WiltedMacShowSettingsView: View {
     private var adRouteLine: String {
         return switch board.adRoute(for: feedID) {
         case .remote:
-            "Transcripts are sent to the labelling provider"
+            "Selected for online ad finding"
         case .notSent(.switchOff):
             "Online ad finding is off"
         case .notSent(.noKey):
-            "No provider key saved"
+            "Selected service is not ready. Check Providers."
         case .notSent(.dailyCapReached):
-            "Today's limit for online labelling is reached. Transcripts are sent to the labelling provider when capacity is available."
+            "Daily ad-check limit reached"
         case .notSent(.adRemovalOff):
             "Ad removal is off for this show"
-        case .notSent:
-            "Not sent"
+        case .notSent(.notConfirmed):
+            "Not selected for ad finding"
         }
     }
 

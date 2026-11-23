@@ -93,7 +93,7 @@ final class WiltedMacShowSettingsTests: XCTestCase {
         XCTAssertFalse(fixture.board.removesSelfPromotion(fixture.feedID))
         XCTAssertEqual(fixture.board.explicitOverrideCount(for: fixture.feedID), 0)
         let text = try rendered(fixture)
-        XCTAssertFalse(text.contains("Off (Custom)"), text)
+        XCTAssertFalse(text.contains("This show is already ad-free"), text)
     }
 
     func testResettingRemoveAdsRevokesConsentBeforeRemovingAnAdFreeProtection() throws {

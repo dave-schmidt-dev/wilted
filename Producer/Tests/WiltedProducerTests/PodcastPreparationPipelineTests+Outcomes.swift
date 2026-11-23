@@ -120,23 +120,63 @@ extension PodcastPreparationPipelineTests {
         #expect(entries.allSatisfy { $0.itemID == fixture.episodeID })
         // The terminal row says what was done, not just that it finished:
         // it is what a relaunched app shows under the episode.
-        #expect(terminal.status.detail == "Ready · 1 ad removed (0:05) · transcript synced")
+        #expect(terminal.status.detail == "Ready · Ads removed · 1 ad (0:05) · transcript from audio")
     }
 
     @Test func summaryStatesWhatWasActuallyDone() {
-        #expect(PodcastPreparationResult.summary(advertisements: 3, secondsRemoved: 185, timing: .aligned)
-                == "Ready · 3 ads removed (3:05) · transcript synced")
-        #expect(PodcastPreparationResult.summary(advertisements: 1, secondsRemoved: 42, timing: .published)
-                == "Ready · 1 ad removed (0:42) · transcript synced from the feed")
-        #expect(PodcastPreparationResult.summary(advertisements: 5, secondsRemoved: 3_722, timing: .aligned)
-                == "Ready · 5 ads removed (1:02:02) · transcript synced")
-        // A gap is named rather than omitted, so a listener whose transcript
-        // will not follow the audio learns it from the row.
+        #expect(PodcastPreparationResult.summary(advertisements: 3, secondsRemoved: 185, timing: .aligned,
+                                                 adRemovalOutcome: "cut", hasText: true)
+                == "Ready · Ads removed · 3 ads (3:05) · transcript from audio")
+        #expect(PodcastPreparationResult.summary(advertisements: 1, secondsRemoved: 42, timing: .published,
+                                                 adRemovalOutcome: "cut", hasText: true)
+                == "Ready · Ads removed · 1 ad (0:42) · transcript from the feed")
+        #expect(PodcastPreparationResult.summary(advertisements: 5, secondsRemoved: 3_722, timing: .aligned,
+                                                 adRemovalOutcome: "cut", hasText: true)
+                == "Ready · Ads removed · 5 ads (1:02:02) · transcript from audio")
         #expect(PodcastPreparationResult.summary(advertisements: 0, secondsRemoved: 0, timing: .none)
-                == "Ready · no ads found · transcript not synced")
+                == "Ready · Ad check skipped · transcript unavailable")
+        #expect(PodcastPreparationResult.summary(advertisements: 0, secondsRemoved: 0, timing: .aligned,
+                                                 adRemovalOutcome: "noAds", hasText: true)
+                == "Ready · No ads found · transcript from audio")
         #expect(PodcastPreparationResult.summary(advertisements: 0, secondsRemoved: 0, timing: .published,
-                                                 adRemovalOutcome: "disabled")
-                == "Ready · ad removal disabled · transcript synced from the feed")
+                                                 adRemovalOutcome: "disabled", warning: "The daily limit was reached.")
+                == "Ready · Ad check skipped · The daily limit was reached. · transcript from the feed")
+        #expect(PodcastPreparationResult.summary(advertisements: 3, secondsRemoved: 185, timing: .aligned,
+                                                 adRemovalOutcome: "cut", adsMayRemain: true, hasText: true)
+                == "Ready · Some ads may remain · Ads removed · 3 ads (3:05) · transcript from audio")
+        #expect(PodcastPreparationResult.summary(advertisements: 1, secondsRemoved: 42, timing: .published,
+                                                 adRemovalOutcome: "cut")
+                == "Ready · Ads removed · 1 ad (0:42) · transcript from the feed")
+        #expect(PodcastPreparationResult.transcriptStep(.none, hasText: true, sourceTiming: .aligned)
+                == "untimed transcript from audio")
+        #expect(PodcastPreparationResult.transcriptStep(.none, hasText: true, sourceTiming: .published)
+                == "untimed transcript from the feed")
+        #expect(PodcastPreparationResult.transcriptStep(.none, hasText: false, sourceTiming: .aligned)
+                == "audio transcript unavailable")
+        #expect(PodcastPreparationResult.transcriptStep(.none, hasText: false, sourceTiming: .published)
+                == "feed transcript unavailable")
+    }
+
+    @Test func freshSummaryKeepsTheWorkerTranscriptSourceWhenSavedTextIsUnavailable() async throws {
+        let fixture = try await Fixture()
+        defer { fixture.remove() }
+        let ready = try #require(try await fixture.store.readyRevision(for: fixture.episodeID))
+        let transcript = try Transcript(
+            itemID: fixture.episodeID, revisionID: fixture.revisionID, availability: .oversized,
+            updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        )
+
+        for (source, expected) in [
+            (TranscriptTiming.aligned, "audio transcript unavailable"),
+            (.published, "feed transcript unavailable"),
+        ] {
+            let result = PodcastPreparationResult(
+                revision: ready.revision, mediaURL: fixture.audioURL, transcript: transcript,
+                adSegments: [], removedSeconds: 0, adRemovalOutcome: "disabled", adsMayRemain: false,
+                sourceTiming: source, warning: nil
+            )
+            #expect(result.summary == "Ready · Ad check skipped · \(expected)")
+        }
     }
 
     @Test func rejectsLegacyAndIncompleteV2WorkerResponses() {
@@ -190,6 +230,20 @@ extension PodcastPreparationPipelineTests {
         #expect(disabledPayload.adRemovalOutcome == "disabled")
     }
 
+    @Test func keepsWorkerTranscriptSourceWhenNoCuesCanBeStored() throws {
+        let response = v2Response(
+            report: #"{"outcome":"noAds","rawNominations":[],"audit":\#(labelledAuditJSON)}"#,
+            timing: TranscriptTiming.published.rawValue)
+        let payload = try PodcastPreparationPipeline.decode(response)
+
+        #expect(payload.timing == .none)
+        #expect(payload.sourceTiming == .published)
+        #expect(PodcastPreparationResult.summary(
+            advertisements: 0, secondsRemoved: 0, timing: payload.timing,
+            adRemovalOutcome: payload.adRemovalOutcome, hasText: false, sourceTiming: payload.sourceTiming
+        ) == "Ready · No ads found · feed transcript unavailable")
+    }
+
     /// The outcome label is a claim about the delivered audio, so it has to
     /// agree with the map that describes it.
     @Test func rejectsAV2PayloadWhoseOutcomeContradictsItsTimeline() {
@@ -213,7 +267,7 @@ extension PodcastPreparationPipelineTests {
         let response = uncertainResponse()
         let payload = try Self.decodeResponse(response)
         #expect(payload.adRemovalOutcome == "uncertain")
-        #expect(payload.warning?.contains("original audio includes ads") == true)
+        #expect(payload.warning?.hasPrefix("Some ads may remain:") == true)
         #expect(!payload.audioChanged && payload.keepIntervals.isEmpty && payload.adSegments.isEmpty)
     }
 
@@ -281,16 +335,17 @@ extension PodcastPreparationPipelineTests {
         #expect(result.revision.revisionID == fixture.revisionID)
         #expect(result.mediaURL == fixture.audioURL)
         #expect(try Data(contentsOf: result.mediaURL) == Data("original-audio-bytes".utf8))
-        #expect(result.summary.contains("original audio includes ads"))
-        #expect(!result.summary.contains("no ads found"))
+        #expect(result.summary.contains("Some ads may remain"))
+        #expect(result.summary.contains("unresolved commercial spans"))
+        #expect(!result.summary.contains("No ads found"))
         let reopened = try LocalLibraryStore(url: fixture.root.appendingPathComponent("library.sqlite"))
         let entries = try await reopened.preparationJournal(for: PodcastPreparationPipeline.requestID(for: fixture.episodeID))
         let terminal = try #require(entries.last { $0.status.terminal })
         #expect(terminal.status.terminalResult?.outcome == .succeeded)
-        #expect(terminal.status.detail.contains("original audio includes ads"))
+        #expect(terminal.status.detail.contains("Some ads may remain"))
         let evidence = try #require(entries.first { $0.id.contains("|pipeline.result#") })
-        #expect(evidence.status.detail.contains("original audio includes ads"))
-        #expect(evidence.status.evidence?.fields["warning"]?.contains("original audio includes ads") == true)
+        #expect(evidence.status.detail.contains("Some ads may remain"))
+        #expect(evidence.status.evidence?.fields["warning"]?.contains("Some ads may remain") == true)
         #expect(evidence.status.evidence?.fields["incompleteError"] == "unresolved commercial spans")
         #expect(evidence.status.evidence?.fields["modelRequests"] == "0")
     }
@@ -315,8 +370,8 @@ extension PodcastPreparationPipelineTests {
         return String(decoding: data, as: UTF8.self)
     }
 
-    private func v2Response(report: String) -> Data {
-        Data(#"{"ok":true,"protocolVersion":2,"timing":"none","audioPath":"/tmp/a.mp3","audioChanged":false,"report":\#(report)}"#.utf8)
+    private func v2Response(report: String, timing: String = "none") -> Data {
+        Data(#"{"ok":true,"protocolVersion":2,"timing":"\#(timing)","audioPath":"/tmp/a.mp3","audioChanged":false,"report":\#(report)}"#.utf8)
     }
 
     /// The journal is keyed by item, not attempt. Before it was cleared at the

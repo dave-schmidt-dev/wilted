@@ -312,7 +312,7 @@ extension WiltedMacJourneyUITests {
                     XCTAssertTrue(row.staticTexts["wilted-providers-status-\(provider)"].exists, provider)
                     let tag = row.staticTexts["wilted-providers-in-use-\(provider)"]
                     XCTAssertEqual(tag.exists, provider == "opencodeGoKey", provider)
-                    if tag.exists { XCTAssertEqual(tag.label, "In use for ad finding") }
+                    if tag.exists { XCTAssertEqual(tag.label, "Selected for ad finding") }
                 }
                 XCTAssertFalse(page.staticTexts["Kind"].exists)
                 let checkAll = page.buttons["wilted-providers-check-all"]

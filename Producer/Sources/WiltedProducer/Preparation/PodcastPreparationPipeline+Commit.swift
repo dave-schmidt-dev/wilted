@@ -22,7 +22,7 @@ extension PodcastPreparationPipeline {
             kind: .audioProcessed,
             seconds: downloadedRevision.durationSeconds
         )
-        if payload.adRemovalOutcome == "uncertain" {
+        if payload.adRemovalOutcome == "uncertain" || payload.warning != nil {
             guard URL(fileURLWithPath: payload.audioPath).resolvingSymlinksInPath().standardizedFileURL
                     == audioURL.resolvingSymlinksInPath().standardizedFileURL,
                   try Self.contentHash(of: audioURL) == downloadedRevision.contentHash else {
@@ -200,7 +200,8 @@ extension PodcastPreparationPipeline {
         ))
         return PodcastPreparationResult(revision: revision, mediaURL: mediaURL, transcript: transcript,
                                         adSegments: payload.adSegments, removedSeconds: payload.removedSeconds,
-                                        adRemovalOutcome: payload.adRemovalOutcome, warning: payload.warning)
+                                        adRemovalOutcome: payload.adRemovalOutcome, adsMayRemain: payload.adsMayRemain,
+                                        sourceTiming: payload.sourceTiming, warning: payload.warning)
     }
 
     static func resultProgress(_ payload: WorkerPayload) -> PodcastPreparationProgress {
@@ -208,10 +209,11 @@ extension PodcastPreparationPipeline {
             "audioChanged": payload.audioChanged ? "true" : "false",
             "advertisements": String(payload.adSegments.count),
             "removedSeconds": String(format: "%.3f", payload.removedSeconds),
-            "cues": String(payload.cues.count), "timing": payload.timing.rawValue
+            "cues": String(payload.cues.count), "timing": payload.sourceTiming.rawValue
         ]
         fields.merge(payload.adAuditDiagnostics) { _, diagnostic in diagnostic }
         fields["adRemovalOutcome"] = payload.adRemovalOutcome
+        fields["adsMayRemain"] = payload.adsMayRemain ? "true" : "false"
         if let warning = payload.warning { fields["warning"] = String(warning.prefix(256)) }
         // Kept apart from `removedSeconds`, which counts advertisements only.
         let silenceSeconds = payload.silenceTrims.reduce(0) { $0 + ($1.upperBound - $1.lowerBound) }

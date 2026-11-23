@@ -310,6 +310,10 @@ extension PodcastPreparationPipelineTests {
         let result = try await labelledPipeline(fixture, runner: worker, labelling: labelling)
             .prepare(episodeID: fixture.episodeID, onStatus: { status.append($0.stage, detail: $0.detail) })
         #expect(result.adRemovalOutcome == "cut")
+        #expect(result.adsMayRemain)
+        #expect(result.summary.contains("Some ads may remain"))
+        #expect(result.summary.contains("Ads removed"))
+        #expect(result.summary.contains("1 ad (0:05)"))
         let leftInStages = status.entries.filter { $0.stage.hasPrefix("ads.left-in.") }
         #expect(leftInStages.count == 2)
         #expect(leftInStages.contains(where: { $0.detail.contains("acceptable-cut") }))
@@ -641,7 +645,7 @@ extension PodcastPreparationPipelineTests {
         #expect(stages == ["transcript", nil])
         #expect(sender.requestCount == 1)
         #expect(result.adRemovalOutcome == "uncertain")
-        #expect(result.warning == "original audio includes ads: Provider key was rejected. Update it in Settings.")
+        #expect(result.warning == "Some ads may remain: Provider key was rejected. Update it in Settings.")
     }
 
     @Test func labelledProvenanceChangesPolicyDigest() {

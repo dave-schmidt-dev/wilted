@@ -14,9 +14,11 @@ extension WiltedMacTranscript {
         case .absent: .absent
         }
         let timingSource: String? = switch stored.timing {
-        case .published: "synced from the feed"
-        case .aligned: "synced"
-        case .none: nil
+        case .published: "from the feed"
+        case .aligned: "from audio"
+        // Text-only records do not retain enough provenance to identify their source.
+        case .none:
+            stored.availability == .available || stored.availability == .stale ? "untimed" : nil
         }
         self.init(
             availability: availability,

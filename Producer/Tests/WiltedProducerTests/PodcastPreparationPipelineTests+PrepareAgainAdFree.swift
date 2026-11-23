@@ -189,7 +189,7 @@ extension PodcastPreparationPipelineTests {
         guard case .keptExisting(let summary) = outcome else {
             Issue.record("expected the cut to be kept, got \(outcome)"); return
         }
-        #expect(summary == "Kept the existing cut. Online ad finding is off.")
+        #expect(summary == "Kept the existing cut. Ad check skipped. Online ad finding is off.")
         #expect(summary.contains(RemoteLabellingNotSent.switchOff.sentence))
         #expect(fixture.sender?.requestCount == 1, "only the first cut was sent")
         let ready = try #require(try await fixture.store.readyRevision(for: fixture.episodeID))
@@ -199,8 +199,7 @@ extension PodcastPreparationPipelineTests {
         #expect(request["removeAds"] as? Bool == false)
     }
 
-    /// The not-sent wording leaves a labelled stop's summary as it was.
-    @Test func prepareAgainAfterALabelledStopKeepsItsSummary() async throws {
+    @Test func prepareAgainAtTheDailyLimitKeepsTheExistingCutAndExplainsWhy() async throws {
         let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
         let candidate = try await olderLabelledCut(fixture)
@@ -212,7 +211,8 @@ extension PodcastPreparationPipelineTests {
         guard case .keptExisting(let summary) = outcome else {
             Issue.record("expected the cut to be kept, got \(outcome)"); return
         }
-        #expect(summary == "Kept the existing cut: the current engine could not tell which parts were ads")
+        #expect(summary == "Kept the existing cut. Ad check skipped. The daily limit for online labelling was reached.")
+        #expect(fixture.sender?.requestCount == 1, "only the original cut contacted the provider")
     }
 
     /// A run kept whole while its show was not confirmed recorded the plain

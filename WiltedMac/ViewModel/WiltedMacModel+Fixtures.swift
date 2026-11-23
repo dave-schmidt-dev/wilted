@@ -110,7 +110,7 @@ extension WiltedMacModel {
 
     /// The fixture's prepared episode reads the way a real one does after a
     /// relaunch: the journal's terminal summary, not just "synced".
-    static let fixturePreparedSummary = "Ready · 5 ads removed (7:22) · transcript synced"
+    static let fixturePreparedSummary = "Ready · Ads removed · 5 ads (7:22) · transcript from audio"
 
     /// A two-voice interview transcript for the fixture episode.
     ///
@@ -220,7 +220,7 @@ extension WiltedMacModel {
             downloadState: fixtureDownloadFailuresRemaining > 0 ? .notDownloaded : .completed,
             preparationState: fixtureEpisodeIsPrepared
                 ? .prepared(summary: fixtureEpisodeHasLongTranscript
-                    ? "Ready · 8 ads removed (1:52) · transcript synced"
+                    ? "Ready · Ads removed · 8 ads (1:52) · transcript from audio"
                     : Self.fixturePreparedSummary)
                 : (fixtureEpisodeIsDeferred ? .preparing(stage: Self.preparationQueuedStage) : .notPrepared)
         )
@@ -340,7 +340,7 @@ extension WiltedMacModel {
                    let status = try? PreparationStatus(
                     stage: .completed,
                     detail: fixtureEpisodeHasLongTranscript
-                        ? "Ready · 8 ads removed (1:52) · transcript synced"
+                        ? "Ready · Ads removed · 8 ads (1:52) · transcript from audio"
                         : Self.fixturePreparedSummary,
                     cancellable: false, terminalResult: terminal,
                     emittedAt: Timestamp(started.addingTimeInterval(300)),

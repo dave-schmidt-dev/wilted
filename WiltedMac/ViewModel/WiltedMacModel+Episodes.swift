@@ -64,8 +64,7 @@ extension WiltedMacModel {
     }
 
     func refreshPodcastURLs(
-        _ urls: [URL], subscribing: Bool, initialMetadataLimit: Int? = nil, requestID: UUID? = nil,
-        asksAboutAdFree: Bool = false
+        _ urls: [URL], subscribing: Bool, initialMetadataLimit: Int? = nil, requestID: UUID? = nil
     ) async throws -> PodcastRefreshResult {
         guard let store else { throw CancellationError() }
         var withheld = 0
@@ -109,12 +108,6 @@ extension WiltedMacModel {
                     result.feedOutcomes[url] = .done
                     if !subscribing { markFeedRefresh(forURL: url, .done) }
                     continue
-                }
-                // Ad-free choice must stick before save: first episodes are admitted immediately after.
-                if subscribing, asksAboutAdFree {
-                    try await askToExcludeAdFreeFeedIfNeeded(
-                        feed: loaded.feed, store: store, requestID: requestID
-                    )
                 }
                 try await store.save(feed: loaded.feed)
                 try Task.checkCancellation()

@@ -220,7 +220,8 @@ extension WiltedMacModelTests {
 
         let prepared = try XCTUnwrap(model.episodes.first { $0.id == targetID.rawValue })
         XCTAssertEqual(prepared.downloadState, .completed)
-        XCTAssertEqual(prepared.preparationState, .prepared(summary: "Ready · 3 ads removed (4:38) · transcript synced"))
+        XCTAssertEqual(prepared.preparationState,
+                       .prepared(summary: "Ready · Ads removed · 3 ads (4:38) · transcript from audio"))
 
         _ = try await store.dismissPodcastEpisode(targetID)
         await model.reloadLibraryRows()

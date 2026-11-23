@@ -34,6 +34,19 @@ final class WiltedMacEpisodeInfoPopoverTests: XCTestCase {
         XCTAssertEqual(calls, 0, "the default tab reads nothing")
     }
 
+    func testNotesShowRecordedPassagesOnTheOriginalAudioClock() throws {
+        let stamp = WiltedMacPreparationStamp(
+            prepared: "Prepared", passagesLeftIn: ["1:05–1:20 · Optional cut"],
+            lastFailure: nil, failureDetail: nil)
+        let text = try WiltedMacHeadless.recognizedText(
+            WiltedMacEpisodeNotes(info: info(stamp: stamp), prefix: "wilted-larder") { EmptyView() },
+            size: popoverSize).joined(separator: " ")
+        XCTAssertTrue(text.contains("Passages left in (original audio)"), text)
+        XCTAssertTrue(text.contains("1:05"), text)
+        XCTAssertTrue(text.contains("1:20"), text)
+        XCTAssertTrue(text.contains("Optional cut"), text)
+    }
+
     func testTranscriptTabLoadsLazilyAndShowsSavedText() async throws {
         let stub = TranscriptReadStub(
             result: .loaded(WiltedMacTranscript(availability: .available, text: savedTranscript)))
@@ -241,7 +254,9 @@ final class WiltedMacEpisodeInfoPopoverTests: XCTestCase {
 
     // MARK: Fixtures
 
-    private func info(notes: String? = "Exact notes for this episode") -> WiltedMacEpisodeInfo {
+    private func info(
+        notes: String? = "Exact notes for this episode", stamp: WiltedMacPreparationStamp? = nil
+    ) -> WiltedMacEpisodeInfo {
         WiltedMacEpisodeInfo(
             id: "info-episode",
             title: "Info episode",
@@ -249,7 +264,7 @@ final class WiltedMacEpisodeInfoPopoverTests: XCTestCase {
                 title: "Info episode", showTitle: "Info show",
                 publishedAt: Date(timeIntervalSince1970: 1_700_000_000),
                 sourceDurationSeconds: 600, playableDurationSeconds: nil),
-            notes: notes
+            notes: notes, preparationStamp: stamp
         )
     }
 

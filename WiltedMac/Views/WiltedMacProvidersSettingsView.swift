@@ -40,7 +40,10 @@ struct WiltedMacProvidersSettingsView: View {
             }
 
             ForEach(rows.filter { !$0.provider.requiresSavedKey }) { row in
-                WiltedMacProviderRow(providers: providers, row: row)
+                WiltedMacProviderRow(
+                    providers: providers, row: row,
+                    lastEpisodeReply: appModel.providerEpisodeReplies[row.provider]
+                )
             }
 
             Text("Keys")
@@ -49,7 +52,10 @@ struct WiltedMacProvidersSettingsView: View {
                 .accessibilityIdentifier("wilted-providers-heading-keys")
 
             ForEach(rows.filter { $0.provider.requiresSavedKey }) { row in
-                WiltedMacProviderRow(providers: providers, row: row)
+                WiltedMacProviderRow(
+                    providers: providers, row: row,
+                    lastEpisodeReply: appModel.providerEpisodeReplies[row.provider]
+                )
             }
         }
         .accessibilityElement(children: .contain)
@@ -61,6 +67,7 @@ struct WiltedMacProvidersSettingsView: View {
 private struct WiltedMacProviderRow: View {
     let providers: WiltedMacProviderSettings
     let row: WiltedMacProviderSettings.Row
+    let lastEpisodeReply: WiltedMacProviderEpisodeReply?
     @Environment(\.colorScheme) private var colorScheme
     @State private var typedKey = ""
     @State private var isConfirmingKeyRemoval = false
@@ -72,25 +79,40 @@ private struct WiltedMacProviderRow: View {
                 Text(row.name)
                     .wiltedFont(.body)
                 if row.isChosen {
-                    Text("In use")
+                    Text("Selected")
                         .wiltedFont(.caption)
                         .fixedSize()
                         .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
                         .padding(.horizontal, WiltedTheme.Spacing.xSmall)
                         .background(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.12), in: Capsule())
-                        .accessibilityLabel("In use for ad finding")
+                        .accessibilityLabel("Selected for ad finding")
                         .accessibilityIdentifier("wilted-providers-in-use-\(row.provider.rawValue)")
                 }
                 Spacer(minLength: WiltedTheme.Spacing.small)
-                Text(row.status)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-providers-status-\(row.provider.rawValue)")
+                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                    Text(row.status)
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-providers-status-\(row.provider.rawValue)")
+                    if let lastResult = row.lastCheckResult {
+                        Text("Last provider check: \(lastResult)")
+                            .wiltedFont(.caption)
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                            .accessibilityIdentifier("wilted-providers-last-check-\(row.provider.rawValue)")
+                    }
+                }
                 Button("Check") {
                     Task { await providers.check(row.provider) }
                 }
                 .disabled(row.status == "Checking...")
                 .accessibilityIdentifier("wilted-providers-check-\(row.provider.rawValue)")
+            }
+            if let lastEpisodeReply {
+                Text("Last episode result: \(lastEpisodeReply.detail)")
+                    .wiltedFont(.caption)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("wilted-providers-last-episode-result-\(row.provider.rawValue)")
             }
             if row.provider.requiresSavedKey { keyControls }
         }

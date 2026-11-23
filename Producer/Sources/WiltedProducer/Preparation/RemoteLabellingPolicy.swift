@@ -10,7 +10,7 @@ public enum RemoteLabellingNotSentReason: String, Sendable, Equatable, CaseItera
 }
 
 /// Why an episode with ad removal on is not sent for ad finding. Its original audio is
-/// kept whole, and the warning, the journal and the app all say why in one fixed sentence.
+/// kept whole, and the journal records the reason.
 public enum RemoteLabellingNotSent: String, Sendable, Equatable, CaseIterable {
     case switchOff = "switch-off"
     case noKey = "no-key"
@@ -29,7 +29,7 @@ public enum RemoteLabellingNotSent: String, Sendable, Equatable, CaseIterable {
     /// The journal evidence kind, for example `not-sent-switch-off`.
     public var kind: String { "not-sent-\(rawValue)" }
 
-    /// Why the episode keeps its ads.
+    /// Why the episode's ad check was skipped.
     public var sentence: String {
         switch self {
         case .switchOff: "Online ad finding is off."
@@ -38,8 +38,9 @@ public enum RemoteLabellingNotSent: String, Sendable, Equatable, CaseIterable {
         }
     }
 
-    /// The durable warning a not-sent episode carries.
-    public var warning: String { "original audio includes ads: \(sentence)" }
+    /// The journalled explanation for a skipped check.
+    public var warning: String { sentence }
+
 }
 
 /// Where an episode's transcript is labelled.
