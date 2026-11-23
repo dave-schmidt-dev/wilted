@@ -123,7 +123,15 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
             choice.tap()
             XCTAssertTrue(app.staticTexts[question].waitForExistence(timeout: 5))
             XCTAssertTrue(app.buttons[label].exists)
-            app.buttons["Cancel"].tap()
+            // iOS 26 anchors the question to the menu button as a popover, which has no Cancel button;
+            // tapping outside it cancels the same way.
+            let cancel = app.buttons["Cancel"]
+            if cancel.waitForExistence(timeout: 2) {
+                cancel.tap()
+            } else {
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1)).tap()
+            }
+            XCTAssertTrue(app.staticTexts[question].waitForNonExistence(timeout: 5), "the question closes without acting")
         }
         XCTAssertTrue(menu.waitForExistence(timeout: 5), "Cancelling leaves the episode available")
     }
