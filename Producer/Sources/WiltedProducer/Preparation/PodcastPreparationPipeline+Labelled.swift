@@ -239,7 +239,7 @@ extension PodcastPreparationPipeline {
         episode: PodcastEpisode, audioURL: URL, preparedURL: URL, sourceHash: String,
         policy: PodcastPreparationPolicySnapshot, services: PodcastLabellingServices,
         feedTitle: String, provenance: LabelledRunProvenance, deferral: LabelledDeferralContext?,
-        cached: LabelledTranscript?, original: (String) async throws -> PreparationWorkerRun,
+        cached: LabelledTranscript?, original: (String, String) async throws -> PreparationWorkerRun,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> PreparationWorkerRun {
         var cached = cached
@@ -263,7 +263,7 @@ extension PodcastPreparationPipeline {
                 default:
                     outcome = "uncertain"
                 }
-                return try await original(stopLabelledPath(reason, onStatus: onStatus), outcome: outcome)
+                return try await original(stopLabelledPath(reason, onStatus: onStatus), outcome)
             } catch let error as PodcastPreparationError {
                 guard case .workerFailed(let code, _) = error, code == Self.labelledCuesMismatchCode else { throw error }
                 // A reused cue list that no longer matches is dropped with its file.
@@ -273,7 +273,7 @@ extension PodcastPreparationPipeline {
                     mismatchRestarts = 1
                     continue
                 }
-                return try await original("labelled cues digest mismatch")
+                return try await original("labelled cues digest mismatch", "uncertain")
             }
         }
     }
