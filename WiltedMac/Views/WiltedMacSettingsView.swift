@@ -206,7 +206,6 @@ struct WiltedMacSettingsView: View {
 
                 automationSectionTitle("Feed defaults")
                 WiltedMacGlobalFeedDefaultsControls(model: model)
-                WiltedMacInheritedFeedDefaults(model: model)
                 Text("Same as default follows these values. Change a show on its Show settings page.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
@@ -262,13 +261,11 @@ struct WiltedMacSettingsView: View {
                 }
             }
             .accessibilityIdentifier("wilted-automation-transcript-policy")
-            if model.automationSettings.transcriptPolicyBlocksAdRemoval {
-                Text(WiltedAutomationSettings.transcriptPolicyBlocksAdRemovalExplanation)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.degraded, scheme: colorScheme))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("wilted-automation-transcript-conflict")
-            }
+            Text(model.automationSettings.transcriptPolicyExplanation)
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("wilted-automation-transcript-explanation")
         }
     }
 

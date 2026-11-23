@@ -69,15 +69,26 @@ final class LibraryRefreshStatusTests: XCTestCase {
         XCTAssertNil(model.errorMessage)
         XCTAssertNotNil(model.lastSynchronizedAt)
     }
-    func testStartupNeverSilentlyOmitsAuthorAgeStatus() async {
+    func testMissingAndPastSendTimesLeaveTheLarderQuiet() async throws {
         let (model, _) = makeModel()
         await model.loadLocalState()
-        XCTAssertNotNil(model.syncBanner, "Unknown publication age must remain explicit at startup")
+        XCTAssertNil(model.syncBanner)
+        let (saved, _, _, _) = try await savedModel()
+        XCTAssertNil(saved.syncBanner)
+        XCTAssertTrue(saved.publicationSummary.contains("Mac last sent library changes"))
     }
-    private func savedModel(failFetch: Bool = false, replacement: Bool = false) async throws -> (LibraryAppModel, RefreshPollTransport, [ItemID], URL) {
+    func testFutureSendTimeWarnsUntilAHigherPriorityProblemOccurs() async throws {
+        let (model, _, _, _) = try await savedModel(publishedAt: Date().addingTimeInterval(3600))
+        XCTAssertEqual(model.syncBanner, .problem(WiltedPublicationAge.futureSendTime))
+        await model.refresh()
+        let error = try XCTUnwrap(model.errorMessage)
+        XCTAssertEqual(model.syncBanner, .problem(error))
+    }
+    private func savedModel(failFetch: Bool = false, replacement: Bool = false,
+                            publishedAt: Date = Date(timeIntervalSince1970: 2000)) async throws -> (LibraryAppModel, RefreshPollTransport, [ItemID], URL) {
         let entryID = try ItemID(rawValue: "saved")
         let entry = try LibraryEntry(id: entryID, kind: .podcastEpisode, sourceID: ItemID(rawValue: "show"), title: "Saved episode", summary: "", publishedAt: Date(timeIntervalSince1970: 1000))
-        let publication = try LibraryPublication(id: "author", publishedAt: Date(timeIntervalSince1970: 2000), writerDeviceID: "mac")
+        let publication = try LibraryPublication(id: "author", publishedAt: publishedAt, writerDeviceID: "mac")
         let batch = LibraryChangeBatch(generationID: "saved", changes: [
             .init(version: 1, change: .entry(entry)), .init(version: 1, change: .slot(try QueueSlot(entryID: entryID, sortKey: 0)))], token: .init(rawValue: "saved-cursor"), provenance: .init(ownerToken: "owner", operationGeneration: 0, isFullBootstrap: true), observedPublication: publication)
         let offer = try PreparedMediaFixture.certified(LibraryMediaOffer(entryID: entryID, revisionID: RevisionID(rawValue: "revision"), contentHash: PreparedMediaFixture.hash(Data(repeating: 7, count: 10)), byteCount: 10, mediaType: "audio/mpeg", state: .available))
@@ -327,11 +338,18 @@ final class LibraryRefreshStatusTests: XCTestCase {
                 let request = VNRecognizeTextRequest(); request.recognitionLevel = .accurate
                 try VNImageRequestHandler(cgImage: try XCTUnwrap(image.cgImage)).perform([request])
                 let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").lowercased()
-                XCTAssertTrue(context == "unknown" ? text.contains("mac publication unknown")
-                    : text.contains("saved") && text.contains("mac last sent library changes"), text)
-                if context == "cold" { XCTAssertTrue(text.contains("unverified"), text) }
-                if context == "failed" { XCTAssertTrue(text.contains("refresh failed"), text) }
-                if context == "held" { XCTAssertTrue(text.contains("account review required"), text) }
+                XCTAssertFalse(text.contains("mac publication unknown") || text.contains("mac last sent library changes"), text)
+                XCTAssertNil(host.element("wilted-author-publication"))
+                switch context {
+                case "failed":
+                    XCTAssertNotNil(host.element("wilted-library-error"))
+                    XCTAssertTrue(text.contains("required poll failed"), text)
+                case "held":
+                    XCTAssertNotNil(host.element(WiltedScreenCopy.useCurrentAccountIdentifier))
+                    XCTAssertTrue(text.contains("account review"), text)
+                default:
+                    XCTAssertNil(model.syncBanner)
+                }
                 XCTAssertEqual(model.visibleRows.map(\.id), ids)
             }
         }

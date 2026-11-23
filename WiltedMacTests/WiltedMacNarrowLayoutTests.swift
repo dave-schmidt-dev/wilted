@@ -43,7 +43,7 @@ final class WiltedMacNarrowLayoutTests: XCTestCase {
                                    "Each episode owns one date line; the article has a separate date: \(text)")
                 }
                 XCTAssertTrue(text.contains("1h 02m"), text)
-            } else { XCTAssertTrue(text.contains("Remove all 9 from Larder"), text) }
+            } else { XCTAssertTrue(text.contains("Remove all 10 from Larder"), text) }
             for dark in [false, true] {
                 let capture = dark ? try WiltedMacHeadless.render(WiltedMacRootView(model: model).environment(\.colorScheme, .dark), size: CGSize(width: width, height: 1400)) : bitmap
                 let attachment = XCTAttachment(data: try XCTUnwrap(capture.representation(using: .png, properties: [:])), uniformTypeIdentifier: "public.png")
@@ -85,7 +85,7 @@ final class WiltedMacNarrowLayoutTests: XCTestCase {
                                        "Each episode owns one date line; the article has a separate date: \(text)")
                     }
                     XCTAssertTrue(text.contains("1h 02m"), text)
-                    XCTAssertTrue(text.contains("Remove all 3 from Larder"), text)
+                    XCTAssertTrue(text.contains("Remove all 4 from Larder"), text)
                     XCTAssertEqual(text.components(separatedBy: "Evening").count - 1, 3, "each one-line title remains visible: \(text)")
                     for dark in [false, true] {
                         let capture = dark ? try WiltedMacHeadless.render(

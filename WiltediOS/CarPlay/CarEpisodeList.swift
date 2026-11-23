@@ -26,6 +26,10 @@ struct CarEpisodeList: Equatable, Sendable {
     static let emptyMessage = "No episodes on this iPhone"
     static let loadingMessage = "Loading episodes"
 
+    static func emptyMessage(forInitialLoad isLoading: Bool) -> String {
+        isLoading ? loadingMessage : emptyMessage
+    }
+
     let content: Content
     /// How many episodes are on the phone before the cap.
     let totalOnPhone: Int
@@ -44,7 +48,7 @@ struct CarEpisodeList: Equatable, Sendable {
             order: order)
         let capped = Array(listed.prefix(max(1, limit)))
         guard !capped.isEmpty else {
-            return CarEpisodeList(content: .empty(isLoading ? loadingMessage : emptyMessage), totalOnPhone: 0)
+            return CarEpisodeList(content: .empty(emptyMessage(forInitialLoad: isLoading)), totalOnPhone: 0)
         }
         return CarEpisodeList(
             content: .episodes(capped.map {
@@ -81,7 +85,18 @@ extension CarEpisodeList {
     static func make(model: LibraryAppModel, playingID: ItemID?, limit: Int = defaultLimit) -> CarEpisodeList {
         make(
             rows: model.queued, onPhone: model.preparedIDs.onPhone, playingID: playingID,
-            isLoading: model.lastSynchronizedAt == nil && model.isRefreshing, limit: limit, progress: model.progress,
+            isLoading: isInitialLoad(model), limit: limit, progress: model.progress,
             finished: model.finished, order: model.listOrder)
+    }
+
+    @MainActor
+    static func isInitialLoad(_ model: LibraryAppModel) -> Bool {
+        isInitialLoad(
+            localStateLoaded: model.localStateLoaded, lastSynchronizedAt: model.lastSynchronizedAt,
+            isRefreshing: model.isRefreshing)
+    }
+
+    static func isInitialLoad(localStateLoaded: Bool, lastSynchronizedAt: Date?, isRefreshing: Bool) -> Bool {
+        !localStateLoaded || (lastSynchronizedAt == nil && isRefreshing)
     }
 }

@@ -333,14 +333,15 @@ final class WiltedMacFeedPolicyBoard {
         return true
     }
 
-    /// How many cut episodes on this feed the Larder can restore now.
-    func restorableCutCount(_ feedID: String) -> Int {
-        model.episodesToRestore(feedID: feedID).count
+    /// The exact cut episodes offered for confirmation on this feed.
+    func restorableCutEpisodeIDs(_ feedID: String) -> [String] {
+        model.episodesToRestore(feedID: feedID).map(\.id)
     }
 
-    /// Starts a restore run for each cut episode on the feed that can be restored.
-    func restoreCuts(for feedID: String) {
-        model.restoreCutEpisodes(feedID: feedID)
+    /// Starts a restore only while the offered set still matches the person's confirmation.
+    func restoreCuts(for feedID: String, candidateIDs: [String]) -> Bool {
+        guard isLoaded(feedID) else { return false }
+        return model.restoreCutEpisodes(feedID: feedID, candidateIDs: candidateIDs)
     }
 
     // MARK: Ad finding switch

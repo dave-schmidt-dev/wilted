@@ -53,7 +53,7 @@ class SettingsInventory(unittest.TestCase):
         declarations = dict(re.findall(r'var (\w+): some View \{\n(.*?)(?=\n    \})', settings, re.S))
         declarations = {name: body for name, body in declarations.items() if name.endswith("Card")}
         declarations["WiltedMacLibrarySyncCard"] = source("WiltedMacLibrarySyncCard").split("struct WiltedMacLibrarySyncCard: View {", 1)[1]
-        for name in ("WiltedMacAdFindingSettingsView", "WiltedMacReportsCard", "WiltedMacAdFeedbackCard",
+        for name in ("WiltedMacAdFindingSettingsView", "WiltedMacReportsCard", "WiltedMacHeadlineSourceSheet", "WiltedMacAdFeedbackCard",
                      "WiltedMacLifetimeStatisticsCard"):
             declarations[name] = source(name)
         providers_page = source("WiltedMacProvidersSettingsView")
@@ -61,17 +61,6 @@ class SettingsInventory(unittest.TestCase):
         declarations["WiltedMacProviderRow"] = providers_page.split("private struct WiltedMacProviderRow")[1]
         declarations["WiltedMacAdFindingModelSection"] = source("WiltedMacAdFindingModelSection")
         declarations["WiltedMacGlobalFeedDefaultsControls"] = source("WiltedMacGlobalFeedDefaultsControls").split("struct WiltedMacGlobalFeedDefaultsControls")[1]
-        declarations["WiltedMacInheritedFeedDefaults"] = source("WiltedMacFeedsComponents").split("struct WiltedMacInheritedFeedDefaults")[1].split("\nstruct ")[0]
-
-        inherited = declarations["WiltedMacInheritedFeedDefaults"]
-        # These two rows use the same Swift interpolation, with different labels.
-        template = next(line for line in inherited.splitlines() if ".accessibilityIdentifier(" in line)
-        inherited_ids = [
-            '"wilted-automation-feed-default-' + label.lower().replace(" ", "-") + '"'
-            for label in re.findall(r'\$0.label == "([^"]+)"', inherited)
-        ]
-        self.assertIn('row.label.lowercased().replacingOccurrences(of: " ", with: "-")', template)
-        declarations["WiltedMacInheritedFeedDefaults"] = inherited.replace(template, " ".join(inherited_ids))
 
         shared = ROOT.parent / "Shared"
         publication = (shared / "WiltedAccountRecoveryNotice.swift").read_text()
@@ -191,7 +180,9 @@ class ShowSettingsInventory(unittest.TestCase):
         self.assertIn("private var feedID: String { subscription.id }", self.page_source)
 
     def test_show_reset_can_only_revoke_consent(self):
-        resets = source("WiltedMacShowSettingsBoard")
+        # Only an explicit Undo can restore a previous choice.
+        resets = re.sub(r"    func undoResetAllOverrides\(.*?\n    \}", "",
+                        source("WiltedMacShowSettingsBoard"), flags=re.S)
         self.assertNotIn("setSendForAdFinding(", resets)
         self.assertNotIn("setConfirmed(", resets)
         board = source("WiltedMacFeedPolicyBoard")
@@ -232,8 +223,6 @@ INVENTORY = {
         'wilted-automation-feed-default-kept-limit-mode',
         'wilted-automation-feed-default-kept-limit',
         'wilted-automation-feed-default-kept-limit-stepper',
-        "wilted-automation-feed-default-auto-download",
-        "wilted-automation-feed-default-auto-prepare",
     ],
     "preparing": [
         'wilted-automation-processing-policy',
@@ -242,7 +231,7 @@ INVENTORY = {
         'wilted-automation-off-peak-explanation',
         'wilted-processing-low-priority',
         'wilted-automation-transcript-policy',
-        'wilted-automation-transcript-conflict',
+        'wilted-automation-transcript-explanation',
     ],
     "ads": [
         'wilted-automation-remove-ads',
@@ -250,6 +239,7 @@ INVENTORY = {
         'wilted-ad-finding-switch',
         'wilted-ad-finding-switch-message',
         'wilted-ad-finding-provider-paused',
+        'wilted-ad-finding-provider-retry',
         'wilted-ad-finding-requests',
         'wilted-ad-finding-help',
         'wilted-ad-finding-consent-summary',
@@ -280,6 +270,7 @@ INVENTORY = {
         'wilted-ad-feedback-row-\\(entry.id)',
         'wilted-ad-feedback-label',
         'wilted-ad-feedback-remove',
+        'wilted-ad-feedback-handled',
         'wilted-ad-feedback-restore',
     ],
     "providers": [
@@ -291,6 +282,8 @@ INVENTORY = {
         # The page builds each provider row twice (command-line group, key group).
         'wilted-providers-in-use-\\(row.provider.rawValue)',
         'wilted-providers-status-\\(row.provider.rawValue)',
+        'wilted-providers-last-check-\\(row.provider.rawValue)',
+        'wilted-providers-last-episode-result-\\(row.provider.rawValue)',
         'wilted-providers-check-\\(row.provider.rawValue)',
         'wilted-providers-key-saved-\\(row.provider.rawValue)',
         'wilted-providers-key-remove-\\(row.provider.rawValue)',
@@ -300,6 +293,8 @@ INVENTORY = {
         'wilted-providers-card-\\(row.provider.rawValue)',
         'wilted-providers-in-use-\\(row.provider.rawValue)',
         'wilted-providers-status-\\(row.provider.rawValue)',
+        'wilted-providers-last-check-\\(row.provider.rawValue)',
+        'wilted-providers-last-episode-result-\\(row.provider.rawValue)',
         'wilted-providers-check-\\(row.provider.rawValue)',
         'wilted-providers-key-saved-\\(row.provider.rawValue)',
         'wilted-providers-key-remove-\\(row.provider.rawValue)',
@@ -312,6 +307,15 @@ INVENTORY = {
         'wilted-reports-interruptions',
         'wilted-reports-readiness',
         'wilted-reports-add-news-feed',
+        'wilted-reports-headline-sources-loading',
+        'wilted-reports-headline-sources-retry',
+        'wilted-reports-headline-source-active-\\(subscription.id)',
+        'wilted-reports-headline-source-\\(subscription.id)',
+        'wilted-reports-headline-feed-address',
+        'wilted-reports-headline-feed-add',
+        'wilted-reports-headline-feed-progress',
+        'wilted-reports-headline-feed-error',
+        'wilted-reports-headline-source-sheet',
         'wilted-reports-refresh-news-readiness',
         'wilted-reports-set-location',
         'wilted-reports-retry-sound-check',

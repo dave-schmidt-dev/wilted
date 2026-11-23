@@ -12,7 +12,7 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
 
     // MARK: Policy
 
-    func testEveryFeedStaysLocalUntilKeyAndGlobalConfirmationAreConfirmed() throws {
+    func testOnlineAdFindingRequiresKeyAndGlobalConfirmation() throws {
         let publicShow = show("feed-a", "Public Show")
         let shows = [publicShow]
         let (model, preferences, keyStore) = makeModel(shows: { shows })
@@ -64,7 +64,7 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
 
     // MARK: Consent stays explicit
 
-    func testShowAddedAfterConfirmationStaysLocalUntilItsConsentIsSaved() throws {
+    func testShowAddedAfterConfirmationRequiresItsOwnSelection() throws {
         let first = show("feed-a", "First Show")
         let second = show("feed-b", "Second Show")
         var shows = [first, second]
@@ -168,7 +168,7 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         XCTAssertFalse(cardText.contains("ZX9Q7"), cardText)
         XCTAssertFalse(cardText.contains("Key saved"), "Key saved is no longer on Ads page: \(cardText)")
         XCTAssertFalse(cardText.contains("Provider key"), "Provider key field is no longer on Ads page: \(cardText)")
-        XCTAssertFalse(cardText.contains("Transcripts will be sent"),
+        XCTAssertFalse(cardText.contains("Selected for ad finding"),
                        "the sheet's groups stay in the sheet: \(cardText)")
 
         model.setOnlineFinding(true)
@@ -176,11 +176,11 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
             WiltedMacAdFindingConfirmSheet(model: model), size: CGSize(width: 700, height: 700))
         let texts = lines.map(\.text)
         let sentHeading = try XCTUnwrap(
-            texts.firstIndex { $0.contains("Transcripts will be sent") }, "sent heading missing: \(texts)")
-        let localHeading = try XCTUnwrap(
-            texts.firstIndex { $0.contains("Not sent") }, "not sent heading missing: \(texts)")
+            texts.firstIndex { $0.contains("Selected for ad finding") }, "sent heading missing: \(texts)")
+        let otherHeading = try XCTUnwrap(
+            texts.firstIndex { $0.contains("Other shows") }, "not sent heading missing: \(texts)")
         let sheetText = texts.joined(separator: " ")
-        XCTAssertTrue(sheetText.contains("Shows you add later are not sent until you turn them on in Show settings."),
+        XCTAssertTrue(sheetText.contains("For shows you add later, turn on ad finding in Show settings."),
                       sheetText)
         let source = try WiltedMacHeadless.viewSource("WiltedMacAdFindingSettingsView.swift")
         let confirmStart = try XCTUnwrap(source.range(of: "struct WiltedMacAdFindingConfirmSheet"))
@@ -189,12 +189,12 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         XCTAssertFalse(confirmSource.contains("wilted-ad-finding-sheet-show-"), confirmSource)
 
         for (title, expectedHeading) in [
-            ("Field Notes", "Transcripts will be sent"), ("Premium Hour", "Transcripts will be sent"),
+            ("Field Notes", "Selected for ad finding"), ("Premium Hour", "Selected for ad finding"),
         ] {
             let index = try XCTUnwrap(
                 texts.firstIndex { $0.contains(title) }, "\(title) missing from the sheet: \(texts)")
             let heading = try XCTUnwrap(
-                [sentHeading, localHeading].filter { $0 < index }.max().map { texts[$0] },
+                [sentHeading, otherHeading].filter { $0 < index }.max().map { texts[$0] },
                 "\(title) sits above both headings")
             XCTAssertTrue(heading.contains(expectedHeading), "\(title) is listed under \(heading)")
             XCTAssertEqual(WiltedMacHeadless.occurrences(of: title, in: sheetText), 1,
@@ -202,7 +202,7 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         }
     }
 
-    func testProviderPausedSentenceAppearsOnlyWhilePausedSinceIsStored() throws {
+    func testProviderPauseRetryStaysPausedUntilTheCheckSucceeds() async throws {
         let (model, preferences, _) = makeModel(shows: { [] })
         let labeller = AdLabellerPreferences(preferences: preferences)
         XCTAssertNil(model.providerPausedSentence)
@@ -219,8 +219,12 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
             })
         )
 
-        labeller.clearProviderPause()
+        await model.retryProviderPause { false }
+        XCTAssertNotNil(model.providerPausedSentence, "a failed check must keep Retry available")
+
+        await model.retryProviderPause { true }
         XCTAssertNil(model.providerPausedSentence)
+        XCTAssertEqual(labeller.providerPauseCount, 0)
     }
 
     func testAdFindingSummaryCountsConfirmedPodcastsAndExcludesArticleFeeds() async throws {
@@ -251,8 +255,8 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
             size: CGSize(width: 900, height: 1_200)
         ).joined(separator: " ")
 
-        XCTAssertTrue(text.contains("1 of 2 shows allowed for ad finding"), text)
-        XCTAssertTrue(text.contains("All shows") || text.contains("A11 shows"), text)
+        XCTAssertTrue(text.contains("1 of 2 podcasts selected for ad finding"), text)
+        XCTAssertTrue(text.range(of: #"\bA[l1]{2} shows\b"#, options: .regularExpression) != nil, text)
     }
 
     func testAdsSummaryFitsAtSnapshotWidth() async throws {
@@ -266,7 +270,7 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
             WiltedMacRootView(model: model).frame(width: size.width, height: size.height),
             size: CGSize(width: size.width + 48, height: size.height + 48)
         ).joined(separator: " ")
-        XCTAssertTrue(text.contains("0 of 0 shows allowed for ad finding"), text)
+        XCTAssertTrue(text.contains("0 of 0 podcasts selected for ad finding"), text)
         XCTAssertTrue(text.contains("All shows"), text)
     }
 
@@ -276,6 +280,11 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         )
         addTeardownBlock { await appModel.close() }
         let board = WiltedMacFeedPolicyBoard(model: appModel)
+        let labeller = AdLabellerPreferences(preferences: appModel.preferences)
+        let pauseTime = Date(timeIntervalSince1970: 1_700_000_000)
+        labeller.recordProviderWaitLimitStop(at: pauseTime)
+        labeller.recordProviderWaitLimitStop(at: pauseTime)
+        labeller.recordProviderWaitLimitStop(at: pauseTime)
 
         let adsText = try WiltedMacHeadless.recognizedText(
             WiltedMacAdFindingSettingsView(model: appModel, board: board),
@@ -284,12 +293,23 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         XCTAssertTrue(adsText.contains("Find ads with the online labeller"), adsText)
         XCTAssertTrue(adsText.contains("Ad finding model"), adsText)
         XCTAssertTrue(adsText.contains("Requests today"), adsText)
+        XCTAssertTrue(adsText.contains("Retry"), "a paused service needs an action: \(adsText)")
         XCTAssertFalse(adsText.contains("Provider key"), "Ads page must not have key field: \(adsText)")
         XCTAssertFalse(adsText.contains("Key saved"), "Ads page must not have Key saved: \(adsText)")
 
         appModel.providers.setProvider(.openAIKey)
+        appModel.providers.setModel("gpt-4o")
         let fixtureKey = "invented-for-the-render"
         appModel.providers.saveKey(fixtureKey, for: .openAIKey)
+        await appModel.adFinding.retryProviderPause {
+            await appModel.providers.check(.openAIKey)
+        }
+        XCTAssertNil(appModel.adFinding.providerPausedSentence)
+        appModel.providerEpisodeReplies[.openAIKey] = WiltedMacProviderEpisodeReply(
+            provider: .openAIKey, modelID: "gpt-4o",
+            occurredAt: Date(timeIntervalSince1970: 1_700_000_000),
+            outcome: .reply(breakCount: 2, rejectedCount: 1)
+        )
         let lines = try WiltedMacHeadless.recognizedLines(
             WiltedMacProvidersSettingsView(model: appModel),
             size: CGSize(width: 700, height: 700)
@@ -297,6 +317,9 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         let providersText = lines.map(\.text).joined(separator: " ")
         XCTAssertTrue(providersText.contains("Command-line tools (use your subscription)"), providersText)
         XCTAssertTrue(providersText.contains("Keys"), providersText)
+        XCTAssertTrue(providersText.contains("Ready"), providersText)
+        XCTAssertTrue(providersText.contains("Last provider check: Passed"), providersText)
+        XCTAssertTrue(providersText.contains("Last episode result: Found 2 ad breaks. 1 label could not be used."), providersText)
         for provider in ["OpenCode", "Claude Code", "Codex", "OpenCode Go", "OpenRouter", "OpenAI", "Anthropic"] {
             // The row draws "OpenAI", but in the system font a capital I and a lowercase l are the
             // same glyph and Vision (no language correction) reads it as "OpenAl".
@@ -304,9 +327,9 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
             let name = try XCTUnwrap(lines.first { line in spellings.contains { line.text.contains($0) } }, provider)
             let row = lines.filter { abs($0.top - name.top) < 0.012 }.map(\.text).joined(separator: " ")
             XCTAssertTrue(row.contains("Check"), row)
-            XCTAssertEqual(row.contains("In use"), provider == "OpenAI", row)
+            XCTAssertEqual(row.contains("Selected"), provider == "OpenAI", row)
         }
-        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "In use", in: providersText), 1, providersText)
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Selected", in: providersText), 1, providersText)
         XCTAssertTrue(providersText.contains("Key saved"), providersText)
         XCTAssertTrue(providersText.contains("Remove"), providersText)
         XCTAssertTrue(providersText.contains("Save"), providersText)

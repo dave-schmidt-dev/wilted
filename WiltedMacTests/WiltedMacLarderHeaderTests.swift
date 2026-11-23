@@ -94,7 +94,8 @@ final class WiltedMacLarderHeaderTests: XCTestCase {
                 add(attachment)
             }
         }
-        let section = try XCTUnwrap(model.larderSections().first { $0.statusGroup == .available })
+        let sections = WiltedMacEpisodePresentationSections.displaySections(model.larderSections(), grouping: .status)
+        let section = try XCTUnwrap(sections.first { $0.statusGroup == .available })
         model.setTextScale(.standard)
         for width in [CGFloat(520), CGFloat(1000)] {
             let larder = WiltedMacLarderView(model: model, paneMode: .bottom)
@@ -115,8 +116,8 @@ final class WiltedMacLarderHeaderTests: XCTestCase {
             try attach(bitmap, named: "available-group-header-\(Int(width))")
             let text = try lines(in: bitmap).joined(separator: " ")
             XCTAssertTrue(text.contains("Not downloaded"), "the actual group heading never truncates: \(text)")
-            XCTAssertTrue(text.contains("Remove all 52 from Larder"),
-                          "the actual group removal label is complete, including its52 rows: \(text)")
+            XCTAssertTrue(text.contains("Mark all 43 completed"),
+                          "the actual group removal label is complete, including the 43 rows outside Active work: \(text)")
         }
         await model.close()
     }

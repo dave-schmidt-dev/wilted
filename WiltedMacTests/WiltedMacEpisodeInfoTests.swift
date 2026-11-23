@@ -6,6 +6,27 @@ import WiltedDomain
 
 @MainActor
 final class WiltedMacEpisodeInfoTests: XCTestCase {
+    func testStoredTranscriptDisclosureNamesKnownSourceWithoutGuessingUntimedText() throws {
+        let itemID = try ItemID(rawValue: "item-" + String(repeating: "a", count: 64))
+        let revisionID = try RevisionID(rawValue: "revision-" + String(repeating: "a", count: 64))
+        let feed = WiltedMacTranscript(stored: try transcript(
+            for: itemID, revisionID: revisionID, availability: .available,
+            text: "Feed words.", timing: .published))
+        let local = WiltedMacTranscript(stored: try transcript(
+            for: itemID, revisionID: revisionID, availability: .available,
+            text: "Audio words.", timing: .aligned))
+        let untimed = WiltedMacTranscript(stored: try transcript(
+            for: itemID, revisionID: revisionID, availability: .available, text: "Untimed words."))
+        let absent = WiltedMacTranscript(stored: try Transcript(
+            itemID: itemID, revisionID: revisionID, availability: .absent,
+            updatedAt: Timestamp(Date(timeIntervalSince1970: 1_700_000_000))))
+
+        XCTAssertEqual(feed.disclosureTitle, "Transcript · from the feed")
+        XCTAssertEqual(local.disclosureTitle, "Transcript · from audio")
+        XCTAssertEqual(untimed.disclosureTitle, "Transcript · untimed")
+        XCTAssertEqual(absent.disclosureTitle, "Transcript")
+    }
+
     func testEpisodeInfoFailureFixturesRequireFixtureModeAndExplicitFlags() async throws {
         let fixture = try WiltedMacHistoryStoreFixture(self)
         let storedEpisode = try episode(
@@ -155,7 +176,7 @@ final class WiltedMacEpisodeInfoTests: XCTestCase {
         }
         XCTAssertEqual(saved.availability, .available)
         XCTAssertEqual(saved.text, "Saved after retirement.")
-        XCTAssertEqual(saved.timingSource, "synced from the feed")
+        XCTAssertEqual(saved.timingSource, "from the feed")
         XCTAssertEqual(saved.cues.map(\.text), ["Saved after retirement."])
         XCTAssertEqual(model.currentTranscript, playing)
     }
@@ -265,7 +286,7 @@ final class WiltedMacEpisodeInfoTests: XCTestCase {
         let loaded = try XCTUnwrap(model.currentTranscript)
         XCTAssertEqual(loaded.availability, .stale)
         XCTAssertEqual(loaded.text, "Timed words.")
-        XCTAssertEqual(loaded.timingSource, "synced")
+        XCTAssertEqual(loaded.timingSource, "from audio")
         XCTAssertEqual(loaded.cues.count, 1)
         XCTAssertEqual(loaded.cues[0].startSeconds, 0)
         XCTAssertEqual(loaded.cues[0].endSeconds, 1)

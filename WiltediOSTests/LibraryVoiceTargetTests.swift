@@ -311,6 +311,82 @@ final class LibraryVoiceTargetTests: XCTestCase {
         XCTAssertTrue(rig.engine.isPlaying)
     }
 
+    func testResumeAfterAnEndedEpisodeStartsTheNextUnfinishedLibraryRow() async throws {
+        try await seed(shows: [ShowSpec(raw: "show", title: "The Show")], episodes: [
+            EpisodeSpec(raw: "a", title: "Episode A", show: "show", sortKey: 0),
+            EpisodeSpec(raw: "b", title: "Episode B", show: "show", sortKey: 1),
+        ])
+        let rig = try await makeRig(cached: ["a", "b"])
+        defer { rig.player.stop() }
+        rig.player.apply(LibraryPlaybackPreferences(
+            defaultSpeed: 1.25,
+            skipBackSeconds: LibrarySettingsStore.defaultSkipBack,
+            skipForwardSeconds: LibrarySettingsStore.defaultSkipForward,
+            autoPlayNext: false))
+
+        let initialPlay = await rig.target.perform(.play(id("a")))
+        XCTAssertEqual(initialPlay, .done)
+        await rig.model.waitForHandoff()
+        rig.engine.finishNaturally()
+        try await eventually("Episode A reaches its end") { rig.player.status == .ended }
+        try await eventually("Episode A is recorded as finished here") { rig.model.isFinishedHere(self.id("a")) }
+
+        let dialog = await VoiceCommandRunner.run(.resume, on: rig.target)
+        XCTAssertEqual(dialog, "Resuming Episode B.")
+        XCTAssertEqual(rig.player.item?.entryID, id("b"), "remote and Siri resume share the next-row choice")
+        XCTAssertTrue(rig.engine.isPlaying)
+        XCTAssertTrue(rig.model.isFinishedHere(id("a")))
+    }
+
+    func testSiriResumeAfterTheOnlyEpisodeEndsHasNoLibraryTarget() async throws {
+        try await seed(shows: [ShowSpec(raw: "show", title: "The Show")], episodes: [
+            EpisodeSpec(raw: "a", title: "Episode A", show: "show", sortKey: 0),
+        ])
+        let rig = try await makeRig(cached: ["a"])
+        defer { rig.player.stop() }
+        rig.player.apply(LibraryPlaybackPreferences(
+            defaultSpeed: 1.25,
+            skipBackSeconds: LibrarySettingsStore.defaultSkipBack,
+            skipForwardSeconds: LibrarySettingsStore.defaultSkipForward,
+            autoPlayNext: false))
+
+        let initialPlay = await rig.target.perform(.play(id("a")))
+        XCTAssertEqual(initialPlay, .done)
+        await rig.model.waitForHandoff()
+        rig.engine.finishNaturally()
+        try await eventually("Episode A reaches its end") { rig.player.status == .ended }
+        try await eventually("Episode A is recorded as finished here") { rig.model.isFinishedHere(self.id("a")) }
+
+        let dialog = await VoiceCommandRunner.run(.resume, on: rig.target)
+
+        XCTAssertEqual(dialog, "Nothing to resume.")
+        XCTAssertEqual(rig.player.item?.entryID, id("a"))
+        XCTAssertEqual(rig.player.status, .ended)
+        XCTAssertFalse(rig.engine.isPlaying)
+    }
+
+    func testSiriResumeDoesNotReplaceAStartAlreadyUnderway() async throws {
+        try await seed(shows: [ShowSpec(raw: "show", title: "The Show")], episodes: [
+            EpisodeSpec(raw: "a", title: "Episode A", show: "show", sortKey: 0),
+            EpisodeSpec(raw: "b", title: "Episode B", show: "show", sortKey: 1),
+        ])
+        let rig = try await makeRig(cached: ["a", "b"])
+        defer { rig.player.stop() }
+        await rig.cache.arm()
+        let selection = Task { @MainActor in await rig.target.perform(.play(id("b"))) }
+        try await eventually("Episode B start is held in its cache lookup") { await rig.cache.isHeld }
+
+        let dialog = await VoiceCommandRunner.run(.resume, on: rig.target)
+
+        XCTAssertEqual(dialog, VoiceCommandRunner.failedDialog)
+        await rig.cache.release()
+        let selected = await selection.value
+        XCTAssertEqual(selected, .done)
+        await rig.model.waitForHandoff()
+        XCTAssertEqual(rig.player.item?.entryID, id("b"), "resume must leave the newer selection in control")
+        XCTAssertTrue(rig.engine.isPlaying)
+    }
+
     /// Characterizes retained cached playback, not Siri routing or playback on an owner device.
     func testRemovedCachedLoadedEpisodeCannotResumeAfterConfirmedRemovalFromLarder() async throws {
         try await seed(shows: [ShowSpec(raw: "show", title: "The Show")], episodes: [
@@ -402,7 +478,8 @@ final class LibraryVoiceTargetTests: XCTestCase {
         rig.player.seek(to: 100)
         XCTAssertEqual(rig.player.position, 100)
 
-        await rig.target.perform(.restart)
+        let dialog = await VoiceCommandRunner.run(.restart, on: rig.target)
+        XCTAssertEqual(dialog, "Starting over.")
         XCTAssertEqual(rig.player.position, 0)
         XCTAssertEqual(rig.engine.currentTime, 0)
         XCTAssertEqual(rig.player.status, .playing)
@@ -422,7 +499,8 @@ final class LibraryVoiceTargetTests: XCTestCase {
         await rig.model.waitForHandoff()
         XCTAssertEqual(rig.player.position, rig.engine.duration)
 
-        await rig.target.perform(.restart)
+        let dialog = await VoiceCommandRunner.run(.restart, on: rig.target)
+        XCTAssertEqual(dialog, "Starting over.")
         XCTAssertEqual(rig.player.position, 0)
         XCTAssertEqual(rig.engine.currentTime, 0)
         XCTAssertEqual(rig.player.status, .playing)

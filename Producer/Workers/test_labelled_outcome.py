@@ -106,7 +106,7 @@ class LabelledOutcomeDecisionTests(unittest.TestCase):
         self.assertEqual(audit["breaksProposed"], 1)
         self.assertEqual(audit["breaksCut"], 0)
         self.assertEqual(audit["incompleteError"], UNRESOLVED_SPANS_REASON)
-        self.assertTrue(audit["warning"].startswith("original audio includes ads:"))
+        self.assertEqual(audit["warning"], "Some ads may remain: " + UNRESOLVED_SPANS_REASON)
         self.assertEqual(audit["labellerModelID"], "deepseek-v4.1-flash")
         self.assertEqual(audit["labellerLevel"], "low")
         self.assertEqual(audit["labellerPromptVersion"], "labeller-prompt-v1")

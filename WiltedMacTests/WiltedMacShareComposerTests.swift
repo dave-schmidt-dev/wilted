@@ -19,15 +19,25 @@ final class WiltedMacShareComposerTests: XCTestCase {
         try await super.tearDown()
     }
 
-    func testSummaryDefaultsOffAndKeepsTheDirectShareControl() throws {
-        let model = makeModel()
-        model.installPlaybackStateForTesting(episode: episode(), isPlaying: false, position: 0, duration: 60)
-        let source = try WiltedMacHeadless.viewSource("WiltedMacPlayerContent.swift")
-        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "wilted-player-share", in: source), 2)
-        XCTAssertTrue(source.contains("WiltedMacShareComposer(model: model)"))
-        let labels = try WiltedMacHeadless.recognizedText(
-            WiltedMacPlaybackShareLink(model: model).padding(12), size: CGSize(width: 360, height: 100))
-        XCTAssertFalse(labels.contains(where: { $0.localizedCaseInsensitiveContains("transcript summary") }), labels.description)
+    func testSingleShareMenuOffersPageOrTextAndTranscriptSummary() throws {
+        let state = WiltedMacShareComposerState(model: makeModel())
+        XCTAssertFalse(state.presented)
+        XCTAssertFalse(state.includeSummary)
+        let player = try WiltedMacHeadless.viewSource("WiltedMacPlayerContent.swift")
+        let composer = try WiltedMacHeadless.viewSource("WiltedMacShareComposer.swift")
+        let menuStart = try XCTUnwrap(composer.range(of: "Menu {"))
+        let menuEnd = try XCTUnwrap(composer.range(of: "} label:", range: menuStart.upperBound..<composer.endIndex))
+        let items = composer[menuStart.upperBound..<menuEnd.lowerBound]
+        XCTAssertTrue(items.contains("WiltedMacPlaybackShareItems(model: model)"))
+        XCTAssertTrue(items.contains(#"Button("Transcript summary…") { state.presented = true }"#))
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Menu {", in: composer), 1)
+        let playerStart = try XCTUnwrap(player.range(of: "struct WiltedMacPlaybackShareLink:"))
+        let shippingBranch = try XCTUnwrap(player.range(of: "#else", range: playerStart.upperBound..<player.endIndex))
+        let body = player[playerStart.upperBound..<shippingBranch.lowerBound]
+        XCTAssertTrue(body.contains("WiltedMacShareComposer(model: model)"))
+        XCTAssertFalse(body.contains("ShareLink("))
+        XCTAssertTrue(player.contains("item: shareURL"))
+        XCTAssertTrue(player.contains("item: shareText"))
     }
 
     func testShareContextRefusesPresentationOnlyPlayback() async {

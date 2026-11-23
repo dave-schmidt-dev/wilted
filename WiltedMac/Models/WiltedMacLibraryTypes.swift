@@ -201,6 +201,44 @@ struct WiltedMacLarderSection: Identifiable, Equatable {
         }
     }
 
+    var articles: [WiltedMacArticle] {
+        items.compactMap { if case .article(let article) = $0 { article } else { nil } }
+    }
+
+    var podcasts: [WiltedMacEpisode] { episodes.filter { !$0.isAudiobook } }
+    var books: [WiltedMacEpisode] { episodes.filter(\.isAudiobook) }
+
+    var requiresClearConfirmation: Bool { podcasts.count != items.count }
+
+    var clearLabel: String {
+        let count = items.count
+        if podcasts.count == count {
+            return count == 1 ? "Mark 1 completed" : "Mark all \(count) completed"
+        }
+        if articles.count == count {
+            return count == 1 ? "Delete 1 article" : "Delete \(count) articles"
+        }
+        return count == 1 ? "Remove 1 from Larder" : "Remove all \(count) from Larder"
+    }
+
+    /// Mixed sections describe each consequence before the listener confirms.
+    var clearDetails: String {
+        let podcastCount = podcasts.count
+        let bookCount = books.count
+        let articleCount = articles.count
+        var lines: [String] = []
+        if podcastCount > 0 {
+            lines.append("Mark \(podcastCount) \(podcastCount == 1 ? "episode" : "episodes") completed.")
+        }
+        if bookCount > 0 {
+            lines.append("Remove \(bookCount) from the queue and keep the audio.")
+        }
+        if articleCount > 0 {
+            lines.append("Delete \(articleCount) \(articleCount == 1 ? "article" : "articles") from the library and playlists. Article deletion cannot be undone.")
+        }
+        return lines.joined(separator: " ")
+    }
+
     init(id: String, title: String, detail: String?, statusGroup: WiltedMacLarderGroup?,
          items: [WiltedMacLibraryItem]) {
         self.id = id

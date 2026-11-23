@@ -5,6 +5,25 @@ import WiltedProducer
 import XCTest
 @testable import WiltedMac
 
+private actor CountingLinkFeedLoader: PodcastFeedLoading {
+    private let body: Data
+    private var fullReads = 0
+    private var prefixReads = 0
+
+    init(body: Data) { self.body = body }
+
+    func load(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse {
+        fullReads += 1
+        return PodcastFeedHTTPResponse(url: url, statusCode: 200, data: body)
+    }
+
+    func loadPrefix(_ url: URL, maximumBytes: Int) async throws -> PodcastFeedHTTPResponse {
+        prefixReads += 1
+        return PodcastFeedHTTPResponse(url: url, statusCode: 200, data: Data(body.prefix(maximumBytes)))
+    }
+
+    func reads() -> (full: Int, prefix: Int) { (fullReads, prefixReads) }
+}
 
 // MARK: - Through the real model
 
@@ -15,6 +34,84 @@ private struct ModelRig {
 }
 
 extension WiltedMacIntentApplierTests {
+    func testPhoneAddLinkClassifiesOnceAndFollowsTheDetectedPodcastFeed() async throws {
+        let url = try XCTUnwrap(URL(string: "https://feeds.example.test/phone-add"))
+        let xml = """
+        <rss version="2.0"><channel><title>Phone Add Feed</title><item><guid>episode-1</guid>
+        <title>Episode One</title><pubDate>Mon, 01 Jan 2024 12:00:00 GMT</pubDate>
+        <enclosure url="https://media.example.test/episode.mp3" type="audio/mpeg" />
+        </item></channel></rss>
+        """
+        let loader = CountingLinkFeedLoader(body: Data(xml.utf8))
+        let model = WiltedMacModel(
+            arguments: [], stateDirectoryOverride: wiltedTemporaryDirectory("phone-add-link"),
+            storeBootstrap: { try LocalLibraryStore(url: $0) },
+            podcastFeedClient: PodcastFeedClient(loader: loader),
+            pastedLinkClassifier: PastedLinkClassifier(loader: loader),
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        model.startStoreBootstrap()
+        await model.waitForStoreBootstrap()
+        addTeardownBlock { await model.close() }
+
+        let server = InMemoryLibraryServer(writerDeviceID: "mac")
+        let transport = InMemoryLibraryTransport(deviceID: "mac", server: server)
+        let at = Date(timeIntervalSince1970: 1_800_000_000)
+        let applier = WiltedMacIntentApplier(
+            host: model, ledger: WiltedMacIntentLedger(fileURL: nil, now: { at }),
+            book: WiltedMacIntentOutcomeBook(fileURL: nil, now: { at }),
+            transport: transport, now: { at }
+        )
+        let add = try LibraryIntent.addLink(url: url, deviceID: "iphone", createdAt: at, id: "phone-add-link")
+        try await applier.apply(add)
+        await model.waitForPodcastOperations()
+
+        let feedID = try ItemID.derivePodcastFeed(from: url)
+        let store = try XCTUnwrap(model.store)
+        let subscription = try await store.subscription(for: feedID)
+        XCTAssertNotNil(subscription)
+        let reads = await loader.reads()
+        XCTAssertEqual(reads.prefix, 1, "the Mac's pasted-link classifier runs once")
+        XCTAssertEqual(reads.full, 1, "the accepted feed then uses the normal intake")
+        let result = try await InMemoryLibraryTransport(deviceID: "iphone", server: server).intentOutcomes()
+        XCTAssertEqual(result.first?.disposition, .applied)
+    }
+
+    func testPhoneAddLinkAddsArticleWhenThePageAdvertisesAFeed() async throws {
+        let url = try XCTUnwrap(URL(string: "https://blog.example.test/posts/one"))
+        let html = """
+        <html><head><link rel="alternate" type="application/rss+xml"
+        href="https://feeds.example.test/articles.xml"></head><body>Article</body></html>
+        """
+        let loader = CountingLinkFeedLoader(body: Data(html.utf8))
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-article-flow"],
+            stateDirectoryOverride: wiltedTemporaryDirectory("phone-add-link-article"),
+            podcastFeedClient: PodcastFeedClient(loader: loader),
+            pastedLinkClassifier: PastedLinkClassifier(loader: loader),
+            preferences: WiltedMacTestPreferences.ephemeral()
+        )
+        addTeardownBlock { await model.close() }
+
+        let server = InMemoryLibraryServer(writerDeviceID: "mac")
+        let at = Date(timeIntervalSince1970: 1_800_000_000)
+        let applier = WiltedMacIntentApplier(
+            host: model, ledger: WiltedMacIntentLedger(fileURL: nil, now: { at }),
+            book: WiltedMacIntentOutcomeBook(fileURL: nil, now: { at }),
+            transport: InMemoryLibraryTransport(deviceID: "mac", server: server), now: { at }
+        )
+        try await applier.apply(try LibraryIntent.addLink(
+            url: url, deviceID: "iphone", createdAt: at, id: "phone-add-link-article"))
+
+        XCTAssertEqual(model.preparation?.phase, .preparing)
+        XCTAssertTrue(model.subscriptions.isEmpty, "an advertised feed remains a separate choice")
+        let reads = await loader.reads()
+        XCTAssertEqual(reads.prefix, 1, "the Mac classifies the pasted address once")
+        XCTAssertEqual(reads.full, 0, "the advertised feed is not fetched or followed")
+        let outcome = try await InMemoryLibraryTransport(deviceID: "iphone", server: server).intentOutcomes()
+        XCTAssertEqual(outcome.first?.disposition, .applied)
+    }
+
     /// Four episodes on one feed; the first two are in the Larder, in order.
     private func modelRig(_ name: String) async throws -> ModelRig {
         let feedURL = URL(string: "https://feeds.example.test/applier.xml")!

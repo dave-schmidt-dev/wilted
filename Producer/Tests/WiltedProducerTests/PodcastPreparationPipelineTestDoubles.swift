@@ -12,7 +12,7 @@ extension PodcastPreparationPipelineTests {
 
     static func payload(text: String?) -> PodcastPreparationPipeline.WorkerPayload {
         PodcastPreparationPipeline.WorkerPayload(
-            timing: .none, cues: [], text: text, languageCode: "en",
+            timing: .none, sourceTiming: .none, cues: [], text: text, languageCode: "en",
             audioPath: "/tmp/a.mp3", audioChanged: false, durationSeconds: nil,
             adSegments: [], removedSeconds: 0, keepIntervals: [],
             adRemovalOutcome: "disabled",

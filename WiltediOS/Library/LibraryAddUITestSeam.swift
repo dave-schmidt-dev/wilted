@@ -9,11 +9,11 @@ import WiltedCatalog
 @MainActor
 enum LibraryAddUITestSeam {
     enum Mac: String {
-        /// Advertises both add actions and never answers: an add stays "Sent to your Mac".
+        /// Advertises the current add actions and never answers: an add stays "Sent to your Mac".
         case ready
         /// Advertises nothing, like a Mac that predates the Add flow.
         case old
-        /// Advertises both and refuses every add because the feed has no audio.
+        /// Advertises the current actions and refuses every add because the feed has no audio.
         case rejectsNoAudio = "rejects-no-audio"
     }
 

@@ -280,7 +280,7 @@ class SilenceFallbackTests(SilenceTrimTestCase):
         self.assertEqual((result["keepIntervals"], result["silenceTrims"]), ([], []))
 
     def test_uncertain_and_disabled_preparations_are_never_trimmed(self):
-        warning = "original audio includes ads: model missing"
+        warning = "Some ads may remain: model missing"
         uncertain = {"adEngine": "labelled", "incompleteError": "model missing", "warning": warning,
                      "unresolvedIds": [], "heldSpans": []}
         source = self.directory / "source.mp3"

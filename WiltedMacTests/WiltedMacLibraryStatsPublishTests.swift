@@ -82,7 +82,7 @@ final class WiltedMacLibraryStatsPublishTests: XCTestCase {
         XCTAssertTrue(processed.statsPublished, "processed audio is not paced")
     }
 
-    func testPublishedStatsAdvertiseSubscribeAndAddArticle() async throws {
+    func testPublishedStatsAdvertiseSupportedPhoneAddActions() async throws {
         let server = InMemoryLibraryServer(writerDeviceID: "mac")
         let box = StatsBox()
         await box.set(LifetimeStatistics(audioProcessedSeconds: 1))
@@ -92,6 +92,7 @@ final class WiltedMacLibraryStatsPublishTests: XCTestCase {
         let actions = try XCTUnwrap(published?.supportedIntentActions)
         XCTAssertTrue(actions.contains("subscribe"))
         XCTAssertTrue(actions.contains("addArticle"))
+        XCTAssertTrue(actions.contains("addLink"))
     }
 
     func testNoProviderOrNoValuePublishesNothing() async throws {

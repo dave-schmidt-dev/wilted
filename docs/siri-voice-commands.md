@@ -35,8 +35,9 @@ while the intents run in the app process (`openAppWhenRun = false`).
 | pause | playing | pause | "Paused." |
 | | paused or nothing | none | "Nothing is playing." |
 | resume | paused episode loaded | resume | "Resuming <title>." |
+| | ended episode or nothing loaded | resume the first unfinished episode on the phone, in the shared Larder order; an episode finished here is skipped | "Resuming <title>." |
+| | ended episode or nothing loaded, with no unfinished episode | none | "Nothing to resume." |
 | | already playing | none | "Already playing." |
-| | nothing loaded | none | "Nothing to resume." |
 | skipForward / skipBack | episode loaded | skipForward / skipBack | "Skipped forward." / "Skipped back." |
 | | nothing loaded | none | "Nothing is playing." |
 | restart | episode loaded | restart | "Starting over." |

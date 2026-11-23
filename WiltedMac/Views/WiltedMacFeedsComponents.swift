@@ -456,48 +456,22 @@ struct WiltedMacFeedCapacityLabel: View {
     let subscription: WiltedMacSubscription
     @Environment(\.colorScheme) private var colorScheme
 
-    var body: some View {
-        Text(label).wiltedFont(.utility)
-            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-            .fixedSize(horizontal: false, vertical: true)
-            .accessibilityIdentifier("wilted-podcast-feed-count-\(subscription.id)")
+    @ViewBuilder var body: some View {
+        if let label {
+            Text(label).wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("wilted-podcast-feed-count-\(subscription.id)")
+        }
     }
 
-    private var label: String {
+    private var label: String? {
         if board.loadFailureMessage != nil { return "Settings unavailable" }
-        guard board.isLoaded(subscription.id) else { return "Loading settings" }
+        guard board.isLoaded(subscription.id) else { return nil }
         let kept = board.keptCount(forFeed: subscription.id)
         let limit = board.resolved(for: subscription.id).keptLimit
         let capacity = limit.map { "\(kept) of \($0) kept" } ?? "\(kept) kept · No limit"
         let waiting = board.waitingEpisodes(forFeed: subscription.id).count
         return "\(capacity) · \(waiting) waiting for space" + (subscription.enabled ? "" : " · Hidden")
-    }
-}
-
-/// Read-only feed defaults name the controls that own their inherited values.
-struct WiltedMacInheritedFeedDefaults: View {
-    let model: WiltedMacModel
-    @Environment(\.colorScheme) private var colorScheme
-    var body: some View {
-        ForEach(WiltedFeedAutomationSummary.globalRows(model.automationSettings).filter {
-            $0.label == "Auto download" || $0.label == "Auto prepare"
-        }, id: \.label) { row in
-            let label = Text(row.label).wiltedFont(.body)
-            let value = Text("\(row.value) · Set in \(row.label == "Auto download" ? "Larder" : "Preparing")")
-                .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-            ViewThatFits(in: .horizontal) {
-                HStack {
-                    label
-                    Spacer()
-                    value
-                }
-                VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-                    label
-                    value
-                }
-            }
-            .accessibilityIdentifier("wilted-automation-feed-default-\(row.label.lowercased().replacingOccurrences(of: " ", with: "-"))")
-        }
     }
 }

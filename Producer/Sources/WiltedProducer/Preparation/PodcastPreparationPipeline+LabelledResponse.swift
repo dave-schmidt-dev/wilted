@@ -20,7 +20,7 @@ extension PodcastPreparationPipeline {
     }
 
     private static let labelledLeftInReasons: Set<String> = [
-        "acceptable-cut", "house-promotion-disabled", "out-of-range", "malformed",
+        "acceptable-cut", "house-promotion-disabled", "out-of-range", "malformed", "total-share-ceiling",
     ]
 
     static func decodeTranscriptStage(_ data: Data) throws -> TranscriptStagePayload {
@@ -72,8 +72,8 @@ extension PodcastPreparationPipeline {
             guard let incomplete = audit["incompleteError"] as? String,
                   !incomplete.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   let warning = audit["warning"] as? String,
-                  warning.hasPrefix("original audio includes ads:"),
-                  warning == "original audio includes ads: \(incomplete)",
+                  warning == "Some ads may remain" || warning == "Some ads may remain: \(incomplete)"
+                    || warning == "original audio includes ads: \(incomplete)",
                   cut == 0 else { return false }
         } else {
             guard audit["incompleteError"] == nil || audit["incompleteError"] is NSNull,
@@ -82,10 +82,15 @@ extension PodcastPreparationPipeline {
         return true
     }
 
-    static func decodeLabelledLeftIn(_ audit: [String: Any]?) -> [LabelledLeftInBreak] {
-        guard let leftIn = audit?["leftIn"] as? [[String: Any]] else { return [] }
-        return leftIn.compactMap { raw in
-            guard let reason = raw["reason"] as? String, labelledLeftInReasons.contains(reason) else { return nil }
+    static func decodeLabelledLeftIn(_ audit: [String: Any]?, uncutNominations: [[String: Any]]) -> [LabelledLeftInBreak] {
+        let leftIn = audit?["leftIn"] as? [[String: Any]] ?? []
+        let held = audit?["heldSpans"] as? [[String: Any]] ?? []
+        // A refused cut returns its proposed intervals even when it has no held-span audit.
+        let refused = held.isEmpty ? uncutNominations.map { raw in
+            raw.merging(["reason": "cut-unsafe"]) { _, reason in reason }
+        } : []
+        return (leftIn + held + refused).compactMap { raw in
+            guard let reason = raw["reason"] as? String else { return nil }
             return LabelledLeftInBreak(
                 startSeconds: labelledNonnegativeDouble(raw["startSeconds"]),
                 endSeconds: labelledNonnegativeDouble(raw["endSeconds"]),

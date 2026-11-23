@@ -87,6 +87,23 @@ final class LibraryIntentTests: XCTestCase {
         XCTAssertNotEqual(subscribe.action.entryID, article.action.entryID)
     }
 
+    func testAddLinkRoundTripsAsAnUnclassifiedDecisionAndKeepsItsHTTPSAddress() throws {
+        let url = try XCTUnwrap(URL(string: "https://example.com/story"))
+        let intent = try LibraryIntent.addLink(url: url, deviceID: "phone", createdAt: created, id: "link")
+        let data = try JSONEncoder().encode(intent)
+
+        XCTAssertEqual(try JSONDecoder().decode(LibraryIntent.self, from: data), intent)
+        XCTAssertEqual(intent.action, .addLink(url: url))
+        XCTAssertTrue(intent.action.isDecision)
+        XCTAssertEqual(intent.action.entryID, try ItemID(rawValue: "item-invalid-url"))
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        XCTAssertEqual(
+            String(decoding: try encoder.encode(intent.action), as: UTF8.self),
+            #"{"addLink":{"url":"https://example.com/story"}}"#)
+    }
+
     func testAddIntentsRejectNonHTTPSAndCredentialedURLsAtInitAndDecode() throws {
         let bad = ["http://example.com/feed.xml", "ftp://example.com/f", "https://user:pw@example.com/f",
                    "https://user@example.com/f", "https:///nohost"]
@@ -94,6 +111,7 @@ final class LibraryIntentTests: XCTestCase {
             let url = try XCTUnwrap(URL(string: text), text)
             XCTAssertThrowsError(try LibraryIntent.subscribe(feedURL: url, deviceID: "phone", id: "x"), text)
             XCTAssertThrowsError(try LibraryIntent.addArticle(url: url, deviceID: "phone", id: "x"), text)
+            XCTAssertThrowsError(try LibraryIntent.addLink(url: url, deviceID: "phone", id: "x"), text)
         }
         let good = try LibraryIntent.subscribe(feedURL: XCTUnwrap(URL(string: "https://example.com/f")), deviceID: "phone", id: "x")
         let forged = String(decoding: try JSONEncoder().encode(good), as: UTF8.self)

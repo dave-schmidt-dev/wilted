@@ -170,6 +170,18 @@ struct WiltedMacEpisodeNotes<Actions: View>: View {
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("\(prefix)-notes-unavailable-\(info.id)")
                 }
+                if let passages = info.preparationStamp?.passagesLeftIn, !passages.isEmpty {
+                    VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                        Text("Passages left in (original audio)")
+                            .wiltedFont(.utility)
+                        Text(verbatim: passages.joined(separator: "\n"))
+                            .wiltedFont(.caption)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, WiltedTheme.Spacing.small)
+                    .accessibilityIdentifier("\(prefix)-passages-left-in-\(info.id)")
+                }
             }
             .frame(maxHeight: .infinity)
             if let stampText = info.preparationStamp?.displayText {

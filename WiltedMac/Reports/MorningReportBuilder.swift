@@ -11,7 +11,7 @@ struct MorningReportForecastPeriod: Equatable, Sendable {
     let text: String
 }
 
-/// The recent news the builder may read: whether any feed is marked news, and the newest-first titles.
+/// Recent stories from headline feeds, newest first.
 struct MorningReportHeadlines: Equatable, Sendable {
     var hasNewsFeeds: Bool
     var titles: [String]
@@ -30,7 +30,7 @@ struct MorningReportProgress: Equatable, Sendable {
     let detail: String
 }
 
-/// Builds the spoken morning report: today's forecast, then recent headlines from news feeds,
+/// Builds the spoken morning report: today's forecast, then recent headlines from headline feeds,
 /// synthesized through the speech daemon and saved as a queued `report` item.
 ///
 /// Length rule (300 s): headlines are trimmed until the estimate is under the limit; the real
@@ -41,7 +41,7 @@ struct MorningReportProgress: Equatable, Sendable {
 struct MorningReportBuilder: Sendable {
     typealias Forecast = @Sendable (_ latitude: Double, _ longitude: Double) async throws -> [MorningReportForecastPeriod]
     typealias Coordinates = @Sendable () async -> (latitude: Double, longitude: Double)?
-    typealias HeadlineSource = @Sendable (_ publishedSince: Date) async throws -> MorningReportHeadlines
+    typealias HeadlineSource = @Sendable (_ publishedSince: Date, _ publishedThrough: Date) async throws -> MorningReportHeadlines
 
     private static let log = Logger(subsystem: "com.zerodelta.wilted.mac", category: "MorningReport")
 
@@ -78,6 +78,8 @@ struct MorningReportBuilder: Sendable {
         coordinates: @escaping Coordinates,
         forecast: @escaping Forecast,
         headlines: HeadlineSource? = nil,
+        feedClient: PodcastFeedClient = PodcastFeedClient(),
+        topics: HeadlineTopicFilter = HeadlineTopicFilter(),
         calendar: Calendar = .current,
         afterPrecheck: @escaping @Sendable () async -> Void = {}
     ) {
@@ -85,7 +87,9 @@ struct MorningReportBuilder: Sendable {
         self.synthesize = synthesize
         self.coordinates = coordinates
         self.forecast = forecast
-        self.headlines = headlines ?? { since in try await Self.storeHeadlines(store, since: since) }
+        self.headlines = headlines ?? { since, through in
+            try await Self.freshHeadlines(store, using: feedClient, since: since, through: through, topics: topics)
+        }
         self.calendar = calendar
         self.afterPrecheck = afterPrecheck
     }
@@ -111,7 +115,7 @@ struct MorningReportBuilder: Sendable {
             parts.append("The weather is not included, because \(weatherMissing).")
         }
         if !hasNewsFeeds {
-            parts.append("No news feeds are set up, so there are no headlines.")
+            parts.append("No headline feeds are set up, so there are no headlines.")
         } else if headlines.isEmpty {
             parts.append("There are no new headlines.")
         } else {
@@ -156,9 +160,9 @@ struct MorningReportBuilder: Sendable {
             }
             try Task.checkCancellation()
             report(0.1, "Gathering headlines")
-            let news = try await headlines(now.addingTimeInterval(-Self.headlineWindow))
+            let news = try await headlines(now.addingTimeInterval(-Self.headlineWindow), now)
             if forecastPeriods == nil, !news.hasNewsFeeds {
-                return .skipped(reason: "No report built: \(missing.first ?? "no forecast"), and no news feeds are set up.")
+                return .skipped(reason: "No report built: \(missing.first ?? "no forecast"), and no headline feeds are set up.")
             }
             var titles = Array(news.titles.prefix(Self.maximumHeadlines))
             let full = forecastPeriods
@@ -261,16 +265,24 @@ struct MorningReportBuilder: Sendable {
 
     // MARK: Headlines
 
-    /// Titles of articles from news feeds published since `cutoff`, newest first.
-    static func storeHeadlines(_ store: LocalLibraryStore, since cutoff: Date) async throws -> MorningReportHeadlines {
-        let snapshot = try await store.podcastLibrarySnapshot()
-        var news = Set<ItemID>()
-        for feed in snapshot.articleFeeds where try await store.isNews(feedID: feed.itemID) { news.insert(feed.itemID) }
-        let fresh = snapshot.articles.filter { article in
-            !article.isDeleted && snapshot.feedIDByArticle[article.itemID].map(news.contains) == true
-                && (article.publishedTime ?? article.createdAt).date >= cutoff
-        }.sorted { ($0.publishedTime ?? $0.createdAt).date > ($1.publishedTime ?? $1.createdAt).date }
-        return MorningReportHeadlines(hasNewsFeeds: !news.isEmpty, titles: fresh.map(\.title))
+    /// Reads each headline feed directly, because those posts are not saved as articles.
+    /// A failed feed is skipped unless every headline feed fails.
+    static func freshHeadlines(
+        _ store: LocalLibraryStore, using client: PodcastFeedClient, since cutoff: Date, through now: Date,
+        topics: HeadlineTopicFilter
+    ) async throws -> MorningReportHeadlines {
+        let supply = try await NewsHeadlineCandidateReader.read(in: store, using: client)
+        let fresh = supply.candidates.compactMap { candidate -> (publishedAt: Date, title: String)? in
+            guard let publishedAt = candidate.publishedAt,
+                  publishedAt >= cutoff, publishedAt <= now,
+                  !topics.skips(title: candidate.title, link: candidate.link, categories: candidate.categories) else {
+                return nil
+            }
+            return (publishedAt, candidate.title)
+        }
+        return MorningReportHeadlines(
+            hasNewsFeeds: !supply.feeds.isEmpty,
+            titles: fresh.sorted { $0.publishedAt > $1.publishedAt }.map(\.title))
     }
 
     // MARK: Helpers

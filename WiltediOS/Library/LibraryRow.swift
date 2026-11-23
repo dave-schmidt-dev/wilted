@@ -8,6 +8,8 @@ struct LibraryRow: Identifiable, Equatable, Sendable {
     let id: ItemID
     let title: String
     let showTitle: String
+    var showID: ItemID? = nil
+    var showPublisher: String? = nil
     let durationText: String?
     /// The duration in seconds, for the shortest-first sort; nil when the feed gave none.
     var durationSeconds: Double?
@@ -166,6 +168,8 @@ enum LibraryRowBuilder {
             id: entry.id,
             title: entry.title,
             showTitle: showTitle(entry, sources: content.sources),
+            showID: entry.sourceID,
+            showPublisher: showPublisher(content.sources[entry.sourceID]),
             durationText: duration(entry).map(LibraryClockFormat.duration),
             durationSeconds: duration(entry),
             removal: entry.removal,
@@ -204,6 +208,13 @@ enum LibraryRowBuilder {
         guard entry.kind == .audiobook else { return sources[entry.sourceID]?.title ?? "Unknown show" }
         let author = audiobook(entry)?.author?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return author.isEmpty ? "Unknown author" : author
+    }
+
+    private static func showPublisher(_ source: LibrarySource?) -> String? {
+        let publisher = source?.publisher?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let publisher, !publisher.isEmpty { return publisher }
+        guard let locator = source?.locator, let host = URL(string: locator)?.host else { return nil }
+        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
     }
 
     /// The entry's length; a volume whose entry carries none falls back to its payload's.

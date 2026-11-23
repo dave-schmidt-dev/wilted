@@ -14,7 +14,7 @@ final class WiltedMacBulletinReadinessViewTests: XCTestCase {
         let (model, location) = makeEmptyRig()
         let states: [(BulletinReadiness, String, String)] = [
             (.init(hasNewsSource: false, hasWeatherLocation: true, soundCheckPaused: false),
-             "No news source yet. Add a news feed and mark it as News.", "Add a news feed"),
+             "Turn on Headlines only for an article feed.", "Add headline feed"),
             (.init(hasNewsSource: true, hasWeatherLocation: false, soundCheckPaused: false),
              "Weather alerts need a location.", "Set location"),
             (.init(hasNewsSource: true, hasWeatherLocation: false, soundCheckPaused: false,

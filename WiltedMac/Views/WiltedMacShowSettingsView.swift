@@ -20,7 +20,6 @@ struct WiltedMacShowSettingsView: View {
 
     private var feedID: String { subscription.id }
     private var policy: FeedAutomationPolicy { board.policy(for: feedID) }
-    private var overrideCount: Int { board.explicitOverrideCount(for: feedID) }
     private var isArticle: Bool {
         board.isLoaded(feedID)
             ? board.isArticleFeed(feedID)
@@ -37,6 +36,12 @@ struct WiltedMacShowSettingsView: View {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.large) {
                 changesSummary
                 loadStatus
+                if board.failedFeedIDs.contains(feedID) {
+                    Text("Could not save this change. The stored setting is shown.")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-feed-policy-failed")
+                }
                 ForEach(Section.allCases, id: \.self) { section in
                     sectionContent(section)
                 }
@@ -105,17 +110,7 @@ struct WiltedMacShowSettingsView: View {
 
     @ViewBuilder private var changesSummary: some View {
         if board.isLoaded(feedID) {
-        HStack(spacing: WiltedTheme.Spacing.medium) {
-            Text("\(overrideCount) \(overrideCount == 1 ? "setting" : "settings") customized")
-                .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .accessibilityIdentifier("wilted-show-settings-override-count")
-            Spacer()
-            Button("Reset all") { board.resetAllOverrides(for: feedID) }
-                .disabled(overrideCount == 0 || !board.isLoaded(feedID))
-                .accessibilityIdentifier("wilted-show-settings-reset-all")
-        }
-        .accessibilityElement(children: .contain)
+            WiltedMacShowSettingsResetControl(board: board, feedID: feedID)
         }
     }
 
@@ -140,7 +135,7 @@ struct WiltedMacShowSettingsView: View {
     }
 
     @ViewBuilder private var newEpisodesSection: some View {
-        if board.isLoaded(feedID) {
+        if board.isLoaded(feedID), !(isArticle && board.isNews(feedID)) {
             settingsSection("New episodes", identifier: "new-episodes") {
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
                     automationRow(
@@ -183,12 +178,6 @@ struct WiltedMacShowSettingsView: View {
                             .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                             .accessibilityIdentifier("wilted-feed-policy-limit-error")
                     }
-                    if board.failedFeedIDs.contains(feedID) {
-                        Text("Could not save this change. The stored setting is shown.")
-                            .wiltedFont(.utility)
-                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                            .accessibilityIdentifier("wilted-feed-policy-failed")
-                    }
                     Text("A lower limit never removes \(isArticle ? "an article" : "an episode") already in Larder.")
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
@@ -214,28 +203,23 @@ struct WiltedMacShowSettingsView: View {
     private var typeSection: some View {
         settingsSection("Type", identifier: "type") {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(isArticle ? "Articles" : "Podcast")
-                        .wiltedFont(.body)
-                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                    Spacer()
-                    Text("Default: \(isArticle ? "Articles" : "Podcast")")
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                }
+                Text(isArticle ? "Articles" : "Podcast")
+                    .wiltedFont(.body)
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 if isArticle && board.isLoaded(feedID) { newsRow }
             }
         }
     }
 
     private var newsRow: some View {
-        settingRow("News", defaultValue: "Off", setting: .news, resetID: "news") {
-            Toggle("News", isOn: Binding(
+        settingRow("Headlines only", defaultValue: "Off", setting: .news, resetID: "news",
+                   detail: "When on, posts from this feed leave the Keep/Skip inbox and supply headlines.") {
+            Toggle("Headlines only", isOn: Binding(
                 get: { board.isNews(feedID) }, set: { _ = board.setNews($0, for: feedID) }
             ))
             .labelsHidden()
             .toggleStyle(.switch)
-            .accessibilityLabel("Treat \(subscription.title) as news")
+            .accessibilityLabel("Headlines only for \(subscription.title)")
             .accessibilityIdentifier("wilted-feed-policy-news")
         }
     }
@@ -275,7 +259,7 @@ struct WiltedMacShowSettingsView: View {
                 get: { board.isAdFree(feedID) }, set: { board.setRemoveAdsOverride($0, for: feedID) }
             )) {
                 Text("Same as default").tag(false)
-                Text("Off (Custom)").tag(true)
+                Text("This show is already ad-free").tag(true)
             }
             .labelsHidden()
             .pickerStyle(.menu)
@@ -285,28 +269,7 @@ struct WiltedMacShowSettingsView: View {
     }
 
     @ViewBuilder private var restoreCutEpisodesRow: some View {
-        let count = board.restorableCutCount(feedID)
-        if board.isAdFree(feedID), count > 0 {
-            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                Button(Self.restoreCutEpisodesTitle(count: count)) { board.restoreCuts(for: feedID) }
-                    .disabled(!board.isLoaded(feedID))
-                    .accessibilityLabel(
-                        "Restore \(count) cut \(count == 1 ? "episode" : "episodes") of \(subscription.title)"
-                    )
-                    .accessibilityIdentifier("wilted-feed-policy-restore-cuts")
-                Text(
-                    "Wilted cut these before you marked the show ad-free. It downloads each original again "
-                    + "and puts back what was cut. Your place in each is kept."
-                )
-                .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-
-    static func restoreCutEpisodesTitle(count: Int) -> String {
-        count == 1 ? "Restore 1 Cut Episode" : "Restore \(count) Cut Episodes"
+        WiltedMacRestoreCutEpisodesControl(board: board, feedID: feedID, showTitle: subscription.title)
     }
 
     private var selfPromotionRow: some View {
@@ -334,7 +297,7 @@ struct WiltedMacShowSettingsView: View {
         ) {
             HStack(alignment: .center, spacing: WiltedTheme.Spacing.large) {
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                    Text("When on, this show's transcripts go to the labelling provider and its ads are removed. When off, nothing is sent and its ads stay in.")
+                    Text("When on, the selected service checks episode transcripts and the preparation removes the breaks chosen for this show. When off, ad checking is skipped.")
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .fixedSize(horizontal: false, vertical: true)
@@ -360,17 +323,17 @@ struct WiltedMacShowSettingsView: View {
     private var adRouteLine: String {
         return switch board.adRoute(for: feedID) {
         case .remote:
-            "Transcripts are sent to the labelling provider"
+            "Selected for online ad finding"
         case .notSent(.switchOff):
             "Online ad finding is off"
         case .notSent(.noKey):
-            "No provider key saved"
+            "Selected service is not ready. Check Providers."
         case .notSent(.dailyCapReached):
-            "Today's limit for online labelling is reached. Transcripts are sent to the labelling provider when capacity is available."
+            "Daily ad-check limit reached"
         case .notSent(.adRemovalOff):
             "Ad removal is off for this show"
-        case .notSent:
-            "Not sent"
+        case .notSent(.notConfirmed):
+            "Not selected for ad finding"
         }
     }
 

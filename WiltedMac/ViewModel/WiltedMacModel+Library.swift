@@ -302,6 +302,24 @@ extension WiltedMacModel {
 #endif
     }
 
+    /// Follows a feed only when it contains article posts, marking it before
+    /// subscription admission so those posts never enter the Keep/Skip inbox.
+    func subscribeToHeadlineFeed(_ url: URL) async -> Bool {
+#if canImport(WiltedProducer)
+        guard let feedID = try? ItemID.articleFeed(canonicalFeedURL: url) else { return false }
+        var followed = false
+        let started = startPodcastSubscriptionIntake(url, headlineOnly: true) { result in
+            followed = result.articleFeedIDs.contains(feedID)
+        }
+        guard started, let refresh = podcastRefreshTask else { return false }
+        await refresh.value
+        guard followed, let store, subscriptions.contains(where: { $0.id == feedID.rawValue }) else { return false }
+        return (try? await store.isNews(feedID: feedID)) == true
+#else
+        false
+#endif
+    }
+
     /// Classifies the Feeds-owned composer input, subscribing direct feeds and
     /// requiring confirmation before following a feed advertised by a page.
     func addPodcastFeedDraft(initialMetadataCount: Int? = nil) {

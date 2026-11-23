@@ -35,6 +35,7 @@ final class WiltedMacLarderFeedbackTests: XCTestCase {
         try await store.save(feed: try PodcastFeed(
             itemID: feedID, canonicalURL: feedURL, title: "Show", createdAt: created
         ))
+        try await store.save(subscription: PodcastSubscription(feedID: feedID, subscribedAt: created))
         var ids: [ItemID] = []
         for guid in guids {
             let enclosure = URL(string: "https://media.example.test/\(guid).mp3")!
@@ -198,7 +199,9 @@ final class WiltedMacLarderFeedbackTests: XCTestCase {
             throw FailingWrite()
         }
 
-        model.clearLarderGroup(.playable)
+        let section = try XCTUnwrap(model.larderSections().first { $0.statusGroup == .playable })
+        XCTAssertEqual(section.clearLabel, "Remove all 2 from Larder")
+        model.clearLarderGroup(section)
 
         XCTAssertEqual(model.podcastOperationMessage, "Removing all 2 in Ready from Larder…",
                        "the progress line names the work before any write finishes")
@@ -209,10 +212,34 @@ final class WiltedMacLarderFeedbackTests: XCTestCase {
         }
         XCTAssertEqual(
             model.podcastOperationMessage,
-            "Removed 0 of 2 in Ready from Larder; 2 could not be removed and stay in Larder."
+            "Removed 0 of 2 from Larder. 2 could not be removed."
         )
         XCTAssertFalse(model.podcastOperationMessage?.contains("Removed all 2") ?? false,
                        "a failed clear never announces the whole group removed")
+    }
+
+    func testMixedGroupCompletesThePodcastEvenWhenTheBookCannotBeRemoved() async throws {
+        let (model, store, ids) = try await queuedModel("mixed-clear", guids: ["shown"])
+        let podcast = try XCTUnwrap(model.episodes.firstIndex { $0.id == ids[0] })
+        model.episodes[podcast].downloadState = .completed
+        model.episodes[podcast].preparationState = .prepared(summary: "Ready")
+        model.episodes[podcast].isReadyMediaAvailable = true
+        let bookID = try ItemID.audiobook(contentDigest: String(repeating: "a", count: 64), layout: "x", volume: 0)
+        model.installEpisodeForTesting(book(bookID.rawValue, title: "Dune"))
+        try await store.addPodcastQueueEpisode(bookID)
+        await model.refreshPodcastQueueState()
+        let section = try XCTUnwrap(model.larderSections().first { $0.statusGroup == .playable })
+        XCTAssertEqual(section.clearLabel, "Remove all 2 from Larder")
+        XCTAssertTrue(section.requiresClearConfirmation)
+        XCTAssertEqual(section.clearDetails, "Mark 1 episode completed. Remove 1 from the queue and keep the audio.")
+        model.larderSortWriteHookForTesting = { throw FailingWrite() }
+
+        model.clearLarderGroup(section)
+        await WiltedMacHeadless.drainDecisions(model)
+        let queue = try await store.podcastQueueState().episodeIDs
+        XCTAssertEqual(queue, [bookID])
+        XCTAssertEqual(model.undoToast.current?.subjects, [ids[0]])
+        XCTAssertEqual(model.podcastOperationMessage, "Removed 1 of 2 from Larder. 1 could not be removed.")
     }
 
     /// The producer's retry classification reaches the article's work ticket:

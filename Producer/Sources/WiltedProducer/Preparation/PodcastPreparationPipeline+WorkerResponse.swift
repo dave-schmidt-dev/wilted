@@ -12,6 +12,8 @@ extension PodcastPreparationPipeline {
 
     struct WorkerPayload: Sendable {
         var timing: TranscriptTiming
+        /// Transcript source reported by the worker, even if Swift cannot retain its cues.
+        var sourceTiming: TranscriptTiming
         var cues: [TranscriptCue]
         var text: String?
         var languageCode: String?
@@ -22,6 +24,7 @@ extension PodcastPreparationPipeline {
         var removedSeconds: Double
         var keepIntervals: [PodcastKeepInterval]
         var adRemovalOutcome: String
+        var adsMayRemain: Bool = false
         var warning: String? = nil
         var adAuditDiagnostics: [String: String] = [:]
         var timeline: PreparationStatus.PreparationTimeline
@@ -68,7 +71,8 @@ extension PodcastPreparationPipeline {
             }
             if outcome == "uncertain" {
                 guard let warning = report["warning"] as? String,
-                      warning.hasPrefix("original audio includes ads:"),
+                      warning == "Some ads may remain" || warning.hasPrefix("Some ads may remain:")
+                        || warning.hasPrefix("original audio includes ads:"),
                       !warning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       warning == auditObject["warning"] as? String,
                       let changed = object["audioChanged"] as? NSNumber,
@@ -178,6 +182,8 @@ extension PodcastPreparationPipeline {
         }
         let changed = object["audioChanged"] as? Bool ?? false
         let silenceTrims = try silenceIntervals(in: object)
+        let labelledLeftIn = isLabelled ? Self.decodeLabelledLeftIn(
+            auditObject, uncutNominations: outcome == "uncertain" ? nominations : []) : []
         let consistent: Bool
         switch outcome {
         case "cut":
@@ -207,6 +213,7 @@ extension PodcastPreparationPipeline {
         }
         return WorkerPayload(
             timing: cues.isEmpty ? .none : timing,
+            sourceTiming: timing,
             cues: cues,
             text: object["text"] as? String,
             languageCode: object["languageCode"] as? String,
@@ -222,12 +229,15 @@ extension PodcastPreparationPipeline {
             keepIntervals: kept.map { PodcastKeepInterval(startSeconds: $0.originalStartSeconds, endSeconds: $0.originalEndSeconds,
                                                           outputStartSeconds: $0.outputStartSeconds) },
             adRemovalOutcome: outcome,
-            warning: outcome == "uncertain" ? (report["warning"] as? String).map { String($0.prefix(768)) } : nil,
+            adsMayRemain: outcome == "uncertain" || !labelledLeftIn.isEmpty,
+            warning: outcome == "uncertain" ? (auditObject?["incompleteError"] as? String).map {
+                String("Some ads may remain: \($0)".prefix(256))
+            } : nil,
             adAuditDiagnostics: auditDiagnostics(outcome: outcome, audit: report["audit"] as? [String: Any]),
             timeline: timeline,
             droppedCueCount: droppedCueCount,
             silenceTrims: silenceTrims,
-            labelledLeftIn: isLabelled ? decodeLabelledLeftIn(auditObject) : []
+            labelledLeftIn: labelledLeftIn
         )
     }
 

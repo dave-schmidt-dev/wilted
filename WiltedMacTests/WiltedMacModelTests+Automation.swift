@@ -297,34 +297,50 @@ extension WiltedMacModelTests {
         XCTAssertNil(model.playbackOperationStatus, "a rail left spinning never goes idle for XCUITest")
     }
 
-    func testOnlyNoLocalSpeechToTextWithRemovalOnBlocksAdRemoval() throws {
-        // The pane offers the two controls side by side, so every pair a reader
-        // can reach is checked, not only the one that fails.
-        for policy in [WiltedAutomationTranscriptPolicy.bestAvailable, .alwaysTranscribe, .noLocalSTT] {
-            for removeAds in [true, false] {
-                let settings = WiltedAutomationSettings(
-                    refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .immediate,
-                    transcriptPolicy: policy, removeAds: removeAds
-                )
-                let blocked = policy == .noLocalSTT && removeAds
-                XCTAssertEqual(settings.transcriptPolicyBlocksAdRemoval, blocked,
-                               "\(policy.settingsControlLabel) with removeAds \(removeAds)")
-            }
+    func testTranscriptSourceChoicesExplainTimingAndWhichEpisodesCanFinish() throws {
+        func settings(_ policy: WiltedAutomationTranscriptPolicy) -> WiltedAutomationSettings {
+            WiltedAutomationSettings(
+                refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .immediate,
+                transcriptPolicy: policy, removeAds: true
+            )
         }
+
+        let preferFeed = settings(.bestAvailable).transcriptPolicyExplanation
+        XCTAssertEqual(WiltedAutomationTranscriptPolicy.bestAvailable.settingsControlLabel,
+                       "Best available")
+        XCTAssertEqual(WiltedAutomationTranscriptPolicy.fromSettingsControlLabel("Best available"),
+                       .bestAvailable)
+        XCTAssertTrue(preferFeed.contains("Episodes that need an ad check use a local transcript"), preferFeed)
+        XCTAssertTrue(preferFeed.contains("When ad finding is skipped"), preferFeed)
+
+        let feedPreference = WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .immediate,
+            transcriptPolicy: .bestAvailable, removeAds: false
+        ).transcriptPolicyExplanation
+        XCTAssertTrue(feedPreference.contains("prefers a transcript from the feed"), feedPreference)
+        XCTAssertTrue(feedPreference.contains("local speech-to-text if needed"), feedPreference)
+
+        let alwaysTranscribe = settings(.alwaysTranscribe).transcriptPolicyExplanation
+        XCTAssertTrue(alwaysTranscribe.contains("makes a local transcript timed to each episode's audio"),
+                      alwaysTranscribe)
+
+        let noLocalTranscription = settings(.noLocalSTT).transcriptPolicyExplanation
+        XCTAssertTrue(noLocalTranscription.contains("Episodes that need an ad check cannot finish"),
+                      noLocalTranscription)
+        XCTAssertTrue(noLocalTranscription.contains("marked already ad-free"), noLocalTranscription)
+        XCTAssertTrue(noLocalTranscription.contains("skip the check"), noLocalTranscription)
+        XCTAssertTrue(noLocalTranscription.contains("daily limit stops a request"), noLocalTranscription)
+        XCTAssertTrue(noLocalTranscription.contains("can still prepare"), noLocalTranscription)
+
+        let noLocalWithAdsOff = WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .immediate,
+            transcriptPolicy: .noLocalSTT, removeAds: false
+        ).transcriptPolicyExplanation
+        XCTAssertEqual(noLocalWithAdsOff,
+                       "Uses a transcript from the feed when available. Episodes can finish without a transcript.")
     }
 
-    func testTheBlockedAdRemovalExplanationNamesTheCauseAndBothWaysOut() throws {
-        let explanation = WiltedAutomationSettings.transcriptPolicyBlocksAdRemovalExplanation
-
-        // Naming one control would leave a reader looking at the other one
-        // wondering which of them is wrong.
-        XCTAssertTrue(explanation.contains("Remove ads"), explanation)
-        XCTAssertTrue(explanation.contains(WiltedAutomationTranscriptPolicy.noLocalSTT.settingsControlLabel),
-                      explanation)
-        XCTAssertTrue(explanation.contains("no episode will prepare"), explanation)
-    }
-
-    func testABlockedConfigurationStillDecodesAndSurvivesRelaunch() throws {
+    func testTranscriptPolicyAndAdRemovalChoiceSurviveRelaunch() throws {
         // Removal once ran from a publisher's cues, so this pair is a file that
         // legitimately exists. It is reported, not rejected: refusing to decode
         // it would lose every other preference saved beside it.
@@ -340,7 +356,8 @@ extension WiltedMacModelTests {
 
         XCTAssertEqual(relaunched.automationSettings.transcriptPolicy, .noLocalSTT)
         XCTAssertTrue(relaunched.automationSettings.removeAds)
-        XCTAssertTrue(relaunched.automationSettings.transcriptPolicyBlocksAdRemoval)
+        XCTAssertTrue(relaunched.automationSettings.transcriptPolicyExplanation
+            .contains("Episodes that need an ad check cannot finish"))
     }
 
     func testPreparationPolicySnapshotMapsEveryFutureWorkerChoice() throws {

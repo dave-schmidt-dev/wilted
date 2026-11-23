@@ -55,6 +55,19 @@ final class WiltedMacPossibleDuplicateFlagTests: XCTestCase {
         XCTAssertFalse(originalSuppressed)
     }
 
+    func testSameEpisodeSkipsOnlyTheFlaggedNewcomer() async throws {
+        let (model, first, second) = try await flaggedModel()
+        let flagged = try XCTUnwrap(model.episodes.first { $0.id == second.rawValue })
+        model.removePossibleDuplicate(flagged)
+        await WiltedMacHeadless.drainDecisions(model)
+
+        let store = try XCTUnwrap(model.store)
+        let newcomerDecision = try await store.episodeDecision(for: second)
+        let originalDecision = try await store.episodeDecision(for: first)
+        XCTAssertEqual(newcomerDecision?.decision, .skip)
+        XCTAssertNil(originalDecision)
+    }
+
     func testDifferentClearsTheFlagAndLiftsTheExclusion() async throws {
         let (model, _, second) = try await flaggedModel()
         let flagged = try XCTUnwrap(model.episodes.first { $0.id == second.rawValue })

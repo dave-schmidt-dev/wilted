@@ -32,6 +32,7 @@ struct WiltedMacLarderView: View {
         _feedPolicyBoard = State(initialValue: policyBoard ?? WiltedMacFeedPolicyBoard(model: model))
     }
     @Environment(\.colorScheme) var colorScheme
+    @State var pendingGroupClear: WiltedMacLarderSection?
     @State var dropTargetID: String?
     /// The reviewed unlink waiting for the owner's confirmation.
     @State var unlinkReview: WiltedMacLinkedEpisodeUnlink?
@@ -58,6 +59,17 @@ struct WiltedMacLarderView: View {
             }
         }
         .focusedSceneValue(\.wiltedLarderSearchFocus, searchFocusAction)
+        .confirmationDialog(
+            pendingGroupClear.map { "\($0.clearLabel)?" } ?? "",
+            isPresented: Binding(get: { pendingGroupClear != nil }, set: { if !$0 { pendingGroupClear = nil } }),
+            titleVisibility: .visible, presenting: pendingGroupClear
+        ) { section in
+            Button(section.clearLabel, role: .destructive) { model.clearLarderGroup(section) }
+                .accessibilityIdentifier("wilted-larder-clear-confirm")
+            Button("Cancel", role: .cancel) {}
+        } message: { section in
+            Text(section.clearDetails)
+        }
         .alert(
             "Unlink these episodes?",
             isPresented: Binding(get: { unlinkReview != nil }, set: { if !$0 { unlinkReview = nil } }),

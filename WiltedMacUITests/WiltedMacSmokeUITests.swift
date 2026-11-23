@@ -300,6 +300,20 @@ extension WiltedMacJourneyUITests {
                 XCTAssertTrue(element(app, "wilted-settings-section-\(section)").waitForExistence(timeout: 5), section)
                 XCTAssertTrue(element(app, control).waitForExistence(timeout: 5), section)
             }
+            if tab == "feeds-reports" {
+                let addSource = app.buttons["wilted-reports-add-news-feed"]
+                addSource.click()
+                let address = app.textFields["wilted-reports-headline-feed-address"]
+                XCTAssertTrue(address.waitForExistence(timeout: 5))
+                address.click()
+                address.typeText("not-a-feed")
+                app.buttons["wilted-reports-headline-feed-add"].click()
+                XCTAssertTrue(element(app, "wilted-reports-headline-feed-error").waitForExistence(timeout: 5))
+                XCTAssertEqual(address.value as? String, "not-a-feed")
+                app.typeKey(.escape, modifierFlags: [])
+                XCTAssertTrue(address.waitForNonExistence(timeout: 5))
+                XCTAssertTrue(addSource.exists, "closing headline setup returns to Reports")
+            }
             if tab == "ads-providers" {
                 let page = element(app, "wilted-providers-page")
                 let rows = page.descendants(matching: .any).matching(
@@ -312,7 +326,7 @@ extension WiltedMacJourneyUITests {
                     XCTAssertTrue(row.staticTexts["wilted-providers-status-\(provider)"].exists, provider)
                     let tag = row.staticTexts["wilted-providers-in-use-\(provider)"]
                     XCTAssertEqual(tag.exists, provider == "opencodeGoKey", provider)
-                    if tag.exists { XCTAssertEqual(tag.label, "In use for ad finding") }
+                    if tag.exists { XCTAssertEqual(tag.label, "Selected for ad finding") }
                 }
                 XCTAssertFalse(page.staticTexts["Kind"].exists)
                 let checkAll = page.buttons["wilted-providers-check-all"]
@@ -469,6 +483,28 @@ extension WiltedMacJourneyUITests {
         search.typeKey("a", modifierFlags: .command)
         search.typeKey(.delete, modifierFlags: [])
         XCTAssertTrue(larderRow.waitForExistence(timeout: 5))
+
+        // The group action captures the Articles filter. Cancel leaves the row available for a retry.
+        let kinds = app.descendants(matching: .any)["wilted-larder-kind"]
+        kinds.click()
+        app.menuItems["Articles"].click()
+        let clear = app.buttons["wilted-larder-clear-ready"]
+        XCTAssertTrue(clear.waitForExistence(timeout: 5))
+        XCTAssertEqual(clear.label, "Delete 1 article in Ready")
+        clear.click()
+        let confirm = app.buttons["wilted-larder-clear-confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(confirm.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(clear.exists)
+        clear.click()
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.click()
+        XCTAssertTrue(clear.waitForNonExistence(timeout: 5))
+        kinds.click()
+        app.menuItems["All"].click()
+        XCTAssertTrue(app.buttons["wilted-larder-show-notes-\(episodeID)"].waitForExistence(timeout: 5),
+                      "the hidden podcast is still in Larder after the article is deleted")
 
         // The same journey ends with a wide playing fixture to exercise the side pane.
         let playing = try launch(arguments: ["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts",

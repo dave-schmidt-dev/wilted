@@ -42,6 +42,18 @@ extension PodcastPreparationPipelineTests {
         try PodcastPreparationPipeline.decode(JSONSerialization.data(withJSONObject: response))
     }
 
+    @Test func aRefusedCutKeepsTheProposedPassageOnTheOriginalClock() throws {
+        var response = Self.auditRetentionResponse(audioPath: "/tmp/original.mp3", heldSpans: [], declinedSeeds: [])
+        var report = try #require(response["report"] as? [String: Any])
+        report["rawNominations"] = [["startSeconds": 1.0, "endSeconds": 5.0, "label": "sponsor", "confidence": 0.9]]
+        response["report"] = report
+        let payload = try Self.auditRetentionDecode(response)
+        #expect(payload.adSegments.isEmpty)
+        #expect(payload.labelledLeftIn.map(\.startSeconds) == [1.0])
+        #expect(payload.labelledLeftIn.map(\.endSeconds) == [5.0])
+        #expect(payload.labelledLeftIn.map(\.reason) == ["cut-unsafe"])
+    }
+
     @Test func uncertainAuditRetainsHeldAndDeclinedCausesAcrossReopen() async throws {
         let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }
@@ -66,6 +78,7 @@ extension PodcastPreparationPipelineTests {
         let payload = try Self.auditRetentionDecode(response)
         #expect(payload.adRemovalOutcome == "uncertain")
         #expect(payload.adAuditDiagnostics["unresolvedIds"] == "")
+        #expect(payload.labelledLeftIn.map(\.reason) == ["programme-boundary"])
         #expect(payload.adSegments.isEmpty)
         #expect(payload.keepIntervals.isEmpty)
 
@@ -74,7 +87,8 @@ extension PodcastPreparationPipelineTests {
         #expect(result.revision.revisionID == fixture.revisionID)
         #expect(result.mediaURL == fixture.audioURL)
         #expect(result.adSegments.isEmpty)
-        #expect(result.warning?.hasPrefix("original audio includes ads:") == true)
+        #expect(result.warning?.contains("classifier could not resolve commercial evidence") == true
+                && result.summary.contains("Some ads may remain"))
         #expect(try Data(contentsOf: fixture.audioURL) == originalBytes)
 
         let reopened = try LocalLibraryStore(url: fixture.root.appendingPathComponent("library.sqlite"))
@@ -102,7 +116,7 @@ extension PodcastPreparationPipelineTests {
 
         let terminal = try #require(entries.last { $0.status.terminal })
         #expect(terminal.status.terminalResult?.outcome == .succeeded)
-        #expect(terminal.status.detail.contains("original audio includes ads:"))
+        #expect(terminal.status.detail.contains("Some ads may remain"))
         #expect(!entries.contains { $0.status.stage == .assembling && $0.id.contains("ads.detect.span") })
     }
 
@@ -207,7 +221,8 @@ extension PodcastPreparationPipelineTests {
         let second = PodcastPreparationPipeline.resultProgress(try Self.auditRetentionDecode(response))
         let evidence = try #require(first.evidence)
         #expect(evidence.kind == "worker-result")
-        #expect(evidence.fields.count == 15)
+        #expect(evidence.fields.count == 16)
+        #expect(evidence.fields["adsMayRemain"] == "true")
         #expect(evidence.fields.count <= 16)
         for value in evidence.fields.values {
             #expect(value.count <= 256)
@@ -305,7 +320,7 @@ extension PodcastPreparationPipelineTests {
             declinedSeeds: [["status": "declined", "reason": "review-unresolved",
                              "ids": [3, 4], "startSeconds": 2.0, "endSeconds": 3.0]]
         )
-        let longIncomplete = String(repeating: "w", count: 800)
+        let longIncomplete = String(repeating: "w", count: 2_000)
         let longWarning = "original audio includes ads: " + longIncomplete
         var report = try #require(response["report"] as? [String: Any])
         var audit = try #require(report["audit"] as? [String: Any])
@@ -316,9 +331,16 @@ extension PodcastPreparationPipelineTests {
         report["audit"] = audit
         response["report"] = report
 
-        let progress = PodcastPreparationPipeline.resultProgress(try Self.auditRetentionDecode(response))
+        let payload = try Self.auditRetentionDecode(response)
+        let progress = PodcastPreparationPipeline.resultProgress(payload)
+        let summary = PodcastPreparationResult.summary(
+            advertisements: 0, secondsRemoved: 0, timing: .none,
+            adRemovalOutcome: payload.adRemovalOutcome, warning: payload.warning)
+        #expect(summary.count <= 1_024)
+        #expect(summary.contains("Some ads may remain"))
         let evidence = try #require(progress.evidence)
-        #expect(evidence.fields.count == 15)
+        #expect(evidence.fields.count == 16)
+        #expect(evidence.fields["adsMayRemain"] == "true")
         #expect(evidence.fields.values.allSatisfy { $0.count <= 256 })
         #expect(evidence.fields["warning"]?.count == 256)
         #expect(evidence.fields["incompleteError"]?.count == 256)

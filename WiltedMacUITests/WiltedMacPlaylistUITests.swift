@@ -4,7 +4,7 @@ import XCTest
 extension WiltedMacJourneyUITests {
     /// Discovery of a manual playlist from a Larder row, the rename that
     /// updates beside the title while its write is pending, the established
-    /// player path with the labelled Share options panel, and a confirmed
+    /// player path with the Share menu, and a confirmed
     /// delete that falls back to the Larder without touching the episode.
     func test07ManualPlaylistDiscoveryRenameDeleteAndShare() throws {
         let app = try launchFixture(extraArguments: ["--wilted-ui-fixture-playlist-write-delay"])
@@ -94,26 +94,33 @@ extension WiltedMacJourneyUITests {
         attachWindow(app, name: "Manual playlist deleted, episode kept")
 
         // The retained episode still plays after deleting its playlist, and the
-        // labelled Share options control opens its panel without sharing.
+        // Share menu opens the summary panel without sharing.
         try openLarderForEpisode(app, id: episodeID)
         let play = app.buttons["wilted-larder-play-\(episodeID)"]
         XCTAssertTrue(play.waitForExistence(timeout: 10))
         try clickVerified(play, in: app, name: "Play \(episodeID)", label: "Play Quiet Machines now")
-        let share = element(app, "wilted-player-share-options")
+        let share = element(app, "wilted-player-share")
         XCTAssertTrue(share.waitForExistence(timeout: 10))
-        XCTAssertEqual(share.label, "Share options")
-        try clickVerified(share, in: app, name: "Share options")
+        XCTAssertEqual(share.label, "Share")
+        let shareEntries = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier == 'wilted-player-share' OR identifier == 'wilted-player-share-options'"))
+        XCTAssertEqual(shareEntries.count, 1, "the player exposes one Share entry")
+        try clickVerified(share, in: app, name: "Share")
+        let summary = app.menuItems["Transcript summary…"]
+        XCTAssertTrue(summary.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.menuItems["Share link"].exists || app.menuItems["Share title and show"].exists,
+                      "the same menu also offers the current item's regular share action")
+        summary.click()
         let includeSummary = app.descendants(matching: .any).matching(
             NSPredicate(format: "label == 'Include transcript summary'")
         ).firstMatch
-        XCTAssertTrue(includeSummary.waitForExistence(timeout: 5), "Share options opens its panel")
+        XCTAssertTrue(includeSummary.waitForExistence(timeout: 5), "Transcript summary opens its panel")
         app.typeKey(.escape, modifierFlags: [])
         XCTAssertTrue(includeSummary.waitForNonExistence(timeout: 5), "the panel closes without sharing")
     }
 
-    /// The automatic editor: copied rules, a grouped formula with its live
-    /// preview, an unknown reference that clears both, a preview title's exact
-    /// notes, and a save whose pending and completion states are visible.
+    /// The automatic editor: help opens and closes, copied rules, a grouped
+    /// formula preview, inline errors, exact preview notes, and a visible save.
     func test08AutomaticPlaylistFormulaPreviewAndSave() throws {
         let app = try launchFixture(extraArguments: ["--wilted-ui-fixture-playlist-write-delay"])
         let episodeID = try keepFixtureEpisode(app)
@@ -129,6 +136,19 @@ extension WiltedMacJourneyUITests {
         editRules.click()
         let sheet = element(app, "wilted-playlist-rules-sheet")
         try requireElement(sheet, name: "Rules sheet", timeout: 10)
+
+        let help = app.buttons["wilted-playlist-rule-help"]
+        try requireControl(help, name: "Match expression help")
+        help.click()
+        let guidance = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@",
+                        "Rules are numbered above", "Rules are numbered above")
+        ).firstMatch
+        XCTAssertTrue(guidance.waitForExistence(timeout: 5), "help opens the expression instructions")
+        XCTAssertTrue(words(guidance).contains("combine them with AND, OR, NOT and parentheses"),
+                      "the popover explains the supported expression operators")
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(guidance.waitForNonExistence(timeout: 5), "dismissing help hides its instructions")
 
         let add = app.buttons["wilted-playlist-rules-add"]
         try requireControl(add, name: "Add rule")
@@ -163,6 +183,9 @@ extension WiltedMacJourneyUITests {
         replaceText(expression, with: "99")
         let error = element(app, "wilted-playlist-rules-error")
         XCTAssertTrue(error.waitForExistence(timeout: 5), "an unknown rule must be named immediately")
+        XCTAssertGreaterThan(error.frame.minY, expression.frame.maxY - 1,
+                             "the invalid-expression error stays beside the field")
+        XCTAssertTrue(guidance.waitForNonExistence(timeout: 1), "the hidden help copy does not replace the inline error")
         let save = app.buttons["wilted-playlist-rules-save"]
         XCTAssertTrue(save.exists)
         XCTAssertFalse(save.isEnabled, "Save is disabled while the formula is invalid")

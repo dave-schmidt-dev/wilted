@@ -25,6 +25,14 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
         return String(source[start.lowerBound..<end.lowerBound])
     }
 
+    private func inboxSource() throws -> String {
+        let source = try WiltedMacHeadless.viewSource("WiltedMacFeedsView.swift")
+        let start = try XCTUnwrap(source.range(of: "@ViewBuilder private var inbox: some View"))
+        let end = try XCTUnwrap(source.range(of: "private var refreshHeader: some View",
+                                             range: start.upperBound..<source.endIndex))
+        return String(source[start.lowerBound..<end.lowerBound])
+    }
+
     func testRefreshUsesApprovedNativeTemplateBesideOneVisibleTitle() async throws {
         let image = try XCTUnwrap(NSImage(named: "feed-refresh-circular-arrow"))
         XCTAssertTrue(image.isTemplate)
@@ -54,6 +62,56 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
         let header = try refreshHeaderSource()
         XCTAssertTrue(header.contains("ProgressView().controlSize(.small)"))
         XCTAssertTrue(header.contains("Button(\"Cancel\") { model.cancelPodcastRefresh() }"))
+    }
+
+    func testEmptyNewEpisodesShowsOnlyItsSentence() async throws {
+        let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-ready"])
+        XCTAssertTrue(model.feedsEpisodeCandidates.isEmpty)
+        XCTAssertTrue(model.feedsOfferedArticles.isEmpty)
+
+        let shown = try lines(model).map(\.text)
+        XCTAssertTrue(shown.contains { searchableText($0).contains(searchableText("No new episodes")) }, "\(shown)")
+        XCTAssertFalse(shown.contains { searchableText($0) == searchableText("New episodes") }, "\(shown)")
+        XCTAssertFalse(shown.contains { searchableText($0).contains(searchableText("Sort by")) }, "\(shown)")
+
+        let source = try inboxSource()
+        let emptyBranch = try XCTUnwrap(source.range(of: "if visible.isEmpty && articles.isEmpty"))
+        let contentBranch = try XCTUnwrap(source.range(of: "} else {", range: emptyBranch.upperBound..<source.endIndex))
+        let emptyContent = String(source[emptyBranch.lowerBound..<contentBranch.lowerBound])
+        XCTAssertFalse(emptyContent.contains("wilted-feeds-count"), emptyContent)
+        XCTAssertFalse(emptyContent.contains("WiltedMacEpisodeListSortControls"), emptyContent)
+    }
+
+    func testLoadingFeedSettingsUsesOneQuietIndicatorInsteadOfRowMessages() async throws {
+        let model = await WiltedMacHeadless.model(self, arguments)
+        addTeardownBlock { await model.close() }
+        XCTAssertFalse(model.subscriptions.isEmpty)
+        let board = WiltedMacFeedPolicyBoard(model: model)
+        let hold = WiltedMacFeedsRefreshHold()
+        board.reloadReadHookForTesting = { await hold.pause() }
+        let reload = Task { await board.reload() }
+        await WiltedMacHeadless.eventually("feed settings are loading") { hold.entered }
+        XCTAssertTrue(board.isLoading)
+
+        do {
+            let rendered = try WiltedMacHeadless.recognizedText(
+                WiltedMacFeedsView(model: model, policyBoard: board), size: tall
+            ).joined(separator: " ")
+            XCTAssertFalse(rendered.contains("Loading settings"), rendered)
+
+            let source = try WiltedMacHeadless.viewSource("WiltedMacFeedsView.swift")
+            XCTAssertEqual(WiltedMacHeadless.occurrences(
+                of: ".accessibilityIdentifier(\"wilted-feed-settings-loading\")", in: source), 1, source)
+            XCTAssertTrue(source.contains("guard !model.subscriptions.isEmpty, policyBoard.loadFailureMessage == nil"), source)
+            XCTAssertTrue(source.contains("return policyBoard.isLoading"), source)
+        } catch {
+            hold.release()
+            await reload.value
+            throw error
+        }
+
+        hold.release()
+        await reload.value
     }
 
     func testRefreshKeepExplanationIsHelpRatherThanRepeatedInlineCopy() async throws {
@@ -285,11 +343,11 @@ final class WiltedMacFeedsStructureTests: XCTestCase {
 
         XCTAssertTrue(adFinding.contains("Text(\"All shows\")"), adFinding)
         XCTAssertTrue(adFinding.contains("WiltedMacFeedKind.isArticleSubscription"), adFinding)
-        XCTAssertTrue(adFinding.contains("allowed for ad finding"), adFinding)
+        XCTAssertTrue(adFinding.contains("podcasts selected for ad finding"), adFinding)
         XCTAssertFalse(adFinding.contains("waitingRow"), adFinding)
         XCTAssertFalse(adFinding.contains("wilted-ad-finding-review"), adFinding)
         XCTAssertTrue(adFinding.contains("Button(\"Confirm\")"), "the global switch confirmation remains")
-        XCTAssertTrue(adFinding.contains("Shows you add later are not sent"), adFinding)
+        XCTAssertTrue(adFinding.contains("For shows you add later, turn on ad finding in Show settings."), adFinding)
     }
 
     /// A revisit is a fresh Feeds view over the board the first visit loaded. It draws that capacity

@@ -91,6 +91,7 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         XCTAssertTrue(throttle.waitForExistence(timeout: 10))
         XCTAssertTrue(throttle.label.hasPrefix("iCloud is rate limiting sync."), throttle.label)
         XCTAssertFalse(app.descendants(matching: .any)["wilted-library-error"].exists)
+        XCTAssertFalse(app.descendants(matching: .any)["wilted-author-publication"].exists)
 
         let status = settingsSyncStatus(in: app)
         XCTAssertTrue(status.label.hasPrefix("Paused"), status.label)
@@ -98,6 +99,41 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         // detail row.
         XCTAssertFalse(app.descendants(matching: .any)["wilted-library-settings-sync-detail"].exists)
         assertNoLiveTransport(in: app)
+    }
+
+    func testPlayerEpisodeActionsKeepBothNamesAndAskBeforeActing() {
+        let app = launchLibraryRoot(.normal)
+        let play = app.buttons["wilted-library-play-\(Self.firstEpisode)"]
+        XCTAssertTrue(play.waitForExistence(timeout: 10))
+        play.tap()
+        let toggle = app.buttons["wilted-player-mini-toggle"]
+        XCTAssertTrue(waitForLabel("Pause", on: toggle))
+        toggle.tap()
+        XCTAssertEqual(fullPlayerStatus(in: app), "Paused")
+
+        let menu = app.buttons["wilted-player-episode-actions"]
+        let actions = [("wilted-player-mark-completed", "Mark completed", "Mark completed?"),
+                       ("wilted-player-remove-from-larder", "Remove from Larder", "Remove from the Larder?")]
+        for (identifier, label, question) in actions {
+            XCTAssertTrue(menu.waitForExistence(timeout: 5))
+            menu.tap()
+            let choice = app.buttons[identifier]
+            XCTAssertTrue(choice.waitForExistence(timeout: 5))
+            XCTAssertEqual(choice.label, label)
+            choice.tap()
+            XCTAssertTrue(app.staticTexts[question].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons[label].exists)
+            // iOS 26 anchors the question to the menu button as a popover, which has no Cancel button;
+            // tapping outside it cancels the same way.
+            let cancel = app.buttons["Cancel"]
+            if cancel.waitForExistence(timeout: 2) {
+                cancel.tap()
+            } else {
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1)).tap()
+            }
+            XCTAssertTrue(app.staticTexts[question].waitForNonExistence(timeout: 5), "the question closes without acting")
+        }
+        XCTAssertTrue(menu.waitForExistence(timeout: 5), "Cancelling leaves the episode available")
     }
 
     /// Sort and Group are display only: choosing them says playback still follows the play order, groups

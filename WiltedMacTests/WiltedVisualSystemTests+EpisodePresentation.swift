@@ -363,7 +363,7 @@ extension WiltedVisualSystemTests {
         XCTAssertTrue(sortControls.contains("ForEach(WiltedMacLarderSort.presentationOptions"))
         XCTAssertTrue(sortControls.contains("Button {\n                        sort = option"),
                       "each sort option remains a directly clickable shared menu action")
-        XCTAssertTrue(source.contains("wilted-player-share"))
+        XCTAssertTrue(source.contains("WiltedMacPlaybackShareLink(model: model)"))
         XCTAssertTrue(source.contains("if let shareURL = model.currentPlaybackShareURL"))
         XCTAssertTrue(source.contains("else if let shareText = model.currentPlaybackShareText"))
         XCTAssertTrue(source.contains(".opacity(dropTargetID == episode.id ? 1 : 0)"))

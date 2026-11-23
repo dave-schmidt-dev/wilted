@@ -676,8 +676,27 @@ final class WiltedMacPreparationPublicationTests: XCTestCase {
     func testNotSentStageReturnsItsOwnStatusTextNotGenericPreparing() {
         let progress = PodcastPreparationProgress(stage: "ads.not-sent", detail: "Online ad finding is off.")
         let label = WiltedMacModel.preparationLabel(for: progress)
-        XCTAssertEqual(label, "Leaving ads in")
+        XCTAssertEqual(label, "Ad check skipped")
         XCTAssertNotEqual(label, "Preparing…")
+    }
+
+    func testWorkerResultHeartbeatReportsTheAdCheckOutcome() throws {
+        let now = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        for (outcome, partial, label) in [
+            ("disabled", false, "Ad check skipped"), ("noAds", false, "No ads found"),
+            ("cut", false, "Ads removed"), ("cut", true, "Some ads may remain")
+        ] {
+            let evidence = try PreparationEvidence(kind: "worker-result", fields: [
+                "adRemovalOutcome": outcome, "adsMayRemain": String(partial),
+                "advertisements": outcome == "cut" ? "1" : "0", "cues": "3"
+            ])
+            let status = try PreparationStatus(
+                stage: .assembling, detail: "Worker result", cancellable: true, emittedAt: now,
+                evidence: evidence, step: "pipeline.result")
+            let published = try XCTUnwrap(WiltedMacPreparationPublication.status(.init(
+                requestSequence: 1, attemptCount: 1, state: .running, updatedAt: now, status: status)))
+            XCTAssertEqual(published.detail, label)
+        }
     }
 
     func testNotSentStageIsSupportedHeartbeatStep() throws {
@@ -688,7 +707,7 @@ final class WiltedMacPreparationPublicationTests: XCTestCase {
         let published = try XCTUnwrap(WiltedMacPreparationPublication.status(.init(
             requestSequence: 1, attemptCount: 1, state: .running, updatedAt: now, status: journal)))
         XCTAssertEqual(published.stage, "ads.not-sent")
-        XCTAssertEqual(published.detail, "Leaving ads in")
+        XCTAssertEqual(published.detail, "Ad check skipped")
     }
 
     func testDetectStageNamesEmittedByLabelledPathMatchStatusText() {

@@ -114,7 +114,8 @@ extension PodcastPreparationPipeline {
                 stage: "ads.not-sent", detail: notSent.sentence,
                 evidence: try? PreparationEvidence(kind: notSent.kind, fields: [:])))
             let payload = try await keepWholeOriginal(
-                warning: notSent.warning, episode: episode, audioURL: audioURL, preparedURL: preparedURL,
+                outcome: "disabled", warning: notSent.warning,
+                episode: episode, audioURL: audioURL, preparedURL: preparedURL,
                 sourceHash: sourceHash, policy: policy, onStatus: onStatus)
             return PreparationWorkerRun(payload: payload, labelledProvenance: nil)
         }
@@ -204,9 +205,10 @@ extension PodcastPreparationPipeline {
             removeStaleCueFiles(for: deferral)
             cached = loadCueFile(for: deferral)
         }
-        func original(_ reason: String) async throws -> PreparationWorkerRun {
+        func original(_ reason: String, outcome: String = "uncertain") async throws -> PreparationWorkerRun {
             let payload = try await wholeOriginal(
-                reason: reason, episode: episode, audioURL: audioURL, preparedURL: preparedURL,
+                reason: reason, outcome: outcome,
+                episode: episode, audioURL: audioURL, preparedURL: preparedURL,
                 sourceHash: sourceHash, policy: policy, onStatus: onStatus)
             return PreparationWorkerRun(payload: payload, labelledProvenance: provenance)
         }
@@ -215,7 +217,7 @@ extension PodcastPreparationPipeline {
             if routing == .dailyCap {
                 let reason = try await settleLabellerHold(
                     .dailyCap, transcript: nil, deferral: deferral, services: services, onStatus: onStatus)
-                run = try await original(stopLabelledPath(reason, onStatus: onStatus))
+                run = try await original(stopLabelledPath(reason, onStatus: onStatus), outcome: "disabled")
             } else {
                 run = try await labelledLoop(
                     episode: episode, audioURL: audioURL, preparedURL: preparedURL, sourceHash: sourceHash,
@@ -237,7 +239,7 @@ extension PodcastPreparationPipeline {
         episode: PodcastEpisode, audioURL: URL, preparedURL: URL, sourceHash: String,
         policy: PodcastPreparationPolicySnapshot, services: PodcastLabellingServices,
         feedTitle: String, provenance: LabelledRunProvenance, deferral: LabelledDeferralContext?,
-        cached: LabelledTranscript?, original: (String) async throws -> PreparationWorkerRun,
+        cached: LabelledTranscript?, original: (String, String) async throws -> PreparationWorkerRun,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> PreparationWorkerRun {
         var cached = cached
@@ -254,7 +256,14 @@ extension PodcastPreparationPipeline {
                 let reason = try await settleLabellerHold(
                     .failure(failed.failure), transcript: failed.transcript, deferral: deferral,
                     services: services, onStatus: onStatus)
-                return try await original(stopLabelledPath(reason, onStatus: onStatus))
+                let outcome: String
+                switch reason {
+                case .dailyCap, .commandLineToolUnavailable:
+                    outcome = "disabled"
+                default:
+                    outcome = "uncertain"
+                }
+                return try await original(stopLabelledPath(reason, onStatus: onStatus), outcome)
             } catch let error as PodcastPreparationError {
                 guard case .workerFailed(let code, _) = error, code == Self.labelledCuesMismatchCode else { throw error }
                 // A reused cue list that no longer matches is dropped with its file.
@@ -264,7 +273,7 @@ extension PodcastPreparationPipeline {
                     mismatchRestarts = 1
                     continue
                 }
-                return try await original("labelled cues digest mismatch")
+                return try await original("labelled cues digest mismatch", "uncertain")
             }
         }
     }
@@ -351,9 +360,10 @@ extension PodcastPreparationPipeline {
         cutRequest["labellerLevel"] = provenance.level
         cutRequest["labellerPromptVersion"] = provenance.promptVersion
         let cutData = try JSONSerialization.data(withJSONObject: cutRequest)
-        let payload = try Self.decode(try await runner.run(request: cutData, onProgress: onStatus))
+        var payload = try Self.decode(try await runner.run(request: cutData, onProgress: onStatus))
         reportLeftInBreaks(
             workerLeftIn: payload.labelledLeftIn, rejected: reply.rejected, cues: cues, onStatus: onStatus)
+        payload.adsMayRemain = payload.adsMayRemain || !reply.rejected.isEmpty
         return payload
     }
 
@@ -371,25 +381,26 @@ extension PodcastPreparationPipeline {
         return try Self.decodeTranscriptStage(response)
     }
 
-    /// One more ordinary worker call with ad removal off, then mark the outcome uncertain
-    /// with `reason` as the warning's explanation.
+    /// One more ordinary worker call with ad removal off after the ad check could not finish.
     private func wholeOriginal(
-        reason: String, episode: PodcastEpisode, audioURL: URL, preparedURL: URL,
+        reason: String, outcome: String, episode: PodcastEpisode, audioURL: URL, preparedURL: URL,
         sourceHash: String, policy: PodcastPreparationPolicySnapshot,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> WorkerPayload {
-        let warning = "original audio includes ads: \(reason)"
+        let warning = outcome == "uncertain" ? "Some ads may remain: \(reason)" : reason
         let payload = try await keepWholeOriginal(
-            warning: warning, episode: episode, audioURL: audioURL, preparedURL: preparedURL,
+            outcome: outcome, warning: warning,
+            episode: episode, audioURL: audioURL, preparedURL: preparedURL,
             sourceHash: sourceHash, policy: policy, onStatus: onStatus)
-        onStatus(PodcastPreparationProgress(stage: "ads.uncertain", detail: warning))
+        onStatus(PodcastPreparationProgress(
+            stage: outcome == "uncertain" ? "ads.uncertain" : "ads.skipped", detail: warning))
         return payload
     }
 
-    /// One ordinary worker call with ad removal off, its outcome marked uncertain: the whole
-    /// original is kept and `warning` says why. Shared by a labelled stop and a not-sent episode.
+    /// One ordinary worker call with ad removal off. A warning means the ad check ran but
+    /// could not finish. Shared by a labelled stop and an unattempted ad check.
     private func keepWholeOriginal(
-        warning: String, episode: PodcastEpisode, audioURL: URL, preparedURL: URL,
+        outcome: String, warning: String?, episode: PodcastEpisode, audioURL: URL, preparedURL: URL,
         sourceHash: String, policy: PodcastPreparationPolicySnapshot,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> WorkerPayload {
@@ -397,8 +408,9 @@ extension PodcastPreparationPipeline {
             episode: episode, audioURL: audioURL, preparedURL: preparedURL, sourceHash: sourceHash,
             policy: Self.adRemovalOff(policy), onStatus: onStatus)
         var payload = try Self.decode(try await runner.run(request: request, onProgress: onStatus))
-        payload.adRemovalOutcome = "uncertain"
+        payload.adRemovalOutcome = outcome
         payload.warning = warning
+        payload.adsMayRemain = outcome == "uncertain"
         payload.audioChanged = false
         payload.adSegments = []
         payload.removedSeconds = 0

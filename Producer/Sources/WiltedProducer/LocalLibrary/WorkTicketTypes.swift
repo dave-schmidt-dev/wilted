@@ -123,6 +123,16 @@ public enum WorkTicketDeferralReason: String, Codable, Equatable, Sendable, Case
     case providerUsageLimit = "deferred-usage-limit"
     /// This device's own daily request cap was reached.
     case dailyRequestCap = "deferred-daily-cap"
+
+    /// The reason shown while a podcast waits for its next ad check.
+    public var waitLabel: String {
+        switch self {
+        case .providerUnavailable: "Service unavailable"
+        case .providerRateLimited: "Too many requests"
+        case .providerUsageLimit: "Provider usage limit"
+        case .dailyRequestCap: "Daily ad-check limit reached"
+        }
+    }
 }
 
 /// One preferences-held deferred automatic preparation, translated into the

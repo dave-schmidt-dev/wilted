@@ -339,6 +339,18 @@ final class WatchBridgeTests: XCTestCase {
         XCTAssertEqual(rig.target.performed, [.pause], "the live source is playing even with nothing published")
     }
 
+    func testWatchPlayWithNothingLoadedUsesLibraryResume() async throws {
+        let currentEpisodes: [NowPlaying?] = [nil, nowPlaying(isPlaying: false, positionSeconds: 600)]
+        for currentEpisode in currentEpisodes {
+            let rig = await makeReadyRig(nowPlaying: currentEpisode)
+
+            let reply = try await send(.toggle, on: rig)
+
+            XCTAssertEqual(reply.value[WatchBridge.okKey] as? Bool, true)
+            XCTAssertEqual(rig.target.performed, [.resume])
+        }
+    }
+
     // MARK: Publishing
 
     func testStartingASleepTimerRepublishesUntilDate() async throws {

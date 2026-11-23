@@ -54,7 +54,7 @@ final class MorningReportBuilderTests: XCTestCase {
         return MorningReportBuilder(
             store: store, synthesize: stub(calls, seconds: seconds),
             coordinates: { located ? (35.0, -80.0) : nil }, forecast: { _, _ in periods },
-            headlines: { _ in news }, calendar: Calendar(identifier: .gregorian))
+            headlines: { _, _ in news }, calendar: Calendar(identifier: .gregorian))
     }
 
     private func headlineCount(_ text: String) -> Int { text.components(separatedBy: "Headline").count - 1 }
@@ -143,7 +143,7 @@ final class MorningReportBuilderTests: XCTestCase {
         let builder = MorningReportBuilder(
             store: store, synthesize: stub(calls) { _ in 2 },
             coordinates: { (35.0, -80.0) }, forecast: { _, _ in [MorningReportForecastPeriod(name: "Today", text: huge)] },
-            headlines: { _ in MorningReportHeadlines(hasNewsFeeds: true, titles: [huge]) }, calendar: Calendar(identifier: .gregorian))
+            headlines: { _, _ in MorningReportHeadlines(hasNewsFeeds: true, titles: [huge]) }, calendar: Calendar(identifier: .gregorian))
         _ = await builder.build(now: Date(timeIntervalSince1970: 1_800_000_000))
         XCTAssertFalse(calls.all.isEmpty)
         for text in calls.all { XCTAssertLessThanOrEqual(text.count, MorningReportBuilder.maximumScriptCharacters) }
@@ -171,7 +171,7 @@ final class MorningReportBuilderTests: XCTestCase {
         func racing() -> MorningReportBuilder {
             MorningReportBuilder(
                 store: store, synthesize: stub(Calls(), seconds: { _ in 2 }),
-                coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods }, headlines: { _ in MorningReportHeadlines(hasNewsFeeds: true, titles: ["Headline1 a b c"]) },
+                coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods }, headlines: { _, _ in MorningReportHeadlines(hasNewsFeeds: true, titles: ["Headline1 a b c"]) },
                 calendar: Calendar(identifier: .gregorian), afterPrecheck: { await barrier.arrive() })
         }
         let a = racing(), b = racing()
@@ -212,13 +212,92 @@ final class MorningReportBuilderTests: XCTestCase {
         XCTAssertEqual(headlineCount(text), 2)
     }
 
-    func testNoNewsFeedsYieldsAWeatherOnlyReportThatSaysSo() async throws {
+    func testNoHeadlineFeedsYieldsAWeatherOnlyReportThatSaysSo() async throws {
         let (store, _) = try makeStore()
         let calls = Calls()
         let outcome = await builder(store, calls, news: MorningReportHeadlines(hasNewsFeeds: false, titles: []))
             .build(now: Date(timeIntervalSince1970: 1_800_000_000))
         guard case .published = outcome else { return XCTFail("expected a report, got \(outcome)") }
-        XCTAssertTrue(try XCTUnwrap(calls.all.first).contains("No news feeds are set up"))
+        XCTAssertTrue(try XCTUnwrap(calls.all.first).contains("No headline feeds are set up"))
+    }
+
+    func testFreshHeadlinesComeFromTheFeedEvenWhenPostsAreNotSavedAsArticles() async throws {
+        let (store, _) = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_767_704_400)
+        let feedURL = URL(string: "https://headlines.example.test/rss.xml")!
+        let feed = try ArticleFeed(canonicalURL: feedURL, title: "Daily headlines", createdAt: Timestamp(now))
+        try await store.save(articleFeed: feed)
+        try await store.save(isNews: true, feedID: feed.itemID)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(now)))
+
+        let unsubscribed = try ArticleFeed(
+            canonicalURL: URL(string: "https://headlines.example.test/unsubscribed.xml")!,
+            title: "Unsubscribed headlines", createdAt: Timestamp(now))
+        try await store.save(articleFeed: unsubscribed)
+        try await store.save(isNews: true, feedID: unsubscribed.itemID)
+        let xml = "<rss version=\"2.0\"><channel><title>Daily headlines</title>"
+            + "<item><guid>fresh</guid><title>Fresh story</title><link>https://headlines.example.test/fresh</link>"
+            + "<pubDate>Tue, 06 Jan 2026 12:30:00 GMT</pubDate></item>"
+            + "<item><guid>old</guid><title>Old story</title><link>https://headlines.example.test/old</link>"
+            + "<pubDate>Tue, 06 Jan 2026 10:00:00 GMT</pubDate></item>"
+            + "<item><guid>future</guid><title>Future story</title><link>https://headlines.example.test/future</link>"
+            + "<pubDate>Tue, 06 Jan 2026 13:30:00 GMT</pubDate></item>"
+            + "<item><guid>sports</guid><title>Premier League final</title><link>https://headlines.example.test/sports</link>"
+            + "<pubDate>Tue, 06 Jan 2026 12:45:00 GMT</pubDate></item>"
+            + "</channel></rss>"
+        let client = PodcastFeedClient(loader: FixedBodyLoader(body: Data(xml.utf8)))
+        let calls = Calls()
+        let periods = self.periods
+        let builder = MorningReportBuilder(
+            store: store, synthesize: stub(calls) { _ in 2 },
+            coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods }, feedClient: client,
+            topics: HeadlineTopicFilter(skipSports: true),
+            calendar: Calendar(identifier: .gregorian))
+
+        let outcome = await builder.build(now: now)
+        guard case let .published(_, _, _, count, _) = outcome else { return XCTFail("expected a report, got \(outcome)") }
+        let text = try XCTUnwrap(calls.all.first)
+        XCTAssertEqual(count, 1)
+        XCTAssertTrue(text.contains("Fresh story"), text)
+        XCTAssertFalse(text.contains("Old story"), text)
+        XCTAssertFalse(text.contains("Future story"), "future posts are outside the report window")
+        XCTAssertFalse(text.contains("Premier League"), "saved topic exclusions apply to the report")
+        let savedArticles = try await store.articles()
+        XCTAssertTrue(savedArticles.isEmpty, "headline-only posts are not saved as articles")
+    }
+
+    func testSharedHeadlineReaderKeepsTheBulletinFiftyPostPerFeedCap() async throws {
+        let (store, _) = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let feedURL = URL(string: "https://headlines.example.test/cap.xml")!
+        let feed = try ArticleFeed(canonicalURL: feedURL, title: "Daily headlines", createdAt: Timestamp(now))
+        try await store.save(articleFeed: feed)
+        try await store.save(isNews: true, feedID: feed.itemID)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(now)))
+
+        let items = (1...51).map { index in
+            "<item><guid>post-\(index)</guid><title>Story \(index)</title>"
+                + "<link>https://headlines.example.test/story-\(index)</link></item>"
+        }.joined()
+        let xml = "<rss version=\"2.0\"><channel><title>Daily headlines</title>\(items)</channel></rss>"
+        let client = PodcastFeedClient(loader: FixedBodyLoader(body: Data(xml.utf8)))
+
+        let supply = try await NewsHeadlineCandidateReader.read(in: store, using: client)
+        XCTAssertEqual(supply.candidates.count, 50)
+    }
+
+    func testHeadlineFeedEligibilityUsesSubscriptionIdentityWhenEpisodeVisibilityIsOff() async throws {
+        let (store, _) = try makeStore()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let feed = try ArticleFeed(
+            canonicalURL: URL(string: "https://headlines.example.test/hidden-episodes.xml")!,
+            title: "Daily headlines", createdAt: Timestamp(now))
+        try await store.save(articleFeed: feed)
+        try await store.save(isNews: true, feedID: feed.itemID)
+        try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: Timestamp(now), enabled: false))
+
+        let feeds = try await NewsHeadlineCandidateReader.headlineFeeds(in: store)
+        XCTAssertEqual(feeds.map(\.itemID), [feed.itemID])
     }
 
     func testNothingToSayPublishesNothingAndGivesAReason() async throws {
@@ -246,7 +325,7 @@ final class MorningReportBuilderTests: XCTestCase {
         let builder = MorningReportBuilder(
             store: store, synthesize: stub(Calls()) { _ in 2 },
             coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods },
-            headlines: { _ in
+            headlines: { _, _ in
                 throw URLError(
                     .notConnectedToInternet,
                     userInfo: [NSURLErrorFailingURLStringErrorKey: "https://news.example.test/x?token=SECRET-TOKEN"])
@@ -265,7 +344,7 @@ final class MorningReportBuilderTests: XCTestCase {
         let builder = MorningReportBuilder(
             store: store, synthesize: { _, _ in throw SpeechIPCError.timeout("speech") },
             coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods },
-            headlines: { _ in news }, calendar: Calendar(identifier: .gregorian))
+            headlines: { _, _ in news }, calendar: Calendar(identifier: .gregorian))
         let outcome = await builder.build(now: Date(timeIntervalSince1970: 1_800_000_000))
         guard case let .skipped(reason) = outcome else { return XCTFail("expected a skip, got \(outcome)") }
         XCTAssertEqual(reason, "No report published: the speech engine is not available.")
@@ -278,7 +357,7 @@ final class MorningReportBuilderTests: XCTestCase {
         let builder = MorningReportBuilder(
             store: store, synthesize: stub(Calls()) { _ in 2 },
             coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods },
-            headlines: { _ in throw PlainFailure() }, calendar: Calendar(identifier: .gregorian))
+            headlines: { _, _ in throw PlainFailure() }, calendar: Calendar(identifier: .gregorian))
         let outcome = await builder.build(now: Date(timeIntervalSince1970: 1_800_000_000))
         guard case let .skipped(reason) = outcome else { return XCTFail("expected a skip, got \(outcome)") }
         XCTAssertEqual(reason, "No report published: something went wrong while building it. Try Build now.")

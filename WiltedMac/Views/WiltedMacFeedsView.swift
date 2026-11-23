@@ -192,25 +192,26 @@ struct WiltedMacFeedsView: View {
         let waitingIDs = policyBoard.waitingEpisodeIDs.intersection(visibleIDs)
         let articles = model.feedsOfferedArticles
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-            HStack {
-                Text("New episodes")
-                    .wiltedFont(.title)
-                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                Spacer()
-                Text("\(visible.count + articles.count)")
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-feeds-count")
-            }
-            WiltedMacEpisodeListSortControls(
-                label: "Feeds", identifierPrefix: "wilted-feeds",
-                sort: inboxSort, direction: inboxDirection
-            )
             if visible.isEmpty && articles.isEmpty {
                 Text("No new episodes.")
                     .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-feeds-empty")
+            } else {
+                HStack {
+                    Text("New episodes")
+                        .wiltedFont(.title)
+                        .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    Spacer()
+                    Text("\(visible.count + articles.count)")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-feeds-count")
+                }
+                WiltedMacEpisodeListSortControls(
+                    label: "Feeds", identifierPrefix: "wilted-feeds",
+                    sort: inboxSort, direction: inboxDirection
+                )
             }
             if !visible.isEmpty {
                 if !waitingIDs.isEmpty {
@@ -325,6 +326,12 @@ struct WiltedMacFeedsView: View {
                     .wiltedFont(.title)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 WiltedMacHelpButton(content: refreshHelp, identifier: "wilted-podcast-feeds-policy")
+                if isLoadingFeedSettings {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel("Loading feed settings")
+                        .accessibilityIdentifier("wilted-feed-settings-loading")
+                }
                 Spacer()
             }
             if model.withheldPodcastEpisodeCount > 0 {
@@ -378,6 +385,11 @@ struct WiltedMacFeedsView: View {
         .accessibilityIdentifier(WiltedScreenCopy.feedsIdentifier)
         // The window's board keeps each feed's stored policy across visits and starts its
         // background refresh when subscriptions exist, including subscription-list changes.
+    }
+
+    private var isLoadingFeedSettings: Bool {
+        guard !model.subscriptions.isEmpty, policyBoard.loadFailureMessage == nil else { return false }
+        return policyBoard.isLoading
     }
 
     /// What one feed currently contributes, in words rather than a bare count,

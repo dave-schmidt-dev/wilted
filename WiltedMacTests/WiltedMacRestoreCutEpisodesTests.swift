@@ -64,13 +64,13 @@ final class WiltedMacRestoreCutEpisodesTests: XCTestCase {
         try await eventually("the cut to appear after marking ad-free") {
             model.prepareAgainCandidates[cut.episodeID.rawValue] != nil
         }
-        XCTAssertEqual(board.restorableCutCount(cut.feedID.rawValue), 1)
+        XCTAssertEqual(board.restorableCutEpisodeIDs(cut.feedID.rawValue).count, 1)
 
         XCTAssertTrue(board.setAdFree(false, for: cut.feedID.rawValue))
         try await eventually("the cut to leave after clearing the mark") {
             model.prepareAgainCandidates[cut.episodeID.rawValue] == nil
         }
-        XCTAssertEqual(board.restorableCutCount(cut.feedID.rawValue), 0)
+        XCTAssertEqual(board.restorableCutEpisodeIDs(cut.feedID.rawValue).count, 0)
     }
 
     /// A read that began while the show was marked must not land over the read
@@ -176,7 +176,12 @@ final class WiltedMacRestoreCutEpisodesTests: XCTestCase {
         try await gate.admit(sequence: 1)
         ownsGate = true
 
-        model.restoreCutEpisodes(feedID: "feed-a")
+        let confirmedIDs = [first.id, second.id]
+        model.prepareAgainCandidates[second.id] = nil
+        XCTAssertFalse(model.restoreCutEpisodes(feedID: "feed-a", candidateIDs: confirmedIDs))
+        XCTAssertTrue(model.podcastPreparationTasks.isEmpty, "a changed confirmed set starts no restore")
+        model.prepareAgainCandidates[second.id] = try candidate(second.id, isCut: true)
+        XCTAssertTrue(model.restoreCutEpisodes(feedID: "feed-a", candidateIDs: confirmedIDs))
         XCTAssertEqual(Set(model.podcastPreparationTasks.keys), [first.id, second.id])
 
         let store = try XCTUnwrap(model.store)
@@ -195,8 +200,8 @@ final class WiltedMacRestoreCutEpisodesTests: XCTestCase {
     // MARK: Wording
 
     func testRestoreButtonTitlesRowLineMenuAndConfirmationWording() {
-        XCTAssertEqual(WiltedMacShowSettingsView.restoreCutEpisodesTitle(count: 1), "Restore 1 Cut Episode")
-        XCTAssertEqual(WiltedMacShowSettingsView.restoreCutEpisodesTitle(count: 3), "Restore 3 Cut Episodes")
+        XCTAssertEqual(WiltedMacRestoreCutEpisodesControl.title(count: 1), "Restore 1 Cut Episode")
+        XCTAssertEqual(WiltedMacRestoreCutEpisodesControl.title(count: 3), "Restore 3 Cut Episodes")
         XCTAssertEqual(
             WiltedMacPrepareAgainRow(phase: .preparing, restoringFullEpisode: true).label,
             "Restoring the full episode"
@@ -208,7 +213,7 @@ final class WiltedMacRestoreCutEpisodesTests: XCTestCase {
         XCTAssertEqual(
             WiltedMacModel.prepareAgainConfirmationMessage,
             "Wilted downloads the original audio where needed and prepares each episode with the current engine. "
-                + "Shows with Remove ads set to Off (Custom) get their full episodes back. Your place in each is kept."
+                + "Shows marked as already ad-free get their full episodes back. Your place in each is kept."
         )
     }
 

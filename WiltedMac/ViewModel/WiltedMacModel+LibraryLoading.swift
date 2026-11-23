@@ -20,6 +20,17 @@ extension WiltedMacModel {
     struct LibraryEpisodeRows: RandomAccessCollection {
         let values: [WiltedMacEpisode]
         let readEpoch: UInt64
+        let latestProviderReplies: [AdLabellerProvider: WiltedMacProviderEpisodeReply]
+
+        init(
+            values: [WiltedMacEpisode], readEpoch: UInt64,
+            latestProviderReplies: [AdLabellerProvider: WiltedMacProviderEpisodeReply] = [:]
+        ) {
+            self.values = values
+            self.readEpoch = readEpoch
+            self.latestProviderReplies = latestProviderReplies
+        }
+
         var startIndex: Int { values.startIndex }
         var endIndex: Int { values.endIndex }
         subscript(position: Int) -> WiltedMacEpisode { values[position] }
@@ -51,6 +62,7 @@ extension WiltedMacModel {
                 }
                 continue
             }
+            providerEpisodeReplies = values.episodes.latestProviderReplies
             articles = values.articles
             subscriptions = values.subscriptions
             pruneNavigationState()
@@ -254,6 +266,12 @@ extension WiltedMacModel {
             } ?? false
             // Only prepared audio can be stale, so an unprepared episode costs no routing check.
             let digestInForce = outcome == nil ? nil : digestInForceLookup(episode.feedID, episode.enclosureURL)
+            let history = runsByItem[episode.itemID] ?? []
+            let readyRevisionID = revision?.revision.revisionID
+            let hasReadyOutcome = outcome != nil && readyRevisionID == outcome?.revisionID && outcome?.eligibility != .invalid
+            let statusRun = hasReadyOutcome
+                ? WiltedMacPreparationStamp.preparedRun(outcome: outcome, readyRevisionID: readyRevisionID, runs: history)
+                : runs[episode.itemID]
             episodeValues.append(WiltedMacEpisode(
                 id: episode.itemID.rawValue, title: episode.title, feedTitle: feedTitle,
                 summary: Self.episodeSummary(notes: episode.notes, fallback: episode.author ?? feedTitle),
@@ -268,15 +286,15 @@ extension WiltedMacModel {
                 downloadState: downloadState,
                 preparationState: Self.preparationState(
                     outcome: outcome,
-                    run: runs[episode.itemID],
-                    readyRevisionID: revision?.revision.revisionID,
+                    run: statusRun,
+                    readyRevisionID: readyRevisionID,
                     transcript: transcript
                 ),
                 isReadyMediaAvailable: isReadyMediaAvailable,
                 preparationStamp: WiltedMacPreparationStamp.make(
                     outcome: outcome,
-                    readyRevisionID: revision?.revision.revisionID,
-                    runs: runsByItem[episode.itemID] ?? [],
+                    readyRevisionID: readyRevisionID,
+                    runs: history,
                     labelledDigestInForce: digestInForce,
                     labellingWait: labellingWaitsBySubject[episode.itemID.rawValue]
                 ),
@@ -299,7 +317,11 @@ extension WiltedMacModel {
         )
         await refreshEpisodesToPrepareAgain(
             from: store, readEpoch: readEpoch, feedIDs: allSubscriptions.map { $0.feedID.rawValue })
-        return (articleValues, LibraryEpisodeRows(values: projectedEpisodeValues, readEpoch: readEpoch),
+        return (articleValues, LibraryEpisodeRows(
+            values: projectedEpisodeValues,
+            readEpoch: readEpoch,
+            latestProviderReplies: WiltedMacProviderEpisodeReply.latestByProvider(in: snapshot.preparationRuns)
+        ),
                 allSubscriptionValues.map(applyingPendingFeedRename).map(applyingPendingFeedEnabled))
     }
 
@@ -426,17 +448,9 @@ extension WiltedMacModel {
             return .notPrepared
         }
 
-        if transcript == nil || transcript?.availability == .absent || transcript?.timing == TranscriptTiming.none {
-            return .prepared(summary: "Audio ready · Transcript unavailable")
-        }
-        switch transcript?.timing {
-        case .published:
-            return .prepared(summary: preparedSummary(of: run, timing: .published))
-        case .aligned:
-            return .prepared(summary: preparedSummary(of: run, timing: .aligned))
-        case nil, .some(.none):
-            return .prepared(summary: preparedSummary(of: run, timing: .none))
-        }
+        let timing = transcript?.timing ?? .none
+        return .prepared(summary: preparedSummary(
+            of: run, timing: timing, hasText: transcript?.text?.isEmpty == false))
     }
 
     nonisolated static func startupFailure(canRetry: Bool) -> WiltedMacStartupFailure {
@@ -496,6 +510,7 @@ extension WiltedMacModel {
                 if values.episodes.readEpoch < self.feedRenameReadEpoch { await self.reloadLibraryRows() }
                 return
             }
+            self.providerEpisodeReplies = values.episodes.latestProviderReplies
             self.articles = values.articles
             self.subscriptions = values.subscriptions
             self.dismissedEpisodes = (try? await self.loadDismissedEpisodes(from: store)) ?? self.dismissedEpisodes

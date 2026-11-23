@@ -14,7 +14,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     private var showsTemplate: CPListTemplate?
     /// The show whose episodes are open, if any, and its list.
     private var showTemplate: CPListTemplate?
-    private var openShowTitle: String?
+    private var openShow: CarShowRow?
     private var model: LibraryAppModel?
     private var player: LibraryPlayer?
     private var subscriptions = Set<AnyCancellable>()
@@ -62,7 +62,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         listTemplate = nil
         showsTemplate = nil
         showTemplate = nil
-        openShowTitle = nil
+        openShow = nil
         model = nil
         player = nil
         subscriptions.removeAll()
@@ -100,7 +100,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             rows: model.queued, onPhone: model.preparedIDs.onPhone, progress: model.progress,
             finished: model.finished, limit: limit, order: model.listOrder)
         guard !shows.isEmpty else {
-            template.emptyViewTitleVariants = [CarShowList.emptyMessage]
+            template.emptyViewTitleVariants = [CarEpisodeList.emptyMessage(forInitialLoad: CarEpisodeList.isInitialLoad(model))]
             template.updateSections([])
             return
         }
@@ -110,16 +110,17 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 
     /// Keeps an open show's list current; closes it when the show has nothing left on the phone.
     private func renderOpenShow(model: LibraryAppModel, player: LibraryPlayer, limit: Int) {
-        guard let template = showTemplate, let title = openShowTitle else { return }
+        guard let template = showTemplate, let show = openShow else { return }
         let list = CarShowList.episodes(
-            of: title, rows: model.queued, onPhone: model.preparedIDs.onPhone,
+            of: show.identity, rows: model.queued, onPhone: model.preparedIDs.onPhone,
             playingID: player.item?.entryID, progress: model.progress,
-            finished: model.finished, limit: limit, order: model.listOrder)
+            finished: model.finished, limit: limit, isLoading: CarEpisodeList.isInitialLoad(model), order: model.listOrder)
         apply(list, to: template)
-        if case .empty = list.content, interfaceController?.topTemplate === template {
+        if case .empty(let message) = list.content, message != CarEpisodeList.loadingMessage,
+           interfaceController?.topTemplate === template {
             interfaceController?.popTemplate(animated: true, completion: nil)
             showTemplate = nil
-            openShowTitle = nil
+            openShow = nil
         }
     }
 
@@ -132,7 +133,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         }
         item.handler = { [weak self] _, completion in
             MainActor.assumeIsolated {
-                self?.openShow(show.title)
+                self?.openShow(show)
                 completion()
             }
         }
@@ -140,15 +141,15 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
     }
 
     /// Pushes the show's episodes: tab bar, then this list, then Now Playing, three deep at most.
-    private func openShow(_ title: String) {
+    private func openShow(_ show: CarShowRow) {
         guard let interfaceController, let model, let player else { return }
         // Replace, never stack, a list of another show that is still open.
         if let existing = showTemplate, interfaceController.topTemplate === existing {
             interfaceController.popTemplate(animated: false, completion: nil)
         }
-        let template = CPListTemplate(title: title, sections: [])
+        let template = CPListTemplate(title: show.title, sections: [])
         showTemplate = template
-        openShowTitle = title
+        openShow = show
         renderOpenShow(model: model, player: player, limit: max(1, CPListTemplate.maximumItemCount))
         for url in artworkItems.keys { loadArtwork(url) }
         interfaceController.pushTemplate(template, animated: true, completion: nil)
@@ -221,6 +222,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
             model.$listOrder.map { _ in () }.eraseToAnyPublisher(),
             model.$lastSynchronizedAt.map { _ in () }.eraseToAnyPublisher(),
             model.$isRefreshing.map { _ in () }.eraseToAnyPublisher(),
+            model.$localStateLoaded.map { _ in () }.eraseToAnyPublisher(),
             player.$item.map { _ in () }.eraseToAnyPublisher(),
             model.$playbackCommand.map { _ in () }.eraseToAnyPublisher(),
         ]
@@ -239,7 +241,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
         guard aTemplate === showTemplate,
               interfaceController?.templates.contains(where: { $0 === aTemplate }) != true else { return }
         showTemplate = nil
-        openShowTitle = nil
+        openShow = nil
     }
 
     // MARK: Now Playing

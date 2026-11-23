@@ -164,7 +164,7 @@ final class LibraryMacOrderSurfacesTests: XCTestCase {
         rig.model.listOrder = .mac
 
         let list = CarShowList.episodes(
-            of: "Show B", rows: rig.model.queued, onPhone: rig.model.preparedIDs.onPhone,
+            of: .source(id("src-b")), rows: rig.model.queued, onPhone: rig.model.preparedIDs.onPhone,
             playingID: nil, progress: rig.model.progress, finished: rig.model.finished,
             limit: 12, order: rig.model.listOrder)
         XCTAssertEqual(episodeIDs(list), ["b1", "b2"])
@@ -214,7 +214,7 @@ final class LibraryMacOrderSurfacesTests: XCTestCase {
         XCTAssertEqual(rig.model.listOrder, .playOrder)
 
         let list = CarShowList.episodes(
-            of: "Show B", rows: rig.model.queued, onPhone: rig.model.preparedIDs.onPhone,
+            of: .source(id("src-b")), rows: rig.model.queued, onPhone: rig.model.preparedIDs.onPhone,
             playingID: nil, progress: rig.model.progress, finished: rig.model.finished,
             limit: 12, order: rig.model.listOrder)
         XCTAssertEqual(episodeIDs(list), ["b2", "b1"])

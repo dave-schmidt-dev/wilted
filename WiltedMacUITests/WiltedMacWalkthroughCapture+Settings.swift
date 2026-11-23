@@ -1,8 +1,7 @@
 import XCTest
 
 extension WiltedMacWalkthroughCapture {
-    /// Settings: appearance, podcast automation, sync, and the one
-    /// automation pair that refuses to run.
+    /// Settings, including which episodes require local transcription.
     func captureSettings(into root: URL) throws {
         // The library publisher's card, as a Development build shows it, from its no-network fixture.
         let app = launch(["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts",
@@ -12,13 +11,8 @@ extension WiltedMacWalkthroughCapture {
         XCTAssertTrue(element(app, "wilted-mac-settings").waitForExistence(timeout: 10))
         try write(app, "7.1-settings-with-playback", into: root)
 
-        // The one settings state that refuses work. Ad removal is timed from
-        // an aligned local pass, so pairing it with No local speech-to-text
-        // makes every preparation fail before any model time is spent, and
-        // neither control is disabled or rewritten -- the notice is all the
-        // owner gets, which is why the walkthrough shows it rather than
-        // describing it. A fixture launch has its own defaults domain, so
-        // driving the picker here cannot reach the owner's own choice.
+        // The fixture's Remove ads setting is on. Only episodes that need an
+        // ad check require local speech-to-text.
         element(app, "wilted-settings-tab-ads-providers").click()
         XCTAssertTrue(element(app, "wilted-automation-ad-marker").waitForExistence(timeout: 10))
         element(app, "wilted-settings-tab-listening").click()
@@ -28,7 +22,11 @@ extension WiltedMacWalkthroughCapture {
         let noLocalSTT = app.menuItems["No local speech-to-text"]
         XCTAssertTrue(noLocalSTT.waitForExistence(timeout: 10))
         noLocalSTT.click()
-        XCTAssertTrue(element(app, "wilted-automation-transcript-conflict").waitForExistence(timeout: 10))
+        let explanation = element(app, "wilted-automation-transcript-explanation")
+        XCTAssertTrue(explanation.waitForExistence(timeout: 10))
+        let copy = [explanation.label, explanation.value as? String ?? ""].joined(separator: " ")
+        XCTAssertTrue(copy.contains("Episodes that need an ad check"), copy)
+        XCTAssertTrue(copy.contains("can still prepare"), copy)
         try write(app, "7.2-settings-transcript-conflict", into: root)
         app.terminate()
     }

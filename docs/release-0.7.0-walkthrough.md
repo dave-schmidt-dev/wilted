@@ -49,7 +49,7 @@ Mark each line pass, fail, or skip. A fail that crashes, loses data or breaks so
 - [ ] Open a feed's settings, set Auto keep On and a Kept limit: the resolved values show beside Use global (A20).
 - [ ] With Processing Manual and Auto prepare On, the settings explain why Auto prepare is suppressed (A10).
 - [ ] Open a feed's rules sheet from the gear, add a Keep or Skip pattern, watch the preview, and read the audio-deletion warning beside Apply. Undo after Apply if you try it (A22, F29, C40).
-- [ ] Toggle a feed's News setting twice quickly: the last choice sticks (F37).
+- [ ] Turn on **Headlines only** for an article feed. Its posts leave the Keep/Skip inbox and its Match rules disappear. Turn it off again and refresh the feed, and check that its undecided posts and rules return. Toggle twice quickly and check that the last choice sticks (F37).
 - [ ] Unsubscribe a test feed: the dialog says its downloaded audio is deleted, and other feeds keep their artwork (C43, F35).
 
 ## D. Mac Playlists
@@ -67,6 +67,7 @@ Mark each line pass, fail, or skip. A fail that crashes, loses data or breaks so
 
 ## F. Prepared episodes (listen)
 
+- [ ] Prepare an episode with a known sponsor break and **Remove ads** on. Check its transcript and listen across the cut. Turn **Remove ads** off and use **Restore Full Episode** on the cut episode. Verify the original break plays.
 - [ ] On a freshly prepared episode, pauses longer than half a second are shortened, and a saved position resumes on speech (A1).
 - [ ] On a fresh AI Daily Brief episode, sponsor spots at ad-break edges are gone and the show is intact (F5, F8, F9; also decision 4).
 - [ ] On a long episode (for example Giant Bombcast), ads are cut. If the review could not finish, the original audio plays and the info popover says why (F4, F41, C2, C20).
@@ -108,7 +109,7 @@ Mark each line pass, fail, or skip. A fail that crashes, loses data or breaks so
 - [x] File > Prepare Again With Current Engine shows (0) now that every episode has been through the current engine; right-click a Larder row has no Prepare Again. (2026-10-26: (0) confirmed; right-click not yet checked.)
 - [x] Mac Now Playing: press **Ad here** during an ad you can hear. After a cut, **Good cut** and **Not an ad** show for 30 s. Each press confirms at once with Undo. (2026-10-26: Good cut and two Ad here presses on The Weekly Show recorded and mapped.)
 - [ ] iPhone full player: the same three buttons. A press reaches the Mac after about 8 s plus iCloud.
-- [ ] Settings > Ad feedback on the Mac lists every press as counted, with where it falls in the episode. Change one press's label, remove one, then restore it from Removed. (2026-10-26: the earlier accept/dismiss version passed; this is the recheck after `fff3eab3`.)
+- [ ] Settings > Ad feedback on the Mac lists every press as counted, with where it falls in the episode. Mark one report handled and check that the number to review drops by one. Change its label, remove it, then restore it from Removed. (2026-10-26: the earlier accept/dismiss version passed; this is the recheck after `fff3eab3`.)
 - [ ] Pause an episode, then Mark completed: it is marked completed and nothing else starts. Mark completed while playing still starts the next Larder episode (`efe9e256`).
 - [ ] A newly prepared episode's transcript has punctuation and capitals, and its ad cuts land on the sponsor's words: parakeet-tdt-0.6b-v3 now transcribes for both (engine v13, `4b789647`, joined 0.7.0 at David's request 2026-10-27). An app installed before it still sends 1.1b; since `68df75e8` the worker serves those runs with v3 instead of refusing them.
 - [ ] File > Prepare Again With Current Engine now counts every episode prepared before v13; preparing one again gives it the v3 transcript and new cuts.

@@ -69,13 +69,6 @@ struct WiltedMacPlaylistRulesSheet: View {
             expressionField
                 .disabled(isSaving)
             previewArea
-            if let text = model.playlists.ruleReadErrors[playlist.id] ?? editor.validationProblem ?? errorText {
-                Text(text)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.error, scheme: colorScheme))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("wilted-playlist-rules-error")
-            }
             Divider()
             HStack {
                 if isSaving {
@@ -142,9 +135,16 @@ struct WiltedMacPlaylistRulesSheet: View {
 
     private var expressionField: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-            Text("Match expression")
-                .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            HStack(spacing: WiltedTheme.Spacing.xSmall) {
+                Text("Match expression")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                WiltedMacHelpButton(
+                    content: WiltedMacHelpContent(
+                        title: "Match expression",
+                        text: "Rules are numbered above; combine them with AND, OR, NOT and parentheses."),
+                    identifier: "wilted-playlist-rule-help")
+            }
             TextField("e.g. (1 OR 2) AND NOT 3", text: Binding(
                 get: { editor.expression },
                 set: { editor.editExpression($0); preview = nil }))
@@ -152,9 +152,13 @@ struct WiltedMacPlaylistRulesSheet: View {
                 .textFieldStyle(.roundedBorder)
                 .accessibilityLabel("Match expression")
                 .accessibilityIdentifier("wilted-playlist-rule-expression")
-            Text("Rules are numbered above; combine them with AND, OR, NOT and parentheses.")
-                .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            if let text = model.playlists.ruleReadErrors[playlist.id] ?? editor.validationProblem ?? errorText {
+                Text(text)
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.error, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("wilted-playlist-rules-error")
+            }
             if !editor.formulaIsGenerated, !editor.unusedRuleNumbers.isEmpty {
                 Text("Not used by the expression: rule "
                     + editor.unusedRuleNumbers.map(String.init).joined(separator: ", ") + ".")

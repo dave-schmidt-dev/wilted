@@ -14,10 +14,10 @@ struct LibraryAddSheet: View {
     @Environment(\.colorScheme) private var colorScheme
     @FocusState private var isFieldFocused: Bool
 
-    init(model: LibraryAppModel, onDone: @escaping () -> Void) {
+    init(model: LibraryAppModel, onDone: @escaping () -> Void, session: LibraryAddSession? = nil) {
         self.model = model
         self.onDone = onDone
-        _session = StateObject(wrappedValue: model.makeAddSession())
+        _session = StateObject(wrappedValue: session ?? model.makeAddSession())
     }
 
     var body: some View {
@@ -61,6 +61,9 @@ struct LibraryAddSheet: View {
         .onDisappear {
             session.cancel()
             model.clearFinishedAdds()
+        }
+        .onChange(of: model.addDraft) { _, draft in
+            if draft.isEmpty { session.clearForEmptyDraft() }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-add-sheet")
@@ -142,15 +145,11 @@ struct LibraryAddSheet: View {
                     showAction(row, feed: feed, following: following)
                 }
             case let .link(url):
-                // The phone cannot tell what a link is, so the choice sits under it.
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                     titles
-                    HStack(spacing: WiltedTheme.Spacing.medium) {
-                        button("Article", enabled: model.canAdd(.article(url)), label: "Add \(row.title) as an article",
-                               identifier: "wilted-add-article-\(row.id)") { await session.send(row, as: .article) }
-                        button("Podcast feed", enabled: model.canAdd(.subscribe(url)),
-                               label: "Subscribe to \(row.title) as a podcast feed",
-                               identifier: "wilted-add-feed-\(row.id)") { await session.send(row, as: .podcastFeed) }
+                    if row.requestPhase == nil {
+                        button("Add", enabled: model.canAdd(.link(url)), label: "Add \(row.title) on your Mac",
+                               identifier: "wilted-add-link-\(row.id)") { await session.send(row) }
                     }
                 }
             }
@@ -163,18 +162,18 @@ struct LibraryAddSheet: View {
 
     @ViewBuilder
     private func showAction(_ row: LibraryAddSession.Row, feed: URL, following: Bool) -> some View {
-        if row.requestPhase != nil || following {
-            // Sent and applied read like the Mac's row; the request's own words are in the list below.
-            let isSent = row.requestPhase == .sent
-            Label(isSent ? "Sent" : "Following", systemImage: isSent ? "paperplane" : "checkmark.circle")
+        if following && row.requestPhase == nil {
+            Label("Following", systemImage: "checkmark.circle")
                 .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget, alignment: .trailing)
-                .accessibilityLabel(isSent ? "Sent to your Mac: \(row.title)" : "Following \(row.title)")
+                .accessibilityLabel("Following \(row.title)")
                 .accessibilityIdentifier("wilted-add-following-\(row.id)")
-        } else {
+        } else if row.requestPhase == nil {
             button("Subscribe", enabled: model.canAdd(.subscribe(feed)), label: "Subscribe to \(row.title)",
                    identifier: "wilted-add-subscribe-\(row.id)") { await session.send(row) }
+        } else {
+            EmptyView()
         }
     }
 
@@ -216,10 +215,18 @@ struct LibraryAddSheet: View {
                     .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                     .lineLimit(2)
-                Text(add.isSubscribe ? "Podcast" : "Article")
+                Text(add.kindLabel)
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                statusLine(model.addStatus(for: add), identifier: "wilted-add-request-status-\(add.id)")
+                HStack(alignment: .firstTextBaseline, spacing: WiltedTheme.Spacing.small) {
+                    statusLine(model.addStatus(for: add), identifier: "wilted-add-request-status-\(add.id)")
+                    if case .rejected = add.phase {
+                        Button("Try again") { Task { await model.retryAdd(add.id) } }
+                            .wiltedFont(.utility)
+                            .accessibilityLabel("Try adding \(add.title) again")
+                            .accessibilityIdentifier("wilted-add-retry-\(add.id)")
+                    }
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             if add.isFinished {

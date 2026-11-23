@@ -385,31 +385,36 @@ struct WiltedMacPlaybackShareLink: View {
     let model: WiltedMacModel
 
     var body: some View {
+        #if canImport(WiltedProducer)
+        WiltedMacShareComposer(model: model)
+        #else
+        WiltedMacPlaybackShareItems(model: model)
+        #endif
+    }
+}
+
+struct WiltedMacPlaybackShareItems: View {
+    let model: WiltedMacModel
+
+    var body: some View {
         if let shareURL = model.currentPlaybackShareURL {
             ShareLink(
                 item: shareURL,
                 subject: Text(model.currentPlaybackShareTitle),
                 message: Text(model.currentPlaybackShareMessage)
-            ) { Image(systemName: "square.and.arrow.up") }
+            ) { Text("Share link") }
             .help("Share")
-            .accessibilityLabel("Share")
-            .accessibilityIdentifier("wilted-player-share")
         } else if let shareText = model.currentPlaybackShareText {
             ShareLink(
                 item: shareText,
                 subject: Text(model.currentPlaybackShareTitle),
                 message: Text(model.currentPlaybackShareMessage)
             ) {
-                Image(systemName: "square.and.arrow.up")
+                Text("Share title and show")
             }
             .help("Only title and show text is shared.")
-            .accessibilityLabel("Share")
             .accessibilityHint("Only title and show text is shared.")
-            .accessibilityIdentifier("wilted-player-share")
         }
-        #if canImport(WiltedProducer)
-        WiltedMacShareComposer(model: model)
-        #endif
     }
 }
 

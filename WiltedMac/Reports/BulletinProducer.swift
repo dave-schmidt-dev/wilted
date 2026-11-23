@@ -201,9 +201,9 @@ actor BulletinProducer {
     /// The one sentence Settings shows for a failed check. The raw error is for the log only.
     static func describe(_ error: Error) -> String {
         switch ReportFailureCause.of(error) {
-        case .offline: "Could not check news: this Mac is offline."
-        case .timedOut: "Could not check news: the connection timed out."
-        case .speechUnavailable, .other: "Could not check news."
+        case .offline: "Could not check headline feeds while this Mac is offline."
+        case .timedOut: "The connection timed out while checking headline feeds."
+        case .speechUnavailable, .other: "Could not check headline feeds."
         }
     }
 

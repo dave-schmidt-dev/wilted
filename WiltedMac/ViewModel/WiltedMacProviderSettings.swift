@@ -39,6 +39,7 @@ public final class WiltedMacProviderSettings {
         public let kind: String
         public let hasSavedKey: Bool
         public let status: String
+        public let lastCheckResult: String?
         public let isChosen: Bool
 
         public init(
@@ -47,6 +48,7 @@ public final class WiltedMacProviderSettings {
             kind: String,
             hasSavedKey: Bool,
             status: String,
+            lastCheckResult: String?,
             isChosen: Bool
         ) {
             self.id = provider
@@ -54,6 +56,7 @@ public final class WiltedMacProviderSettings {
             self.kind = kind
             self.hasSavedKey = hasSavedKey
             self.status = status
+            self.lastCheckResult = lastCheckResult
             self.isChosen = isChosen
         }
     }
@@ -86,22 +89,23 @@ public final class WiltedMacProviderSettings {
     private var runningChecks: Set<AdLabellerProvider> = []
     private var commandLineStatuses: [AdLabellerProvider: LabellerCommandLineStatus] = [:]
     private var keyProviderStatuses: [AdLabellerProvider: KeyProviderStatus] = [:]
-    private var keyStatusGenerations: [AdLabellerProvider: Int] = [:]
+    private var statusGenerations: [AdLabellerProvider: Int] = [:]
 
-    private enum KeyProviderStatus {
+    private struct StatusSummary {
+        let readiness: String
+        let lastCheckResult: String?
+        let setupDetail: String?
+    }
+
+    private enum KeyProviderStatus: Equatable {
         case noKeySet
         case ready
         case rejected
-        case unreachable
-
-        var text: String {
-            switch self {
-            case .noKeySet: "No key set"
-            case .ready: "Ready"
-            case .rejected: "Key rejected"
-            case .unreachable: "Can't reach it"
-            }
-        }
+        case unavailable
+        case rateLimited
+        case usageLimit
+        case modelUnavailable
+        case unusableAnswer
     }
 
     public init(
@@ -162,6 +166,10 @@ public final class WiltedMacProviderSettings {
         typedModel = trimmed
         typedModelMessage = nil
         levelMessage = nil
+        if provider.requiresSavedKey {
+            keyProviderStatuses.removeValue(forKey: provider)
+        }
+        statusGenerations[provider, default: 0] += 1
 
         let currentLevel = labeller.level(for: provider)
         let supported = supportedLevels(for: trimmed, provider: provider)
@@ -204,6 +212,10 @@ public final class WiltedMacProviderSettings {
         levelMessage = nil
         labeller.setLevel(newLevel, for: provider)
         revision += 1
+        statusGenerations[provider, default: 0] += 1
+        if provider.requiresSavedKey {
+            keyProviderStatuses.removeValue(forKey: provider)
+        }
     }
 
     public static func levelLabel(_ level: String) -> String {
@@ -234,48 +246,15 @@ public final class WiltedMacProviderSettings {
         let hasSaved = targetProvider.requiresSavedKey ? keyStore.savedKeyPresent(for: targetProvider) : false
         let isChosen = targetProvider == provider
 
-        let statusText: String
-        if targetProvider.requiresSavedKey {
-            if !hasSaved {
-                if case .noKeySet? = keyProviderStatuses[targetProvider] {
-                    statusText = "No key set"
-                } else {
-                    statusText = "No key saved"
-                }
-            } else if runningChecks.contains(targetProvider) {
-                statusText = "Checking..."
-            } else {
-                if case .noKeySet? = keyProviderStatuses[targetProvider] {
-                    statusText = "Ready"
-                } else {
-                    statusText = keyProviderStatuses[targetProvider]?.text ?? "Ready"
-                }
-            }
-        } else {
-            if runningChecks.contains(targetProvider) {
-                statusText = "Checking..."
-            } else if let checkResult = commandLineStatuses[targetProvider] {
-                switch checkResult {
-                case .notFound:
-                    statusText = "Tool not found on this Mac"
-                case .notSignedIn:
-                    statusText = "Not signed in"
-                case .ready:
-                    statusText = "Ready"
-                case .failed(let message):
-                    statusText = message
-                }
-            } else {
-                statusText = "Not checked yet"
-            }
-        }
+        let summary = statusSummary(for: targetProvider)
 
         return Row(
             provider: targetProvider,
             name: targetProvider.displayName,
             kind: kind,
             hasSavedKey: hasSaved,
-            status: statusText,
+            status: summary.readiness,
+            lastCheckResult: summary.lastCheckResult,
             isChosen: isChosen
         )
     }
@@ -292,7 +271,7 @@ public final class WiltedMacProviderSettings {
             try keyStore.slot(for: provider).save(trimmed)
             keyMessage = nil
             keyProviderStatuses.removeValue(forKey: provider)
-            keyStatusGenerations[provider, default: 0] += 1
+            statusGenerations[provider, default: 0] += 1
             revision += 1
         } catch {
             keyMessage = "The key could not be saved."
@@ -302,20 +281,28 @@ public final class WiltedMacProviderSettings {
     public func removeKey(for provider: AdLabellerProvider) {
         try? keyStore.slot(for: provider).remove()
         keyProviderStatuses.removeValue(forKey: provider)
-        keyStatusGenerations[provider, default: 0] += 1
+        statusGenerations[provider, default: 0] += 1
         revision += 1
     }
 
-    public func check(_ provider: AdLabellerProvider) async {
-        guard !runningChecks.contains(provider) else { return }
+    @discardableResult
+    public func check(_ provider: AdLabellerProvider) async -> Bool {
+        guard !runningChecks.contains(provider) else { return false }
 
         if provider.requiresSavedKey {
             guard keyStore.savedKeyPresent(for: provider) else {
                 keyProviderStatuses[provider] = .noKeySet
                 revision += 1
-                return
+                return false
             }
-            let keyGeneration = keyStatusGenerations[provider, default: 0]
+        }
+        guard keyStore.isReady(provider: provider) else {
+            revision += 1
+            return false
+        }
+
+        if provider.requiresSavedKey {
+            let generation = statusGenerations[provider, default: 0]
             runningChecks.insert(provider)
             revision += 1
             defer {
@@ -332,37 +319,54 @@ public final class WiltedMacProviderSettings {
                 )
                 status = .ready
             } catch let failure as LabellerFailure {
-                status = failure == .keyRejected ? .rejected : .unreachable
+                switch failure {
+                case .keyRejected: status = .rejected
+                case .temporary, .commandLineToolUnavailable: status = .unavailable
+                case .rateLimited: status = .rateLimited
+                case .usageLimit: status = .usageLimit
+                case .modelUnavailable: status = .modelUnavailable
+                case .unusableAnswer: status = .unusableAnswer
+                }
             } catch {
-                status = .unreachable
+                status = .unavailable
             }
-            if keyGeneration == keyStatusGenerations[provider, default: 0],
-               keyStore.savedKeyPresent(for: provider) {
-                keyProviderStatuses[provider] = status
-            }
-            return
+            guard generation == statusGenerations[provider, default: 0],
+                  keyStore.isReady(provider: provider) else { return false }
+            keyProviderStatuses[provider] = status
+            return status == .ready
         }
 
         runningChecks.insert(provider)
         revision += 1
-        defer { runningChecks.remove(provider) }
+        let generation = statusGenerations[provider, default: 0]
+        defer {
+            runningChecks.remove(provider)
+            revision += 1
+        }
 
         let result = await checkProvider(provider)
+        guard generation == statusGenerations[provider, default: 0],
+              keyStore.isReady(provider: provider) else { return false }
         commandLineStatuses[provider] = result
-        revision += 1
+        return result == .ready
     }
 
     /// Checks each provider at once, so one press refreshes all seven statuses.
     public func checkAll() async {
         await withTaskGroup(of: Void.self) { group in
             for provider in Self.rowOrder {
-                group.addTask { await self.check(provider) }
+                group.addTask { _ = await self.check(provider) }
             }
         }
     }
 
     /// Whether any provider check is still running.
     public var isCheckingAny: Bool { !runningChecks.isEmpty }
+
+    /// Whether a manual check is running for this provider.
+    public func isChecking(_ provider: AdLabellerProvider) -> Bool {
+        runningChecks.contains(provider)
+    }
 
     private func keyCheckRequest(for provider: AdLabellerProvider) -> LabellerRequest {
         let configuredModel = labeller.modelID(for: provider)
@@ -394,42 +398,69 @@ public final class WiltedMacProviderSettings {
 
     public var readinessLine: String {
         _ = revision
-        // Priority 1: No model chosen
-        guard !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return "Type a model id."
+        let summary = statusSummary(for: provider)
+        var line = "\(summary.readiness): \(provider.displayName)"
+        if let setupDetail = summary.setupDetail {
+            line += " · \(setupDetail)"
+        } else if let lastCheckResult = summary.lastCheckResult {
+            line += summary.readiness == "Ready"
+                ? " · Last provider check passed"
+                : " · Last provider check: \(lastCheckResult)"
+        } else if summary.readiness == "Readiness unknown" {
+            line += " · Check it in Providers"
         }
+        return line + "."
+    }
 
-        // Priority 2: Key provider with no key
-        if provider.requiresSavedKey && !keyStore.savedKeyPresent(for: provider) {
-            return "No key saved. Add one in Providers."
+    private func statusSummary(for targetProvider: AdLabellerProvider) -> StatusSummary {
+        if runningChecks.contains(targetProvider) {
+            return StatusSummary(readiness: "Checking...", lastCheckResult: nil, setupDetail: nil)
         }
-
-        // Priority 3: Command-line provider not found or not signed in per last check (if checked)
-        if !provider.requiresSavedKey, let checkStatus = commandLineStatuses[provider] {
-            switch checkStatus {
-            case .notFound:
-                return "Tool not found on this Mac."
-            case .notSignedIn:
-                return "Not signed in."
-            case .failed(let message):
-                return message
-            case .ready:
-                break
+        guard keyStore.isReady(provider: targetProvider) else {
+            let hasValidModel = AdLabellerModelCatalog.isValid(
+                provider: targetProvider,
+                model: labeller.modelID(for: targetProvider),
+                level: labeller.level(for: targetProvider)
+            )
+            let detail = hasValidModel ? "No key saved" : "Choose a valid model and thinking level"
+            return StatusSummary(readiness: "Not ready", lastCheckResult: nil, setupDetail: detail)
+        }
+        if targetProvider.requiresSavedKey {
+            switch keyProviderStatuses[targetProvider] {
+            case .ready?:
+                return StatusSummary(readiness: "Ready", lastCheckResult: "Passed", setupDetail: nil)
+            case .rejected?:
+                return StatusSummary(readiness: "Not ready", lastCheckResult: "Key rejected", setupDetail: nil)
+            case .unavailable?:
+                return StatusSummary(readiness: "Not ready", lastCheckResult: "Service unavailable", setupDetail: nil)
+            case .rateLimited?:
+                return StatusSummary(readiness: "Not ready", lastCheckResult: "Too many requests", setupDetail: nil)
+            case .usageLimit?:
+                return StatusSummary(readiness: "Not ready", lastCheckResult: "Provider usage limit", setupDetail: nil)
+            case .modelUnavailable?:
+                return StatusSummary(readiness: "Not ready", lastCheckResult: "Model unavailable", setupDetail: nil)
+            case .unusableAnswer?:
+                return StatusSummary(readiness: "Not ready", lastCheckResult: "No usable response", setupDetail: nil)
+            case .noKeySet?, nil:
+                return StatusSummary(readiness: "Readiness unknown", lastCheckResult: nil, setupDetail: nil)
             }
         }
-
-        // Priority 4: Ready
-        let modelDisplay = modelDisplayNameOrID
-        let levelText = levelLabel(level)
-        return "Ready: \(provider.displayName) · \(modelDisplay) · \(levelText)"
+        guard let checkStatus = commandLineStatuses[targetProvider] else {
+            return StatusSummary(readiness: "Readiness unknown", lastCheckResult: nil, setupDetail: nil)
+        }
+        switch checkStatus {
+        case .notFound:
+            return StatusSummary(readiness: "Not ready", lastCheckResult: "Tool not found on this Mac", setupDetail: nil)
+        case .notSignedIn:
+            return StatusSummary(readiness: "Not ready", lastCheckResult: "Not signed in", setupDetail: nil)
+        case .ready:
+            return StatusSummary(readiness: "Ready", lastCheckResult: "Passed", setupDetail: nil)
+        case .failed(let message):
+            return StatusSummary(readiness: "Not ready", lastCheckResult: message, setupDetail: nil)
+        }
     }
 
     // MARK: - Private Helpers
-
-    private var modelDisplayNameOrID: String {
-        let known = AdLabellerModelCatalog.modelsByProvider[provider]?.first(where: { $0.id == model })
-        return known?.displayName ?? model
-    }
 
     private func supportedLevels(for modelID: String, provider: AdLabellerProvider) -> [String] {
         if let match = AdLabellerModelCatalog.modelsByProvider[provider]?.first(where: { $0.id == modelID }) {

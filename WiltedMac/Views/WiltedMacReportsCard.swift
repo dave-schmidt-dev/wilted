@@ -9,6 +9,7 @@ import WiltedDomain
 struct WiltedMacReportsCard: View {
     let model: WiltedMacModel
     let location: WiltedLocationProvider
+    @State private var feedPolicyBoard: WiltedMacFeedPolicyBoard
     @Environment(\.colorScheme) private var colorScheme
     @State private var latitudeText = ""
     @State private var longitudeText = ""
@@ -16,16 +17,19 @@ struct WiltedMacReportsCard: View {
     @State private var skipWordsText = ""
     @State private var coordinateProblem = false
     @State private var showsDetails: Bool
+    @State private var showsHeadlineSources = false
     @FocusState private var focusedLocationField: LocationField?
     private let readinessOverride: BulletinReadiness?
 
     private enum LocationField { case latitude, longitude }
 
     /// The details start folded: interruptions are off by default, and the rest only matters once on.
-    init(model: WiltedMacModel, location: WiltedLocationProvider, startsExpanded: Bool = false,
+    init(model: WiltedMacModel, location: WiltedLocationProvider, policyBoard: WiltedMacFeedPolicyBoard? = nil,
+         startsExpanded: Bool = false,
          readinessOverride: BulletinReadiness? = nil) {
         self.model = model
         self.location = location
+        _feedPolicyBoard = State(initialValue: policyBoard ?? WiltedMacFeedPolicyBoard(model: model))
         self.readinessOverride = readinessOverride
         _showsDetails = State(initialValue: startsExpanded)
     }
@@ -35,8 +39,13 @@ struct WiltedMacReportsCard: View {
     var body: some View {
         WiltedSettingsCard(title: "Reports") {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
-                Toggle("Read bulletins while playing", isOn: reportsBinding(\.interruptionsEnabled))
-                    .accessibilityIdentifier("wilted-reports-interruptions")
+                HStack {
+                    Toggle("Read bulletins while playing", isOn: reportsBinding(\.interruptionsEnabled))
+                        .accessibilityIdentifier("wilted-reports-interruptions")
+                    Spacer(minLength: WiltedTheme.Spacing.small)
+                    Button("Add headline feed") { showsHeadlineSources = true }
+                        .accessibilityIdentifier("wilted-reports-add-news-feed")
+                }
                 #if canImport(WiltedProducer)
                 if settings.interruptionsEnabled {
                     readinessSection
@@ -55,7 +64,7 @@ struct WiltedMacReportsCard: View {
                             .accessibilityIdentifier("wilted-reports-headlines")
                         topicsSection
                             .padding(.leading, WiltedTheme.Spacing.large)
-                            .disabled(!settings.interruptionsEnabled || !settings.headlinesEnabled)
+                            .disabled(!settings.reportEnabled && !(settings.interruptionsEnabled && settings.headlinesEnabled))
                         Stepper(value: reportsBinding(\.waitLimitSeconds), in: WiltedAutomationSettings.waitLimitRange, step: 10) {
                             labeledValue("Wait for a break", "\(settings.waitLimitSeconds) seconds")
                         }
@@ -111,6 +120,11 @@ struct WiltedMacReportsCard: View {
             WiltedMacHelpButton(content: Self.help, identifier: "wilted-reports-help")
                 .padding(WiltedTheme.Spacing.medium)
         }
+#if canImport(WiltedProducer)
+        .sheet(isPresented: $showsHeadlineSources) {
+            WiltedMacHeadlineSourceSheet(model: model, policyBoard: feedPolicyBoard)
+        }
+#endif
         .task {
             latitudeText = settings.typedLatitude.map(Self.decimal) ?? ""
             longitudeText = settings.typedLongitude.map(Self.decimal) ?? ""
@@ -150,8 +164,7 @@ struct WiltedMacReportsCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             switch line {
             case .news:
-                Button("Add a news feed") { model.presentAddSheet() }
-                    .accessibilityIdentifier("wilted-reports-add-news-feed")
+                EmptyView()
             case .weather, .locationDenied:
                 Button("Set location") { focusLocationFields() }
                     .accessibilityIdentifier("wilted-reports-set-location")
@@ -161,7 +174,7 @@ struct WiltedMacReportsCard: View {
             case .ready, .checkingNews:
                 EmptyView()
             case .unknownNews:
-                Button("Check news feeds") { refreshNewsSourceReadiness() }
+                Button("Check headline feeds") { refreshNewsSourceReadiness() }
                     .accessibilityIdentifier("wilted-reports-refresh-news-readiness")
             case .chooseSources:
                 Button("Choose bulletins") { showsDetails = true }

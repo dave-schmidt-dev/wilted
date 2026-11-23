@@ -48,18 +48,60 @@ final class WiltedMacShowSettingsTests: XCTestCase {
         }
     }
 
-    func testArticleSettingsShowNewsWithoutPodcastOnlyControls() async throws {
+    func testShowTypeAppearsOnceWithoutRepeatingItAsADefault() throws {
+        for isArticle in [false, true] {
+            let fixture = try makeFixture(isArticle: isArticle)
+            let page = WiltedMacShowSettingsView(
+                model: fixture.model, board: fixture.board, subscription: fixture.subscription
+            )
+            let type = try WiltedMacHeadless.showSectionText(page, .type).joined(separator: " ")
+            let expectedType = isArticle ? "Articles" : "Podcast"
+
+            XCTAssertEqual(WiltedMacHeadless.occurrences(of: expectedType, in: type), 1, type)
+            XCTAssertFalse(type.contains("Default: \(expectedType)"), type)
+        }
+    }
+
+    func testAllShowsPageUsesOnlyPodcastSubscriptions() throws {
+        let podcast = try makeFixture(isArticle: false)
+        let article = try makeFixture(isArticle: true).subscription
+        podcast.model.subscriptions = [article, podcast.subscription]
+        let page = WiltedMacAdFindingSettingsView(model: podcast.model, board: podcast.board).allShowsPage
+        let text = try WiltedMacHeadless.recognizedText(page).joined(separator: " ")
+        XCTAssertTrue(text.contains(podcast.subscription.title), text)
+        XCTAssertFalse(text.contains(article.title), text)
+    }
+
+    func testArticleSettingsShowHeadlinesOnlyWithoutPodcastOnlyControls() async throws {
         let fixture = try makeFixture(isArticle: true)
         let text = try rendered(fixture)
 
-        XCTAssertTrue(text.contains("News"), text)
+        XCTAssertTrue(text.contains("Keep/Skip inbox"), text)
         XCTAssertTrue(text.contains("Auto keep"), text)
         XCTAssertTrue(text.contains("Auto prepare"), text)
         XCTAssertTrue(text.contains("Kept limit"), text)
         for label in ["Auto download", "Remove ads", "Remove the show's own promotion", "Send this show for ad finding"] {
             XCTAssertFalse(text.contains(label), "\(label) in \(text)")
         }
-        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "News", in: text), 1, text)
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Headlines only", in: text), 1, text)
+    }
+
+    func testHeadlinesOnlyHidesInboxControlsUntilSwitchedOff() throws {
+        let fixture = try makeFixture(isArticle: true)
+        XCTAssertTrue(fixture.board.setNews(true, for: fixture.feedID))
+        let headlines = try rendered(fixture)
+        XCTAssertTrue(headlines.contains("Headlines only"), headlines)
+        XCTAssertTrue(headlines.contains("Keep/Skip inbox"), headlines)
+        let inboxControls = ["New episodes", "Auto keep", "Auto prepare", "Kept limit", "Match rules"]
+        for label in inboxControls {
+            XCTAssertFalse(headlines.contains(label), "\(label) in \(headlines)")
+        }
+
+        XCTAssertTrue(fixture.board.setNews(false, for: fixture.feedID))
+        let articles = try rendered(fixture)
+        for label in inboxControls {
+            XCTAssertTrue(articles.contains(label), "\(label) missing from \(articles)")
+        }
     }
 
     func testExplicitChoiceEqualToGlobalDefaultStillCountsAndResetRestoresInheritance() throws {
@@ -93,7 +135,7 @@ final class WiltedMacShowSettingsTests: XCTestCase {
         XCTAssertFalse(fixture.board.removesSelfPromotion(fixture.feedID))
         XCTAssertEqual(fixture.board.explicitOverrideCount(for: fixture.feedID), 0)
         let text = try rendered(fixture)
-        XCTAssertFalse(text.contains("Off (Custom)"), text)
+        XCTAssertFalse(text.contains("This show is already ad-free"), text)
     }
 
     func testResettingRemoveAdsRevokesConsentBeforeRemovingAnAdFreeProtection() throws {

@@ -222,6 +222,7 @@ enum WiltedAutomationTranscriptPolicy: String, Equatable, Sendable, Codable {
 
     var settingsControlLabel: String {
         switch self {
+        // The policy may use a feed transcript or local speech-to-text depending on whether ad removal needs audio timing.
         case .bestAvailable: "Best available"
         case .alwaysTranscribe: "Always transcribe"
         case .noLocalSTT: "No local speech-to-text"
@@ -598,23 +599,24 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
             && Self.validInitialEpisodeMetadataCount(initialEpisodeMetadataCount) != nil
     }
 
-    /// True when the two saved preferences cannot both be honoured. Ad removal
-    /// is timed from an aligned local pass and never from a publisher's cues,
-    /// so with local speech-to-text forbidden the worker refuses every
-    /// preparation before it spends any model time. Computed rather than
-    /// stored: a configuration saved before removal required the aligned pass
-    /// is a legitimate file, and re-versioning the format to record a fact
-    /// derivable from it would refuse to decode it for nothing.
-    var transcriptPolicyBlocksAdRemoval: Bool {
-        removeAds && transcriptPolicy == .noLocalSTT
+    /// Explains which transcript source each setting uses and which episodes
+    /// need audio-timed speech-to-text for ad finding.
+    var transcriptPolicyExplanation: String {
+        switch (transcriptPolicy, removeAds) {
+        case (.bestAvailable, false):
+            "Wilted prefers a transcript from the feed, then uses local speech-to-text if needed."
+        case (.bestAvailable, true):
+            "Episodes that need an ad check use a local transcript timed to their audio. "
+            + "When ad finding is skipped, Wilted can use a transcript from the feed."
+        case (.alwaysTranscribe, _):
+            "Wilted makes a local transcript timed to each episode's audio, even when the feed provides one."
+        case (.noLocalSTT, false):
+            "Uses a transcript from the feed when available. Episodes can finish without a transcript."
+        case (.noLocalSTT, true):
+            "Episodes that need an ad check cannot finish without local speech-to-text timed to their audio. "
+            + "Shows marked already ad-free and episodes that skip the check, such as when the daily limit stops a request, can still prepare."
+        }
     }
-
-    /// Says what the pair does and how to leave it, in that order, because the
-    /// reader is looking at both controls and either one resolves it.
-    static let transcriptPolicyBlocksAdRemovalExplanation =
-        "Removing ads needs a local transcript timed to this audio, so no episode will prepare "
-        + "while the transcript source is No local speech-to-text. Turn off Remove ads, or choose "
-        + "another transcript source."
 }
 
 #if canImport(WiltedProducer)

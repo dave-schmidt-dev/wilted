@@ -58,7 +58,9 @@ final class LibraryRecordMapperTests: XCTestCase {
 
     func testLibraryChangesRoundTripForEveryRecordType() throws {
         let cases: [(LibraryChange, LibraryRecordType)] = [
-            (.source(LibrarySource(id: try item("feed-1"), kind: .podcastFeed, title: "Feed", locator: "https://example.com/rss")), .source),
+            (.source(LibrarySource(
+                id: try item("feed-1"), kind: .podcastFeed, title: "Feed", publisher: "Example Audio",
+                locator: "https://example.com/rss")), .source),
             (.entry(try makeEntry()), .entry),
             (.slot(try QueueSlot(entryID: item("ep-1"), sortKey: 2.5)), .slot),
             (.listening(ListeningRecord(itemID: try item("ep-1"), completedAt: Date(timeIntervalSince1970: 1_700_000_100),
@@ -97,6 +99,13 @@ final class LibraryRecordMapperTests: XCTestCase {
         let removalRecord = try mapper.record(intent: removal)
         assertShape(removalRecord, type: .intent)
         XCTAssertEqual(try mapper.decode(removalRecord), .intent(removal))
+
+        let link = try LibraryIntent.addLink(
+            url: XCTUnwrap(URL(string: "https://example.com/story")), deviceID: "phone",
+            createdAt: Date(timeIntervalSince1970: 1_700_000_302), id: "intent-link")
+        let linkRecord = try mapper.record(intent: link)
+        assertShape(linkRecord, type: .intent)
+        XCTAssertEqual(try mapper.decode(linkRecord), .intent(link))
     }
 
     func testUnknownKindEntryRoundTripsUnchanged() throws {

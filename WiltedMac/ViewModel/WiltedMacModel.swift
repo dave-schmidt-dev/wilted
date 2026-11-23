@@ -161,6 +161,9 @@ final class WiltedMacModel {
     }
     var articles: [WiltedMacArticle] = []
     var episodes: [WiltedMacEpisode] = []
+#if canImport(WiltedProducer)
+    var providerEpisodeReplies: [AdLabellerProvider: WiltedMacProviderEpisodeReply] = [:]
+#endif
     /// Episodes the current engine has not prepared, by id, read from the store
     /// with each library load. The only episodes the Larder offers to prepare
     /// again; each says what the run needs (see `PodcastPrepareAgainCandidate`).
@@ -175,11 +178,8 @@ final class WiltedMacModel {
     }
     /// The confirmation before re-preparing every episode that kept its ads.
     var isConfirmingPrepareAgainAll = false
-    /// Asked once when a newly added feed looks paid or ad-free, before it is saved.
-    var pendingAdFreeFeedPrompt: WiltedMacAdFreeFeedPrompt?
-    /// Resumes the subscribe loop when the owner answers or the add is cancelled.
-    @ObservationIgnored var adFreeFeedPromptContinuation: CheckedContinuation<Bool, Never>?
     var episodeAssociations: [String: LibraryEpisodeAssociation] = [:]
+    var isClearingLarderGroup = false
     var podcastOperationMessage: String?
     /// The episode an Undo button beside `podcastOperationMessage` would
     /// restore. Set only by `removeEpisode`'s success path, and cleared at the

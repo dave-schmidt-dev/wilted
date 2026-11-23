@@ -94,31 +94,23 @@ final class LibraryPlayerHostedTests: XCTestCase {
 
     // MARK: Mark completed and Remove from Larder
 
-    func testNowPlayingOffersMarkCompletedAndRemoveForAnEpisodeOnThePhone() async throws {
+    func testNowPlayingOffersOneLabelledActionsMenuForStartedAndFreshEpisodes() async throws {
         try await fixture.seed(["a", "b"])
         try await fixture.startOnMac("a")
         await fixture.model.refresh()
 
-        let (startedPlayer, _) = started("a", artwork: nil)
-        let startedView = HostedView(LibraryPlayerView(player: startedPlayer, model: fixture.model, onClose: {}))
-        XCTAssertNotNil(startedView.element("wilted-player-mark-completed"))
-        XCTAssertNotNil(startedView.element("wilted-player-remove-from-larder"))
-
-        let (freshPlayer, _) = started("b", artwork: nil)
-        let freshView = HostedView(LibraryPlayerView(player: freshPlayer, model: fixture.model, onClose: {}))
-        XCTAssertNotNil(freshView.element("wilted-player-mark-completed"), "W-INV-010: audio on the phone offers it before it is started")
-        XCTAssertNotNil(freshView.element("wilted-player-remove-from-larder"))
-    }
-
-    func testTappingMarkCompletedOnNowPlayingAsksFirst() async throws {
-        try await fixture.seed(["a"])
-        try await fixture.startOnMac("a")
-        await fixture.model.refresh()
-        let (player, _) = started("a", artwork: nil)
-        let hosted = HostedView(LibraryPlayerView(player: player, model: fixture.model, onClose: {}))
-        XCTAssertTrue(try XCTUnwrap(hosted.element("wilted-player-mark-completed")).activate())
-        hosted.settle()
-        XCTAssertNil(fixture.model.pendingDecision(for: fixture.id("a")), "the question comes first")
+        for id in ["a", "b"] {
+            let (player, _) = started(id, artwork: nil)
+            for size in [DynamicTypeSize.large, .accessibility5] {
+                let hosted = HostedView(LibraryPlayerView(player: player, model: fixture.model, onClose: {})
+                    .dynamicTypeSize(size))
+                let menu = try XCTUnwrap(hosted.element("wilted-player-episode-actions"))
+                XCTAssertEqual(menu.label, "Episode actions")
+                XCTAssertGreaterThanOrEqual(menu.frame.height, WiltedTheme.Spacing.minimumTouchTarget)
+                XCTAssertNil(hosted.element("wilted-player-mark-completed"))
+                XCTAssertNil(hosted.element("wilted-player-remove-from-larder"))
+            }
+        }
     }
 
     // MARK: Scrubber

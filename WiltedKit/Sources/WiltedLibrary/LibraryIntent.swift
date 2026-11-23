@@ -28,6 +28,8 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         case subscribe(feedURL: URL)
         /// Add the single article at an HTTPS URL. The Mac answers with an `IntentOutcome`.
         case addArticle(url: URL)
+        /// Ask the Mac to classify and add an HTTPS link as a feed or article.
+        case addLink(url: URL)
         /// The listener's verdict on ad removal at `playedSeconds` of the prepared revision `revisionID`
         /// they were hearing. The Mac maps it onto the original episode and files it for review; the
         /// intent id is the feedback id. The Mac answers with an `IntentOutcome`.
@@ -38,14 +40,16 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         case unsupported
 
         /// The entry this action is about. For `subscribe` and `addArticle` it is the namespaced
-        /// ID the Mac assigns to that feed or article (W-INV-003); `LibraryIntent.init` rejects a
-        /// URL that cannot derive one, so the sentinel is reachable only from an unwrapped action.
+        /// ID the Mac assigns to that feed or article (W-INV-003). A not-yet-classified `addLink`
+        /// has no entry ID yet. The sentinel is reachable only from an unwrapped action or link.
         public var entryID: ItemID {
             switch self {
             case let .subscribe(feedURL):
                 return (try? ItemID.derivePodcastFeed(from: feedURL)) ?? Self.invalidURLEntryID
             case let .addArticle(url):
                 return (try? ItemID.derive(from: url)) ?? Self.invalidURLEntryID
+            case .addLink:
+                return Self.invalidURLEntryID
             case let .requestMedia(entryID), let .mediaCached(entryID, _, _), let .keep(entryID), let .skip(entryID),
                  let .markDone(entryID), let .removeFromLarder(entryID), let .restore(entryID), let .reorder(entryID, _),
                  let .adFeedback(entryID, _, _, _):
@@ -58,7 +62,7 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         /// True for the decision actions the Mac answers with an `IntentOutcome`.
         public var isDecision: Bool {
             switch self {
-            case .keep, .skip, .markDone, .removeFromLarder, .restore, .reorder, .subscribe, .addArticle, .adFeedback: return true
+            case .keep, .skip, .markDone, .removeFromLarder, .restore, .reorder, .subscribe, .addArticle, .addLink, .adFeedback: return true
             case .requestMedia, .mediaCached: return false
             case .unsupported: return true
             }
@@ -70,7 +74,7 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         /// The URL an add-flow action carries, or nil for every other action.
         fileprivate var addURL: URL? {
             switch self {
-            case let .subscribe(url), let .addArticle(url): url
+            case let .subscribe(url), let .addArticle(url), let .addLink(url): url
             default: nil
             }
         }
@@ -163,6 +167,11 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
     /// Ask the Mac to add the single article at `url`.
     public static func addArticle(url: URL, deviceID: String, createdAt: Date = Date(), id: String = UUID().uuidString) throws -> LibraryIntent {
         try LibraryIntent(id: id, deviceID: deviceID, createdAt: createdAt, action: .addArticle(url: url))
+    }
+
+    /// Ask the Mac to classify an HTTPS link as a feed or article and add it.
+    public static func addLink(url: URL, deviceID: String, createdAt: Date = Date(), id: String = UUID().uuidString) throws -> LibraryIntent {
+        try LibraryIntent(id: id, deviceID: deviceID, createdAt: createdAt, action: .addLink(url: url))
     }
 
     /// The listener's ad-removal feedback, with a fresh idempotency id that doubles as the feedback id.

@@ -18,7 +18,7 @@ extension WiltedMacModelTests {
                 WiltedMacTranscriptCue(id: 1, startSeconds: 4, endSeconds: 6, text: "two"),
                 WiltedMacTranscriptCue(id: 2, startSeconds: 6, endSeconds: 9, text: "three"),
             ],
-            timingSource: "synced"
+            timingSource: "from audio"
         )
         XCTAssertNil(transcript.cueIndex(at: 0), "nothing has been said yet")
         XCTAssertNil(transcript.cueIndex(at: 1.99))
@@ -28,7 +28,7 @@ extension WiltedMacModelTests {
         XCTAssertEqual(transcript.cueIndex(at: 8.5), 2)
         XCTAssertEqual(transcript.cueIndex(at: 500), 2, "past the end stays on the last line")
         XCTAssertTrue(transcript.isSynchronized)
-        XCTAssertEqual(transcript.disclosureTitle, "Transcript · synced")
+        XCTAssertEqual(transcript.disclosureTitle, "Transcript · from audio")
     }
 
     /// Cues arrive in order but may overlap, and a large episode carries
@@ -39,7 +39,7 @@ extension WiltedMacModelTests {
                                    endSeconds: Double($0) * 2 + 2.5, text: "line \($0)")
         }
         let transcript = WiltedMacTranscript(availability: .available, text: "long",
-                                             cues: cues, timingSource: "synced")
+                                             cues: cues, timingSource: "from audio")
         XCTAssertEqual(transcript.cueIndex(at: 0), 0)
         XCTAssertEqual(transcript.cueIndex(at: 4_999), 2_499)
         XCTAssertEqual(transcript.cueIndex(at: 9_998), 4_999)
@@ -137,7 +137,7 @@ extension WiltedMacModelTests {
         let transcript = try XCTUnwrap(model.currentTranscript)
         XCTAssertTrue(transcript.isSynchronized, "playing an episode has to surface its timed transcript")
         XCTAssertEqual(transcript.cues.map(\.text), ["First line.", "Second line."])
-        XCTAssertEqual(transcript.disclosureTitle, "Transcript \u{00B7} synced from the feed")
+        XCTAssertEqual(transcript.disclosureTitle, "Transcript \u{00B7} from the feed")
         XCTAssertEqual(transcript.cueIndex(at: 0.6), 1)
 
         // What preparation cut, placed where the listener meets it: the
