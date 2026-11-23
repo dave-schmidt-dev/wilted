@@ -12,6 +12,7 @@ All notable changes to this project are documented in this file.
 - A rule Skip, from Apply Rules or a refresh, now also leaves alone an episode the player has loaded even before anything about it was saved (Play Now and playlists start audio first), and one whose listening record says it was finished.
 
 ### Fixed
+- A news headline no longer cuts into an episode mid-sentence. It waits for a real break in speech, however long that takes, and when the episode has no timed transcript it waits until the next episode starts. Previously it played anyway once the one-minute wait ran out. Weather alerts are unchanged.
 - A landed download whose flag list could not be read stays on the retry list while the library reload after it is still running.
 - Answering "Different" on a possible duplicate no longer forgets the answer if the flag list cannot be read just before preparation would start; the note stays and the work finishes once the list reads.
 - A downloaded episode whose flag list could not be read at arrival is retried on the next tick instead of waiting for a relaunch.

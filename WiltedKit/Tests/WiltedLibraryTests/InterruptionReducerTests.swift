@@ -149,15 +149,52 @@ final class InterruptionReducerTests: XCTestCase {
         XCTAssertEqual(reducer.handle(.tick(try snap(102))), [.speak(extreme, try snap(102).checkpoint)])
     }
 
-    func testAWaitingBulletinSpeaksAtItsDeadlineAndGoesBackToPendingWhenPaused() throws {
+    func testAWaitingAlertSpeaksAtItsDeadlineAndGoesBackToPendingWhenPaused() throws {
         var reducer = InterruptionReducer(waitLimit: 60)
-        let b = try bulletin("h1")
+        let b = try bulletin("a1", .alert, severity: .severe)
         _ = reducer.handle(.bulletinArrived(b, try snap()))
         XCTAssertEqual(reducer.handle(.tick(try snap(59))), [])
         XCTAssertEqual(reducer.handle(.userPaused(try snap(60, generation: 2))), [])
         XCTAssertEqual(reducer.pending, [b])
         XCTAssertEqual(reducer.handle(.tick(try snap(61, generation: 3))), [.awaitPausePoint(b, deadline: t0.addingTimeInterval(121))])
         XCTAssertEqual(reducer.handle(.tick(try snap(121, generation: 3))), [.speak(b, try snap(121, generation: 3).checkpoint)])
+    }
+
+    func testAWaitingHeadlineNeverSpeaksAtItsDeadlineOnlyAtAPausePoint() throws {
+        var reducer = InterruptionReducer(waitLimit: 60)
+        let b = try bulletin("h1")
+        _ = reducer.handle(.bulletinArrived(b, try snap()))
+        XCTAssertEqual(reducer.handle(.tick(try snap(61))), [], "the deadline passing is not a pause")
+        XCTAssertEqual(reducer.handle(.tick(try snap(3_600 - 1))), [])
+        guard case .waiting = reducer.state else { return XCTFail("the headline keeps waiting") }
+        XCTAssertEqual(reducer.handle(.pausePointReached(try snap(90))), [.speak(b, try snap(90).checkpoint)])
+    }
+
+    func testAWaitingHeadlineSpeaksWhenTheNextItemStartsPlaying() throws {
+        var reducer = InterruptionReducer(waitLimit: 60)
+        let b = try bulletin("h1")
+        _ = reducer.handle(.bulletinArrived(b, try snap()))
+        XCTAssertEqual(reducer.handle(.tick(try snap(61))), [])
+        XCTAssertEqual(reducer.handle(.itemChanged), [])
+        XCTAssertEqual(reducer.handle(.tick(try snap(62, playing: false, entry: "e2", position: 0))), [],
+                       "nothing speaks before the next item plays")
+        let start = try snap(63, entry: "e2", position: 0)
+        XCTAssertEqual(reducer.handle(.tick(start)), [.speak(b, start.checkpoint)])
+    }
+
+    func testTheItemBoundaryIsUsedOnceAndAPendingHeadlineSpeaksAtIt() throws {
+        var reducer = InterruptionReducer(waitLimit: 60)
+        let b = try bulletin("h1")
+        _ = reducer.handle(.bulletinArrived(b, try snap(playing: false)))
+        XCTAssertEqual(reducer.pending, [b])
+        _ = reducer.handle(.itemChanged)
+        let start = try snap(1, entry: "e2", position: 0)
+        XCTAssertEqual(reducer.handle(.tick(start)), [.speak(b, start.checkpoint)])
+        _ = reducer.handle(.speechFinished(try snap(4, entry: "e2", position: 0)))
+        let later = try bulletin("h2", issued: 5)
+        XCTAssertEqual(reducer.handle(.bulletinArrived(later, try snap(5, entry: "e2", position: 3))),
+                       [.awaitPausePoint(later, deadline: t0.addingTimeInterval(65))],
+                       "a headline arriving mid-episode waits for a pause")
     }
 
     func testSupersededBulletinsAreRemovedAndOrderIsSeverityThenIssueTime() throws {

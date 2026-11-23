@@ -25,4 +25,18 @@ public enum PausePointFinder {
         }
         return min(max(coveredUntil, now), limit)
     }
+
+    /// The next real pause with no time limit: the first gap of at least `minimumGap`, or the
+    /// silence after the last cue. Nil without timed cues, because there is nothing to measure,
+    /// so the caller must keep waiting (for a later pause or the next episode) rather than guess.
+    public static func nextGap(after now: Double, cues: [TranscriptCue]?, timing: TranscriptTiming) -> Double? {
+        guard now.isFinite, timing != .none, let cues, !cues.isEmpty else { return nil }
+        var coveredUntil = 0.0
+        for cue in cues {
+            let gapStart = max(coveredUntil, now)
+            if cue.startSeconds - gapStart >= minimumGap { return gapStart }
+            coveredUntil = max(coveredUntil, cue.endSeconds)
+        }
+        return max(coveredUntil, now)
+    }
 }
