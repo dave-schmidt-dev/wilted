@@ -289,7 +289,8 @@ final class WiltedMacModelPositionImportHost: WiltedMacPositionImportHost {
 
     private func importProjection(from identity: (
         library: LocalLibraryStore.PodcastLibrarySnapshot,
-        associations: [PodcastEpisodeAssociation], states: [ItemID: PodcastEpisodeLogicalState]
+        associations: [PodcastEpisodeAssociation], states: [ItemID: PodcastEpisodeLogicalState],
+        heldDuplicateIDs: Set<ItemID>, duplicateWorkBlockedIDs: Set<ItemID>
     )) throws -> WiltedMacPositionImportProjection {
         let snapshot = identity.library
         let metadata = WiltedMacLocalLibraryStateSource.associationMetadata(
