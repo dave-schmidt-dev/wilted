@@ -29,7 +29,7 @@ final class WiltedMacShareComposerTests: XCTestCase {
         let menuEnd = try XCTUnwrap(composer.range(of: "} label:", range: menuStart.upperBound..<composer.endIndex))
         let items = composer[menuStart.upperBound..<menuEnd.lowerBound]
         XCTAssertTrue(items.contains("WiltedMacPlaybackShareItems(model: model)"))
-        XCTAssertTrue(items.contains(#"Button("Transcript summary…") { state.presented = true }"#))
+        XCTAssertTrue(items.contains(#"Button("Transcript summary…") { state.present() }"#))
         XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Menu {", in: composer), 1)
         let playerStart = try XCTUnwrap(player.range(of: "struct WiltedMacPlaybackShareLink:"))
         let shippingBranch = try XCTUnwrap(player.range(of: "#else", range: playerStart.upperBound..<player.endIndex))
@@ -69,7 +69,10 @@ final class WiltedMacShareComposerTests: XCTestCase {
                 payload: { value in value.url.map { "\(value.text)\n\n\($0.absoluteString)" } ?? value.text })
             let text = try WiltedMacHeadless.recognizedText(view.padding(), size: CGSize(width: 430, height: 360)).joined(separator: " ")
             XCTAssertTrue(text.contains("Include transcript summary"), "\(name): \(text)")
-            if let progress { XCTAssertTrue(text.replacingOccurrences(of: "...", with: "…").contains(progress), "\(name): \(text)") }
+            if let progress {
+                XCTAssertTrue(text.replacingOccurrences(of: "...", with: "…").contains(progress), "\(name): \(text)")
+                XCTAssertTrue(text.contains("close this panel"), "\(name): \(text)")
+            }
             if let failure { XCTAssertTrue(text.contains(failure), "\(name): \(text)") }
             if preview != nil { XCTAssertTrue(text.contains("Preview"), "\(name): \(text)") }
         }
@@ -129,13 +132,13 @@ final class WiltedMacShareComposerTests: XCTestCase {
         XCTAssertFalse(state.payload(preview).contains("https://"))
     }
 
-    func testCancelDismissAndOptionOffRejectCancellationIgnoringLateReply() async throws {
-        for mode in ["cancel", "dismiss", "off"] {
+    func testCancelTeardownAndOptionOffRejectCancellationIgnoringLateReply() async throws {
+        for mode in ["cancel", "off", "teardown"] {
             let rig = try await realRig(); let runner = ComposerRunner(held: true); let state = composer(rig, runner)
             state.presented = true; state.setIncludeSummary(true); await runner.waitUntilHeld()
             if mode == "cancel" { state.cancel() }
-            else if mode == "dismiss" { state.dismiss() }
-            else { state.setIncludeSummary(false) }
+            else if mode == "off" { state.setIncludeSummary(false) }
+            else { state.teardown() }
             await runner.release(); await state.waitForCompletion()
             await Task.yield()
             XCTAssertNil(state.preview, mode); XCTAssertEqual(state.cachedCount, 0, mode)
@@ -143,10 +146,92 @@ final class WiltedMacShareComposerTests: XCTestCase {
         }
     }
 
+    func testDismissWhileRunningPreservesJobAndReopeningShowsProgressOrCompletedPreview() async throws {
+        let rig = try await realRig(); let runner = ComposerRunner(held: true); let state = composer(rig, runner)
+        state.presented = true; state.setIncludeSummary(true)
+        await runner.waitUntilHeld()
+
+        // Dismissing popover while running must not cancel the task or reset progress
+        state.dismiss()
+        XCTAssertFalse(state.presented)
+        XCTAssertTrue(state.includeSummary)
+        XCTAssertNotNil(state.activeID)
+
+        // Reopening while still running must show progress without restarting
+        state.present()
+        XCTAssertNotNil(state.progress)
+        XCTAssertNil(state.preview)
+        let initialCalls = await runner.count()
+        XCTAssertEqual(initialCalls, 1, "reopening while running must not restart")
+
+        // Dismiss again while running
+        state.dismiss()
+        XCTAssertFalse(state.presented)
+
+        // Runner completes while dismissed
+        await runner.release()
+        await state.waitForCompletion()
+        await Task.yield()
+
+        // Job completed and cached the preview in the background
+        XCTAssertFalse(state.presented)
+        XCTAssertNotNil(state.preview)
+        XCTAssertEqual(state.cachedCount, 1)
+        XCTAssertNil(state.activeID)
+        XCTAssertNil(state.progress)
+
+        // Reopening validates the finished preview without restarting generation.
+        state.present()
+        XCTAssertNil(state.preview)
+        await state.waitForCompletion()
+        let completedCalls = await runner.count()
+        XCTAssertEqual(completedCalls, 1, "reopening completed job must not restart generation")
+        XCTAssertEqual(state.preview?.text, "Summary of: " + rig.text)
+        XCTAssertEqual(state.preview?.title, "Loaded store episode")
+        XCTAssertEqual(state.preview?.url, URL(string: "https://example.test/loaded"))
+        XCTAssertTrue(state.includeSummary)
+
+        // Intentional cancel resets state
+        state.cancel()
+        XCTAssertNil(state.preview)
+        XCTAssertFalse(state.includeSummary)
+    }
+
+    func testReopeningRejectsCompletedPreviewAfterContextChanges() async throws {
+        for mode in ["transcript", "owner", "model", "worker", "playback"] {
+            let rig = try await realRig(); let runner = ComposerRunner(); let semantic = ComposerSemantic()
+            let state = composer(rig, runner, semantic)
+            state.presented = true; state.setIncludeSummary(true); await state.waitForCompletion()
+            XCTAssertNotNil(state.preview, mode)
+            state.dismiss()
+            switch mode {
+            case "transcript":
+                try await rig.store.save(transcript: transcript(rig, text: "Changed transcript"))
+            case "owner":
+                try await rig.store.save(libraryAccountBinding: LocalLibraryAccountBinding(state: .bound,
+                    ownerToken: CloudKitAccountIdentity.token(for: "changed-owner")))
+            case "model":
+                try Data("changed synthetic model".utf8).write(to: rig.modelURL)
+            case "worker": await semantic.set("worker-source-v2")
+            default:
+                let replacement = PlaybackController(store: rig.store, backend: WiltedFixturePlaybackBackend())
+                try await replacement.load(revision: rig.revision, mediaURL: rig.audioURL)
+                rig.model.playback = replacement
+            }
+            state.present()
+            XCTAssertNil(state.preview, mode)
+            await state.waitForCompletion()
+            XCTAssertNil(state.preview, mode); XCTAssertFalse(state.includeSummary, mode)
+            XCTAssertEqual(state.cachedCount, 0, mode)
+            let calls = await runner.count(); XCTAssertEqual(calls, 1, mode)
+        }
+    }
+
     func testReloadAndDurableOwnerChangeWhileHeldCannotDisplayOrCache() async throws {
         for mode in ["reload", "owner", "close"] {
             let rig = try await realRig(); let runner = ComposerRunner(held: true); let state = composer(rig, runner)
             state.presented = true; state.setIncludeSummary(true); await runner.waitUntilHeld()
+            state.dismiss()
             if mode == "reload" {
                 let replacement = PlaybackController(store: rig.store, backend: WiltedFixturePlaybackBackend())
                 try await replacement.load(revision: rig.revision, mediaURL: rig.audioURL)

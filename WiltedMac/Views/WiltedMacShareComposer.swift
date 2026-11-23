@@ -4,7 +4,7 @@ import SwiftUI
 #if canImport(WiltedProducer)
 import WiltedProducer
 
-/// Owns only a popover request and eight verified in-memory summaries.
+/// Owns a summary request and eight verified in-memory summaries.
 @MainActor @Observable
 final class WiltedMacShareComposerState {
     struct Preview { let text: String; let title: String; let url: URL? }
@@ -22,6 +22,11 @@ final class WiltedMacShareComposerState {
         let semanticFingerprint: String
     }
     private struct Cached { let context: WiltedMacShareContext; let preview: Preview; let promptIdentity: String }
+    private struct Completed {
+        let candidate: Cached
+        let semantic: String
+        let modelDigest: String
+    }
     let model: WiltedMacModel
     let service: TranscriptSummaryService
     let configuration: TranscriptSummaryService.Configuration
@@ -33,6 +38,7 @@ final class WiltedMacShareComposerState {
     private(set) var failure: String?
     private(set) var activeID: UUID?
     private var request: Task<Void, Never>?
+    private var completed: Completed?
     private var cache: [CacheKey: Cached] = [:]
     private var order: [CacheKey] = []
     var cachedCount: Int { cache.count }
@@ -51,9 +57,31 @@ final class WiltedMacShareComposerState {
     }
     func cancel() {
         activeID = nil; request?.cancel()
-        includeSummary = false; progress = nil; preview = nil; failure = nil
+        includeSummary = false; progress = nil; preview = nil; failure = nil; completed = nil
     }
-    func dismiss() { presented = false; cancel() }
+    func present() {
+        presented = true
+        guard let completed, preview != nil else { return }
+        // Do not expose a retained preview until its account, transcript and model
+        // have been checked again after the panel was closed.
+        preview = nil
+        let id = UUID(); activeID = id; progress = "Checking summary…"
+        request = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let digest = try await TranscriptSummaryService.modelIdentity(at: configuration.modelURL, requestID: id,
+                    onProgress: progressHandler(id))
+                guard eligible(id) else { return }
+                guard digest == completed.modelDigest else { invalidateContext(); return }
+                guard await current(id, completed.candidate.context, completed.semantic) else { return }
+                activeID = nil; request = nil; progress = nil; preview = completed.candidate.preview
+            } catch {
+                if activeID == id { invalidateContext() }
+            }
+        }
+    }
+    func dismiss() { presented = false }
+    func teardown() { presented = false; cancel() }
     func invalidateContext() { cancel(); cache.removeAll(); order.removeAll() }
     func waitForCompletion() async { await request?.value }
     func payload(_ preview: Preview) -> String {
@@ -62,7 +90,6 @@ final class WiltedMacShareComposerState {
 
     func summarize() {
         cancel(); includeSummary = true
-        guard presented else { return }
         let id = UUID(); activeID = id; progress = "Loading local transcript…"
         request = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -99,6 +126,7 @@ final class WiltedMacShareComposerState {
                     cache[key] = candidate; order.append(key)
                     if order.count > 8 { cache.removeValue(forKey: order.removeFirst()) }
                 }
+                completed = Completed(candidate: candidate, semantic: semantic, modelDigest: digest)
                 activeID = nil; request = nil
                 progress = nil; failure = nil; preview = candidate.preview
             } catch is CancellationError { } catch {
@@ -109,7 +137,7 @@ final class WiltedMacShareComposerState {
         }
     }
     private func eligible(_ id: UUID) -> Bool {
-        activeID == id && includeSummary && presented && !Task.isCancelled && !model.isClosingTemporaryState
+        activeID == id && includeSummary && !Task.isCancelled && !model.isClosingTemporaryState
     }
     private func current(_ id: UUID, _ context: WiltedMacShareContext, _ semantic: String) async -> Bool {
         guard eligible(id) else { return false }
@@ -143,7 +171,7 @@ struct WiltedMacShareComposer: View {
         @Bindable var state = state
         Menu {
             WiltedMacPlaybackShareItems(model: model)
-            Button("Transcript summary…") { state.presented = true }
+            Button("Transcript summary…") { state.present() }
         } label: {
             Label("Share", systemImage: "square.and.arrow.up")
         }
@@ -164,7 +192,7 @@ struct WiltedMacShareComposer: View {
             .onChange(of: model.libraryAccountStatus) { state.invalidateContext() }
             .onChange(of: model.libraryAccount?.binding) { state.invalidateContext() }
             .onChange(of: model.isClosingTemporaryState) { state.invalidateContext() }
-            .onDisappear { state.dismiss() }
+            .onDisappear { state.teardown() }
     }
     static func message(for error: Error) -> String {
         switch error {
@@ -193,7 +221,13 @@ struct WiltedMacShareComposerPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle("Include transcript summary", isOn: $includeSummary)
-            if let progress { ProgressView(progress).controlSize(.small).accessibilityIdentifier("wilted-share-summary-progress") }
+            if let progress {
+                ProgressView(progress).controlSize(.small).accessibilityIdentifier("wilted-share-summary-progress")
+                Text("You can close this panel while this runs.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("wilted-share-summary-dismiss-hint")
+            }
             if let failure {
                 Text(failure).foregroundStyle(.red).accessibilityIdentifier("wilted-share-summary-error")
                 Button("Retry", action: onRetry).accessibilityIdentifier("wilted-share-summary-retry")

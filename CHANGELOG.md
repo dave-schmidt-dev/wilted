@@ -8,6 +8,7 @@ All notable changes to this project are documented in this file.
 - Mac Larder group actions count and act on the displayed rows, including the selected kind. The control names podcast completion or article deletion, and a mixed group explains each action before confirmation.
 - The Mac player has one Share menu for the page link, title and show text when a link is missing, and transcript summaries.
 - Local transcript summaries now retry shorter passages when the model reaches its 512-token output limit, including during reduction, while preserving whole-transcript coverage.
+- The Mac transcript summary panel can now be closed while generating without cancelling the job. Reopening shows current progress or the finished preview without restarting, and playback controls remain usable while summarizing.
 
 ### Changed
 
