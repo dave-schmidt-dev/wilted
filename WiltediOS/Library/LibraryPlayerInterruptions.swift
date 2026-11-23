@@ -407,7 +407,8 @@ final class LibraryInterruptionController: ObservableObject {
         }
     }
 
-    /// The end of the cue now playing is the pause point; with no cue the bulletin waits for its deadline.
+    /// The end of the cue now playing is the pause point. With no cue an alert waits for its deadline and a
+    /// headline for the next item (the reducer never lets a headline speak at its deadline).
     private func awaitPausePoint() {
         let cues = player.item.map { deps.cues($0.entryID) } ?? []
         let position = player.position

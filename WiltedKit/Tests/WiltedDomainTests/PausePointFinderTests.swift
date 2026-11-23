@@ -34,4 +34,14 @@ final class PausePointFinderTests: XCTestCase {
         let found = PausePointFinder.next(after: 6, cues: try cues([(0, 5), (8, 9)]), timing: .published, waitLimit: 60)
         XCTAssertEqual(found, 6)
     }
+
+    func testNextGapHasNoTimeLimitAndNeverGuessesWithoutTimedCues() throws {
+        let long = try cues([(0, 300), (301, 400)])
+        XCTAssertEqual(PausePointFinder.nextGap(after: 10, cues: long, timing: .aligned), 300)
+        XCTAssertEqual(PausePointFinder.nextGap(after: 1, cues: try cues([(0, 5), (5.5, 9)]), timing: .published), 9,
+                       "the silence after the last cue counts")
+        XCTAssertNil(PausePointFinder.nextGap(after: 10, cues: nil, timing: .aligned))
+        XCTAssertNil(PausePointFinder.nextGap(after: 10, cues: long, timing: .none))
+        XCTAssertNil(PausePointFinder.nextGap(after: 10, cues: [], timing: .aligned))
+    }
 }

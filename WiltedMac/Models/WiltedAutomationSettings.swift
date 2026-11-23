@@ -329,7 +329,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
     private(set) var interruptionsEnabled = false
     private(set) var alertsEnabled = true
     private(set) var headlinesEnabled = true
-    /// How long a waiting bulletin may wait for a pause point before it is dropped.
+    /// How long a waiting alert may wait for a pause point before it is spoken anyway. Headlines
+    /// never cut into speech, so this limit does not apply to them.
     private(set) var waitLimitSeconds = 60
     private(set) var headlineMinimumGapMinutes = 30
     private(set) var reportEnabled = false

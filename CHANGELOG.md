@@ -4,6 +4,9 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- A news headline no longer cuts into an episode mid-sentence. It waits for a real break in speech, however long that takes, and when the episode has no timed transcript it waits until the next episode starts. Previously it played anyway once the one-minute wait ran out. Weather alerts are unchanged.
+
 ## [0.7.2] - 2026-11-22
 
 ### Changed

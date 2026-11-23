@@ -91,7 +91,8 @@ public enum InterruptionEffect: Equatable, Sendable {
 ///
 /// It never speaks while program audio is not playing, speaks each bulletin id once, and drops a
 /// bulletin whose `expiresAt` has passed on this device's clock before waiting and before
-/// speaking. Restore and resume are emitted together, and only while the checkpoint is still
+/// speaking. A headline never cuts into speech: its wait deadline does not make it speak. It
+/// speaks only at a pause point or at the start of the next item (an episode boundary). Restore and resume are emitted together, and only while the checkpoint is still
 /// current, so a newer command always wins over a late speech completion.
 public struct InterruptionReducer: Sendable {
     public private(set) var state: InterruptionState = .idle
@@ -100,6 +101,9 @@ public struct InterruptionReducer: Sendable {
     public let waitLimit: TimeInterval
     /// Spoken or speaking ids with their expiry, so a bulletin is spoken once and the memory is bounded.
     private var spoken: [String: Date] = [:]
+    /// The item changed and program audio has not played since: the next playing moment is a
+    /// boundary between episodes, where a waiting headline may speak.
+    private var atItemBoundary = false
 
     /// Creates a reducer with ids already spoken on this device and their retention deadlines.
     /// Values whose deadline has passed are removed on the first event.
@@ -177,6 +181,7 @@ public struct InterruptionReducer: Sendable {
     }
 
     private mutating func changeItem() -> [InterruptionEffect] {
+        atItemBoundary = true
         guard case .speaking = state else { return [] }
         state = .idle
         return [.stopSpeech]
@@ -197,6 +202,8 @@ public struct InterruptionReducer: Sendable {
             demoteWaiting()
             return []
         }
+        let boundary = atItemBoundary
+        atItemBoundary = false
         var effects: [InterruptionEffect] = []
         switch state {
         case .speaking:
@@ -204,7 +211,7 @@ public struct InterruptionReducer: Sendable {
         case let .waiting(bulletin, deadline):
             if bulletin.severity != .extreme, pending.first?.severity == .extreme {
                 demoteWaiting()
-            } else if snapshot.now >= deadline {
+            } else if boundary || (snapshot.now >= deadline && bulletin.kind != .headline) {
                 state = .idle
                 effects += speak(bulletin, snapshot)
             } else {
@@ -215,7 +222,7 @@ public struct InterruptionReducer: Sendable {
         }
         while case .idle = state, !pending.isEmpty {
             let next = pending.removeFirst()
-            if next.severity == .extreme {
+            if next.severity == .extreme || (boundary && next.kind == .headline) {
                 effects += speak(next, snapshot)
             } else {
                 let deadline = snapshot.now.addingTimeInterval(waitLimit)

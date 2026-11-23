@@ -508,8 +508,13 @@ extension PlaybackController {
             guard let engine else { return }
             let found = await engine.cues(snapshot.entryID, snapshot.revisionID)
             guard !Task.isCancelled else { return }
-            let seconds = PausePointFinder.next(
-                after: snapshot.positionSeconds, cues: found.cues, timing: found.timing, waitLimit: remaining)
+            // A headline never cuts into speech: with no measurable pause it waits for the next
+            // episode (the reducer's item boundary) instead of interrupting at the wait limit.
+            let seconds = bulletin.kind == .headline
+                ? PausePointFinder.nextGap(after: snapshot.positionSeconds, cues: found.cues, timing: found.timing)
+                    ?? .infinity
+                : PausePointFinder.next(
+                    after: snapshot.positionSeconds, cues: found.cues, timing: found.timing, waitLimit: remaining)
             engine.pausePointTask = nil
             engine.pausePoint = (bulletin.id, snapshot.revisionID, seconds)
         }
