@@ -306,8 +306,7 @@ final class WiltedMacNowPlayingTests: XCTestCase {
         XCTAssertEqual(withPage, without, "the fallback must retain the normal Share presentation, got \(without)")
         let source = try WiltedMacHeadless.viewSource("WiltedMacPlayerContent.swift")
         XCTAssertTrue(source.contains(".help(\"Only title and show text is shared.\")"))
-        XCTAssertEqual(WiltedMacHeadless.occurrences(of: ".accessibilityLabel(\"Share\")", in: source), 2,
-                       "both destinations have the same normal accessible Share name")
+        XCTAssertTrue(source.contains(#".accessibilityHint("Only title and show text is shared.")"#))
     }
 
     func testAnArticleKeepsItsCanonicalURL() {
@@ -326,9 +325,9 @@ final class WiltedMacNowPlayingTests: XCTestCase {
         let pane = try WiltedMacHeadless.viewSource("WiltedMacNowPlayingPane.swift")
         XCTAssertFalse(pane.contains("currentPlaybackShareURL"), "the pane must not build its own share")
         let player = try WiltedMacHeadless.viewSource("WiltedMacPlayerContent.swift")
-        XCTAssertEqual(WiltedMacHeadless.occurrences(of: ".accessibilityLabel(\"Share\")", in: player), 2)
-        XCTAssertEqual(WiltedMacHeadless.occurrences(of: ".accessibilityIdentifier(\"wilted-player-share\")", in: player), 2)
-        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Image(systemName: \"square.and.arrow.up\")", in: player), 2)
+        let composer = try WiltedMacHeadless.viewSource("WiltedMacShareComposer.swift")
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: #".accessibilityLabel("Share")"#, in: composer), 1)
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: #".accessibilityIdentifier("wilted-player-share")"#, in: composer), 1)
         XCTAssertEqual(WiltedMacHeadless.occurrences(of: "currentPlaybackShareURL", in: player), 1,
                        "only the shared control reads it")
     }

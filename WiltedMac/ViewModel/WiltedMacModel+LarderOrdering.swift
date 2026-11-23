@@ -20,60 +20,56 @@ extension WiltedMacModel {
         episode.isPlayed || episode.playbackSeconds > 0 || currentPodcastEpisodeID == episode.id
     }
 
-    /// The group action names the queue mutation, not the retirement detail.
-    /// Media, prepared cuts, transcripts and listening history are preserved.
-    func larderGroupClearLabel(_ group: WiltedMacLarderGroup) -> String {
-        let episodes = larderUnfilteredEpisodes(in: group)
-        return "Remove all \(episodes.count) from Larder"
-    }
-
-    /// Removes exactly the rows the group renders from the Larder, and nothing
-    /// else: every row's download, prepared cut and transcript stay where they
-    /// are.
-    ///
-    /// Podcasts use one receipt-backed completion; books keep queue-only
-    /// removal. Each affected row leaves the Larder with immediate feedback.
-    func clearLarderGroup(_ group: WiltedMacLarderGroup) {
+    /// The header passes its rendered snapshot, after filtering and lifting rows into Active work.
+    func clearLarderGroup(_ section: WiltedMacLarderSection) {
 #if canImport(WiltedProducer)
-        let episodes = larderUnfilteredEpisodes(in: group)
-        guard !episodes.isEmpty else { return }
-        let podcasts = episodes.filter { !$0.isAudiobook }
-        if !podcasts.isEmpty { finishEpisodes(podcasts) }
-        let books = episodes.filter(\.isAudiobook)
-        guard !books.isEmpty else { return }
-        let ids = Set(books.map(\.id))
-        let wasPlaying = currentPodcastEpisodeID.map(ids.contains) ?? false
-        // The optimistic half: the whole group leaves the Larder on the next
-        // render, exactly as one row's removal does.
-        podcastQueueIDs.removeAll { ids.contains($0) }
-        if podcasts.isEmpty {
-            podcastOperationMessage = "Removing all \(books.count) in \(group.displayName) from Larder…"
+        guard section.statusGroup != nil, !section.items.isEmpty, !isSearchingLarder,
+              !isClearingLarderGroup, !isClosingTemporaryState, let store else { return }
+        let podcasts = section.podcasts
+        let candidates = completionCandidates(for: podcasts)
+        let books = section.books
+        let articles = section.articles
+        let bookIDs = Set(books.map(\.id))
+        isClearingLarderGroup = true
+        if !candidates.isEmpty { projectEpisodeCompletions(candidates) }
+        if !bookIDs.isEmpty { podcastQueueIDs.removeAll { bookIDs.contains($0) } }
+        if articles.count == section.items.count {
+            podcastOperationMessage = articles.count == 1 ? "Deleting 1 article…" : "Deleting \(articles.count) articles…"
+        } else if section.items.count != podcasts.count {
+            podcastOperationMessage = "Removing all \(section.items.count) in \(section.title) from Larder…"
         }
-        Task { [weak self] in
+        trackSubscriptionWrite { [weak self] in
             guard let self else { return }
-            var failedCount = 0
-            for episode in books {
+            defer { self.isClearingLarderGroup = false }
+            var failed = 0
+            var deleted = 0
+            for book in books {
                 do {
                     try await self.larderSortWriteHookForTesting?()
-                    guard let playback = self.playback, let id = try? ItemID(rawValue: episode.id) else {
-                        failedCount += 1
-                        continue
-                    }
-                    try await playback.removePodcastQueueEpisode(id)
-                } catch {
-                    failedCount += 1
-                }
+                    try await store.removePodcastQueueEpisode(ItemID(rawValue: book.id))
+                    if self.currentPodcastEpisodeID == book.id { await self.stopPlaybackForRemovedEpisode() }
+                } catch { failed += 1 }
             }
-            if wasPlaying, let current = self.currentPodcastEpisodeID, ids.contains(current) { await self.stopPlaybackForRemovedEpisode() }
-            await self.refreshPodcastQueueState()
-            await self.reloadLibraryRows()
-            // A bulk clear is not one episode's Skip, so nothing single is left
-            // for Undo Skip to restore. Announce only what the writes actually
-            // did; a failure names the rows it left behind.
-            if failedCount == 0, podcasts.isEmpty {
-                self.podcastOperationMessage = "Removed all \(books.count) in \(group.displayName) from Larder. No download, prepared cut, transcript, or listening history was touched."
-            } else if failedCount > 0 {
-                self.podcastOperationMessage = "Removed \(books.count - failedCount) of \(books.count) in \(group.displayName) from Larder; \(failedCount) could not be removed and stay in Larder."
+            for article in articles {
+                do {
+                    if try await self.commitArticleRemoval(article) { deleted += 1 }
+                } catch { failed += 1 }
+            }
+            if !bookIDs.isEmpty { await self.refreshPodcastQueueState() }
+            var completed: Set<String> = []
+            if !candidates.isEmpty {
+                completed = await self.persistEpisodeCompletions(candidates, store: store, at: nil,
+                    localNow: self.manualCompletionNow(), displayed: podcasts)
+            }
+            failed += podcasts.filter { !completed.contains($0.id) }.count
+            if failed > 0 {
+                self.podcastOperationMessage = "Removed \(section.items.count - failed) of \(section.items.count) from Larder. \(failed) could not be removed."
+            } else if !articles.isEmpty || !books.isEmpty {
+                // The receipt toast describes only the podcasts it can restore.
+                var results: [String] = []
+                if !bookIDs.isEmpty { results.append("Removed \(bookIDs.count) from the queue.") }
+                if deleted > 0 { results.append("Deleted \(deleted) \(deleted == 1 ? "article" : "articles").") }
+                self.podcastOperationMessage = results.isEmpty ? nil : results.joined(separator: " ")
             }
         }
 #endif

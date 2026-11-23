@@ -180,6 +180,7 @@ final class WiltedMacModel {
     /// Resumes the subscribe loop when the owner answers or the add is cancelled.
     @ObservationIgnored var adFreeFeedPromptContinuation: CheckedContinuation<Bool, Never>?
     var episodeAssociations: [String: LibraryEpisodeAssociation] = [:]
+    var isClearingLarderGroup = false
     var podcastOperationMessage: String?
     /// The episode an Undo button beside `podcastOperationMessage` would
     /// restore. Set only by `removeEpisode`'s success path, and cleared at the

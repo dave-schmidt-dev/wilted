@@ -32,6 +32,7 @@ struct WiltedMacLarderView: View {
         _feedPolicyBoard = State(initialValue: policyBoard ?? WiltedMacFeedPolicyBoard(model: model))
     }
     @Environment(\.colorScheme) var colorScheme
+    @State var pendingGroupClear: WiltedMacLarderSection?
     @State var dropTargetID: String?
     /// The row whose possible duplicate review sheet is open.
     @State var reviewTarget: WiltedMacEpisodeIdentityReviewRequest?
@@ -58,6 +59,17 @@ struct WiltedMacLarderView: View {
             }
         }
         .focusedSceneValue(\.wiltedLarderSearchFocus, searchFocusAction)
+        .confirmationDialog(
+            pendingGroupClear.map { "\($0.clearLabel)?" } ?? "",
+            isPresented: Binding(get: { pendingGroupClear != nil }, set: { if !$0 { pendingGroupClear = nil } }),
+            titleVisibility: .visible, presenting: pendingGroupClear
+        ) { section in
+            Button(section.clearLabel, role: .destructive) { model.clearLarderGroup(section) }
+                .accessibilityIdentifier("wilted-larder-clear-confirm")
+            Button("Cancel", role: .cancel) {}
+        } message: { section in
+            Text(section.clearDetails)
+        }
         .sheet(item: $reviewTarget) { request in
             WiltedMacEpisodeIdentityReview(model: model, anchorID: request.anchorID)
         }

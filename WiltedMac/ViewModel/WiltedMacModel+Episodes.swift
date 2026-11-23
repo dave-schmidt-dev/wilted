@@ -473,8 +473,7 @@ extension WiltedMacModel {
         larderSearchResults.filter { Self.larderGroup(for: $0) == group }
     }
 
-    /// A group's rows without the search applied: what the sidebar totals and
-    /// every bulk action mean.
+    /// A group's unfiltered episodes for sidebar totals and global download and preparation actions.
     func larderUnfilteredEpisodes(in group: WiltedMacLarderGroup) -> [WiltedMacEpisode] {
         larderWaitingEpisodes.filter { Self.larderGroup(for: $0) == group }
     }

@@ -470,6 +470,28 @@ extension WiltedMacJourneyUITests {
         search.typeKey(.delete, modifierFlags: [])
         XCTAssertTrue(larderRow.waitForExistence(timeout: 5))
 
+        // The group action captures the Articles filter. Cancel leaves the row available for a retry.
+        let kinds = app.descendants(matching: .any)["wilted-larder-kind"]
+        kinds.click()
+        app.menuItems["Articles"].click()
+        let clear = app.buttons["wilted-larder-clear-ready"]
+        XCTAssertTrue(clear.waitForExistence(timeout: 5))
+        XCTAssertEqual(clear.label, "Delete 1 article in Ready")
+        clear.click()
+        let confirm = app.buttons["wilted-larder-clear-confirm"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(confirm.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(clear.exists)
+        clear.click()
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.click()
+        XCTAssertTrue(clear.waitForNonExistence(timeout: 5))
+        kinds.click()
+        app.menuItems["All"].click()
+        XCTAssertTrue(app.buttons["wilted-larder-show-notes-\(episodeID)"].waitForExistence(timeout: 5),
+                      "the hidden podcast is still in Larder after the article is deleted")
+
         // The same journey ends with a wide playing fixture to exercise the side pane.
         let playing = try launch(arguments: ["--wilted-ui-fixture-playing", "--wilted-ui-fixture-podcasts",
                                              "--wilted-ui-fixture-window-width", "1400"])

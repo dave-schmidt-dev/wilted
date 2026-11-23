@@ -25,7 +25,7 @@ extension WiltedMacModelTests {
         ] {
             XCTAssertTrue(view.contains(identifier), "\(identifier) must name its own group")
         }
-        XCTAssertTrue(view.contains("model.larderGroupClearLabel(group)"))
+        XCTAssertTrue(view.contains("Button(section.clearLabel)"))
     }
 
     func testAGroupClearRemovesExactlyItsOwnRows() async throws {
@@ -36,7 +36,7 @@ extension WiltedMacModelTests {
         let ready = destinationEpisode("clear-ready", download: .completed,
                                        preparation: .prepared(summary: "Ready"))
         let (model, canonical) = try await manualCompletionModel([available, started, untouched, ready])
-        model.clearLarderGroup(.downloaded)
+        model.clearLarderGroup(try displayedSection(.downloaded, in: model))
 
         XCTAssertEqual(model.larderEpisodes(in: .available).map(\.id), [canonical[0].id])
         XCTAssertEqual(model.larderEpisodes(in: .playable).map(\.id), [canonical[3].id])
@@ -51,7 +51,7 @@ extension WiltedMacModelTests {
         await WiltedMacHeadless.drainDecisions(model)
     }
 
-    func testAClearLabelSaysClearWhenAnyRowWasStartedAndSkipOtherwise() {
+    func testPodcastGroupLabelNamesCompletionAndCountsDisplayedRows() throws {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         var started = destinationEpisode("label-started", download: .completed, preparation: .notPrepared)
         started.playbackSeconds = 12
@@ -63,8 +63,8 @@ extension WiltedMacModelTests {
             model.seedPodcastQueueMembershipForTesting(value)
         }
 
-        XCTAssertEqual(model.larderGroupClearLabel(.downloaded), "Remove all 2 from Larder")
-        XCTAssertEqual(model.larderGroupClearLabel(.playable), "Remove all 1 from Larder")
+        XCTAssertEqual(try displayedSection(.downloaded, in: model).clearLabel, "Mark all 2 completed")
+        XCTAssertEqual(try displayedSection(.playable, in: model).clearLabel, "Mark 1 completed")
     }
 
     func testAGroupRemovalCompletesStartedAndUnstartedPodcastsTogether() async throws {
@@ -72,7 +72,7 @@ extension WiltedMacModelTests {
         started.playbackSeconds = 12
         let fresh = destinationEpisode("report-fresh", download: .completed, preparation: .notPrepared)
         let (model, canonical) = try await manualCompletionModel([started, fresh])
-        model.clearLarderGroup(.downloaded)
+        model.clearLarderGroup(try displayedSection(.downloaded, in: model))
         for original in canonical {
             let completed = try XCTUnwrap(model.episodes.first { $0.id == original.id })
             XCTAssertTrue(completed.isPlayed)
@@ -86,6 +86,60 @@ extension WiltedMacModelTests {
         XCTAssertEqual(Set(model.podcastQueueIDs), Set(canonical.map(\.id)))
         XCTAssertFalse(model.isPlaying)
         XCTAssertTrue(model.episodes.allSatisfy { !$0.isPlayed && $0.removalKind == nil })
+    }
+
+    private func displayedSection(_ group: WiltedMacLarderGroup, in model: WiltedMacModel) throws -> WiltedMacLarderSection {
+        let sections = WiltedMacEpisodePresentationSections.displaySections(
+            model.larderSections(), grouping: model.larderGrouping, sort: model.larderSort,
+            direction: model.larderSortDirection, isDeferredForOffPeak: { model.isDeferredForOffPeak($0) })
+        return try XCTUnwrap(sections.first { $0.statusGroup == group })
+    }
+
+    func testClearingFilteredArticlesDeletesOnlyTheShownReadyArticle() async throws {
+        let ready = destinationEpisode("hidden-ready", download: .completed, preparation: .prepared(summary: "Ready"))
+        let (model, podcasts) = try await manualCompletionModel([ready])
+        let store = try XCTUnwrap(model.store)
+        for name in ["ready", "preparing"] {
+            let url = try XCTUnwrap(URL(string: "https://example.test/\(name)"))
+            let article = try Article(itemID: ItemID.derive(from: url), canonicalURL: url, title: name,
+                                      source: "Test", createdAt: Timestamp(Date()))
+            try await store.save(article: article)
+            model.articles.append(WiltedMacArticle(id: article.itemID.rawValue, title: name, source: "Test",
+                                                   url: url, isReady: name == "ready", durationSeconds: nil))
+        }
+        model.larderKind = .articles
+        let section = try displayedSection(.playable, in: model)
+        XCTAssertEqual(section.items.map(\.title), ["ready"])
+        XCTAssertTrue(section.requiresClearConfirmation)
+        XCTAssertEqual(section.clearLabel, "Delete 1 article")
+        let articleID = try ItemID(rawValue: XCTUnwrap(section.items.first).id)
+
+        model.clearLarderGroup(section)
+        await WiltedMacHeadless.drainDecisions(model)
+        let savedArticle = try await store.article(for: articleID)
+        XCTAssertEqual(savedArticle?.isDeleted, true)
+        XCTAssertEqual(model.articles.map(\.title), ["preparing"])
+        XCTAssertEqual(model.podcastQueueIDs, podcasts.map(\.id))
+        let hiddenID = try ItemID(rawValue: podcasts[0].id)
+        let hiddenRemoval = try await store.removalKind(for: hiddenID)
+        XCTAssertNil(hiddenRemoval)
+        XCTAssertNil(model.undoToast.current)
+        XCTAssertEqual(model.podcastOperationMessage, "Deleted 1 article.")
+    }
+
+    func testGroupCompletionLeavesTheDownloadLiftedIntoActiveWorkAlone() async throws {
+        let waiting = destinationEpisode("waiting", download: .notDownloaded, preparation: .notPrepared)
+        let active = destinationEpisode("active", download: .downloading(received: 1, expected: 9), preparation: .notPrepared)
+        let (model, rows) = try await manualCompletionModel([waiting, active])
+        let section = try displayedSection(.available, in: model)
+        XCTAssertEqual(section.items.map(\.id), [rows[0].id])
+        XCTAssertFalse(section.requiresClearConfirmation)
+        XCTAssertEqual(section.clearLabel, "Mark 1 completed")
+        model.clearLarderGroup(section)
+        await WiltedMacHeadless.drainDecisions(model)
+        XCTAssertEqual(model.podcastQueueIDs, [rows[1].id])
+        XCTAssertEqual(model.undoToast.current?.subjects, [rows[0].id])
+        XCTAssertEqual(model.undoToast.current?.message, "Marked \(waiting.title) completed.")
     }
 
     private func manualCompletionModel(_ candidates: [WiltedMacEpisode]) async throws -> (WiltedMacModel, [WiltedMacEpisode]) {

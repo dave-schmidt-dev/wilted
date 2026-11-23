@@ -6,7 +6,7 @@ import XCTest
 @testable import WiltedMac
 
 /// The discoverability surfaces this change owns: a playlist's rename and delete beside its name,
-/// Add to Playlist as a visible Larder row action, and the player's named Share options control.
+/// Add to Playlist as a visible Larder row action, and the player's named Share menu.
 /// Every assertion reads what a shipping view draws or what its action writes, never a source
 /// spelling.
 @MainActor
@@ -261,15 +261,15 @@ final class WiltedMacPlaylistDiscoverabilityTests: XCTestCase {
         await model.close()
     }
 
-    // MARK: - Share options
+    // MARK: - Share menu
 
-    func testShareComposerNamesItselfShareOptionsInThePlayerContext() throws {
+    func testPlayerShowsShareWithSummaryPanelClosed() throws {
         let model = WiltedMacModel(arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         model.installPlaybackStateForTesting(
             episode: episode(), isPlaying: false, position: 0, duration: 60)
         let lines = try WiltedMacHeadless.recognizedText(
             WiltedMacPlaybackShareLink(model: model).padding(12), size: CGSize(width: 360, height: 100))
-        XCTAssertTrue(lines.contains { $0.localizedCaseInsensitiveContains("Share options") },
+        XCTAssertTrue(lines.contains { $0.localizedCaseInsensitiveContains("Share") },
                       "the control names itself: \(lines)")
         XCTAssertFalse(lines.contains { $0.localizedCaseInsensitiveContains("transcript summary") },
                        "the summary popover stays closed until asked: \(lines)")

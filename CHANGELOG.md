@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Mac Larder group actions count and act on the displayed rows, including the selected kind. The control names podcast completion or article deletion, and a mixed group explains each action before confirmation.
+- The Mac player has one Share menu for the page link, title and show text when a link is missing, and transcript summaries.
+
 ## [0.7.2] - 2026-11-22
 
 ### Changed

@@ -26,6 +26,19 @@ extension WiltedMacModel {
 #if canImport(WiltedProducer)
     func finishEpisodes(_ requested: [WiltedMacEpisode], at: Timestamp? = nil) {
         guard let store, !isClosingTemporaryState else { return }
+        let candidates = completionCandidates(for: requested)
+        guard !candidates.isEmpty else { return }
+        let localNow = manualCompletionNow()
+        projectEpisodeCompletions(candidates)
+        trackSubscriptionWrite { [weak self] in
+            guard let self else { return }
+            _ = await self.persistEpisodeCompletions(candidates, store: store, at: at, localNow: localNow)
+        }
+    }
+
+    /// Expands the requested podcast rows to the raw members of each logical episode.
+    func completionCandidates(for requested: [WiltedMacEpisode]) -> [WiltedMacEpisode] {
+        guard !requested.isEmpty else { return [] }
         let memberIDs = Set(requested.flatMap { logicalMemberIDs($0.id) })
         let expanded = episodes.filter { memberIDs.contains($0.id) }
         let candidates = expanded.filter { (try? ItemID(rawValue: $0.id)) != nil && !$0.isAudiobook && episodeCompletionProjections[$0.id] == nil && ($0.removalKind == nil || episodeAssociations[$0.id]?.isTerminal == false) }
@@ -33,14 +46,9 @@ extension WiltedMacModel {
             if let invalid = requested.first, (try? ItemID(rawValue: invalid.id)) == nil {
                 podcastOperationMessage = "\(invalid.title) could not be marked completed."
             }
-            return
+            return []
         }
-        let localNow = manualCompletionNow()
-        projectEpisodeCompletions(candidates)
-        trackSubscriptionWrite { [weak self] in
-            guard let self else { return }
-            _ = await self.persistEpisodeCompletions(candidates, store: store, at: at, localNow: localNow)
-        }
+        return candidates
     }
 
     func projectEpisodeCompletions(_ candidates: [WiltedMacEpisode]) {
@@ -61,7 +69,8 @@ extension WiltedMacModel {
     func finishCurrentPodcast(_ episode: WiltedMacEpisode) async -> Bool {
         guard let store, !isClosingTemporaryState, !episode.isAudiobook else { return false }
         if episodeCompletionProjections[episode.id] == nil { projectEpisodeCompletions([episode]) }
-        return await persistEpisodeCompletions([episode], store: store, at: nil, localNow: manualCompletionNow())
+        let committed = await persistEpisodeCompletions([episode], store: store, at: nil, localNow: manualCompletionNow())
+        return committed == [episode.id]
     }
 
     /// Store attachment rebuilds the one expiry task from durable receipts.
@@ -122,7 +131,9 @@ extension WiltedMacModel {
         }
     }
 
-    private func persistEpisodeCompletions(_ candidates: [WiltedMacEpisode], store: LocalLibraryStore, at: Timestamp?, localNow: Date) async -> Bool {
+    /// Reports committed raw IDs for accounting and keeps Undo bound to the durable receipt.
+    func persistEpisodeCompletions(_ candidates: [WiltedMacEpisode], store: LocalLibraryStore, at: Timestamp?,
+                                   localNow: Date, displayed: [WiltedMacEpisode]? = nil) async -> Set<String> {
         do {
             try await subscriptionWriteHookForTesting?()
             let result = try await store.manuallyCompleteEpisodes(candidates.compactMap { try? ItemID(rawValue: $0.id) }, at: at, localNow: localNow)
@@ -134,7 +145,7 @@ extension WiltedMacModel {
                     // Completion creates no new work and must not cancel that owner.
                 } else { rollbackEpisodeCompletionProjection(episode.id, title: episode.title) }
             }
-            guard let committedEpisode = candidates.first(where: { committed.contains($0.id) }) else { return false }
+            guard let committedEpisode = candidates.first(where: { committed.contains($0.id) }) else { return [] }
             var receipt = committedEpisode
             receipt.manualCompletionOperationID = result.operationID
             let undo = receipt
@@ -149,17 +160,20 @@ extension WiltedMacModel {
             podcastOperationMessage = nil
             // A result with no deadline saved no receipt, so there is nothing Undo could reverse.
             if let deadline = result.undoAvailableUntil {
+                let rows = displayed?.filter { committed.contains($0.id) }
+                let count = rows?.count ?? committed.count
+                let title = rows?.first?.title ?? committedEpisode.title
                 undoToast.offer(
-                    message: committed.count == 1
-                        ? "Marked \(committedEpisode.title) completed."
-                        : "Marked \(committed.count) episodes completed.",
+                    message: count == 1
+                        ? "Marked \(title) completed."
+                        : "Marked \(count) episodes completed.",
                     actionName: "Mark Completed", subjects: committed, availableUntil: deadline
                 ) { [weak self] in self?.undoSkipEpisode(undo) }
             }
-            return committed.count == candidates.count
+            return committed
         } catch {
             for episode in candidates { rollbackEpisodeCompletionProjection(episode.id, title: episode.title) }
-            return false
+            return []
         }
     }
 #endif

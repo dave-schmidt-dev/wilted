@@ -108,8 +108,8 @@ extension WiltedMacLarderView {
         .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 
-    /// A group's own bulk action and its non-destructive Larder removal.
-    @ViewBuilder private func groupActions(_ group: WiltedMacLarderGroup) -> some View {
+    /// Actions belong to the displayed section, including its exact removal targets.
+    @ViewBuilder private func groupActions(_ group: WiltedMacLarderGroup, section: WiltedMacLarderSection) -> some View {
         switch group {
         case .playable:
             Button("Play the first") {
@@ -123,13 +123,16 @@ extension WiltedMacLarderView {
         case .downloaded, .available:
             EmptyView()
         }
-        Button(model.larderGroupClearLabel(group)) {
-            model.clearLarderGroup(group)
+        Button(section.clearLabel) {
+            if section.requiresClearConfirmation {
+                pendingGroupClear = section
+            } else {
+                model.clearLarderGroup(section)
+            }
         }
-        .disabled(model.isSearchingLarder)
-        .help("Removes these rows from Larder without deleting audio, prepared cuts, transcripts, or listening history.")
-        .accessibilityHint("Does not delete audio, prepared cuts, transcripts, or listening history.")
-        .accessibilityLabel("\(model.larderGroupClearLabel(group)) in \(group.displayName)")
+        .disabled(model.isSearchingLarder || model.isClearingLarderGroup)
+        .help(section.clearDetails)
+        .accessibilityLabel("\(section.clearLabel) in \(group.displayName)")
         .accessibilityIdentifier(groupClearIdentifier(group))
     }
 
@@ -272,14 +275,14 @@ extension WiltedMacLarderView {
             HStack(alignment: .firstTextBaseline) {
                 sectionHeading(section, colorScheme: colorScheme)
                 if let group = actionGroup {
-                    groupActions(group).buttonStyle(.bordered).controlSize(.small)
+                    groupActions(group, section: section).buttonStyle(.bordered).controlSize(.small)
                 }
             }
             .fixedSize(horizontal: true, vertical: false)
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                 sectionHeading(section, colorScheme: colorScheme)
                 if let group = actionGroup {
-                    WiltedMacFlowLayout { groupActions(group) }
+                    WiltedMacFlowLayout { groupActions(group, section: section) }
                         .buttonStyle(.bordered).controlSize(.small)
                 }
             }
