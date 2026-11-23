@@ -3,9 +3,8 @@ import WiltedLibrary
 
 /// Settings > Ad feedback: the listener's ad-removal presses from both players. Every press counts
 /// for the ad corpus with its default label as soon as it is filed; here it can be relabelled or
-/// removed, and a removed one restored. `make ad-feedback-drafts` turns the counted ones into draft
-/// ad-corpus labels. Shown once there is any feedback, so a library without it keeps its Settings
-/// as they were.
+/// removed, a removed one restored, and a counted one marked handled. Shown once there is any
+/// feedback, so a library without it keeps its Settings as they were.
 struct WiltedMacAdFeedbackCard: View {
     let feedback: WiltedMacAdFeedbackController
     @Environment(\.colorScheme) private var colorScheme
@@ -51,13 +50,15 @@ struct WiltedMacAdFeedbackCard: View {
     }
 
     private var summary: String {
-        let counted = feedback.counted.count
-        let presses = counted == 1 ? "1 press counts" : "\(counted) presses count"
-        return "\(presses) for the ad corpus (make ad-feedback-drafts). Change a label or remove a press here."
+        let reports = feedback.counted
+        guard !reports.isEmpty else { return "No active reports." }
+        let remaining = reports.filter { $0.handledAt == nil }.count
+        let total = reports.count == 1 ? "1 report" : "\(reports.count) reports"
+        return remaining == 0 ? "\(total), all handled." : "\(total), \(remaining) to review."
     }
 }
 
-/// One entry: what was pressed, where, about which cut, and its label and Remove or Restore.
+/// One entry: what was pressed, where, about which cut, and its label and actions.
 struct WiltedMacAdFeedbackRow: View {
     let feedback: WiltedMacAdFeedbackController
     let entry: WiltedMacAdFeedbackEntry
@@ -94,19 +95,24 @@ struct WiltedMacAdFeedbackRow: View {
             }
             .labelsHidden()
             .fixedSize()
-            .help("The corpus label this press becomes")
+            .help("Change what this report says about the audio")
             .accessibilityIdentifier("wilted-ad-feedback-label")
             Button("Remove") { Task { await feedback.remove(entry.id) } }
-                .help("Stop this press counting for the ad corpus")
+                .help("Move this report to Removed")
                 .accessibilityIdentifier("wilted-ad-feedback-remove")
+            Button(entry.handledAt == nil ? "Mark handled" : "Handled") {
+                Task { await feedback.markHandled(entry.id) }
+            }
+            .disabled(entry.handledAt != nil)
+            .accessibilityIdentifier("wilted-ad-feedback-handled")
         } else {
             Button("Restore") { Task { await feedback.restore(entry.id) } }
-                .help("Count this press for the ad corpus again")
+                .help("Include this report in ad feedback again")
                 .accessibilityIdentifier("wilted-ad-feedback-restore")
         }
     }
 
-    /// The facts under the title, in words; no transcript text is ever shown or kept.
+    /// The show, device, time and position of the reported audio.
     static func details(for entry: WiltedMacAdFeedbackEntry) -> [String] {
         var lines: [String] = []
         let show = entry.showTitle.map { "\($0) · " } ?? ""

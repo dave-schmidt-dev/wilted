@@ -409,18 +409,23 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
         XCTAssertFalse(text.contains("Show settings"), "the rules sheet has no page-back control: \(text)"); await board.rulesEditor(for: f.feed).task?.value
     }
 
-    func testDefaultsAndShowSettingsExposeTheirActualSourcesAtNarrowAndWideWidths() async throws {
+    func testNewEpisodesSettingsDoesNotRepeatDownloadAndPrepareDefaults() async throws {
         let f = try await makeFixture(); let board = WiltedMacFeedPolicyBoard(model: f.model); await board.reload()
         f.model.settingsSection = .newEpisodes
         for scale: WiltedTheme.TextScale in [.standard, .large] {
             f.model.setTextScale(scale)
             let minimum = WiltedMacShellLayout.windowMinimumWidth(scale: scale)
             for width: CGFloat in [minimum, 1400] {
-            // The detail column alone: OCR over the whole window drops the
-            // settings text once the sidebar narrows, which says nothing about layout.
-            let detail = width - WiltedMacShellLayout.sidebarIdealWidth
-            let text = try capture(WiltedMacSettingsView(model: f.model), "defaults-\(scale.rawValue)-\(Int(width))", width: detail, height: 900)
-            XCTAssertTrue(text.contains("Set in Larder"), text); XCTAssertTrue(text.contains("Set in Preparing"), text)
+                let detail = width - WiltedMacShellLayout.sidebarIdealWidth
+                let text = try capture(
+                    WiltedMacSettingsView(model: f.model).automationCard.environment(\.wiltedTextScale, scale),
+                    "defaults-\(scale.rawValue)-\(Int(width))", width: detail, height: 900
+                )
+                for label in ["Download everything in Larder", "Prepare everything downloaded", "Auto keep", "Kept limit"] {
+                    XCTAssertTrue(text.contains(label), text)
+                }
+                XCTAssertFalse(text.contains("Set in Larder"), text)
+                XCTAssertFalse(text.contains("Set in Preparing"), text)
             }
         }
         let source = try WiltedMacHeadless.viewSource("WiltedMacShowSettingsView.swift")

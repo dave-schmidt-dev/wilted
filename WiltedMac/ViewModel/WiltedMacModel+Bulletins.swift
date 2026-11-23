@@ -135,13 +135,8 @@ final class WiltedMacBulletinHub {
             if request == newsReadinessRequest { isCheckingNewsSource = false }
         }
         do {
-            let feeds = try await store.articleFeeds()
-            var foundNewsSource = false
-            for feed in feeds {
-                guard try await store.isNews(feedID: feed.itemID) else { continue }
-                foundNewsSource = true
-                break
-            }
+            let feeds = try await NewsHeadlineCandidateReader.headlineFeeds(in: store)
+            let foundNewsSource = !feeds.isEmpty
             guard request == newsReadinessRequest, model.store === store else { return }
             hasNewsSource = foundNewsSource
             hasCheckedNewsSource = true
@@ -267,29 +262,7 @@ final class WiltedMacBulletinHub {
     /// poll fails only when every feed did.
     private func newsCandidates() async throws -> [NewsHeadlineCandidate] {
         guard let model, let store = model.store else { throw CancellationError() }
-        var candidates: [NewsHeadlineCandidate] = []
-        var attempted = 0
-        var failed = 0
-        var lastFailure: Error?
-        for feed in try await store.articleFeeds() where (try? await store.isNews(feedID: feed.itemID)) == true {
-            attempted += 1
-            do {
-                let document = try await model.podcastFeedClient.loadArticleFeed(feed.canonicalURL)
-                for item in document.items.prefix(50) {
-                    guard let id = try? item.id(feedURL: feed.canonicalURL) else { continue }
-                    candidates.append(NewsHeadlineCandidate(
-                        id: id.rawValue, feedTitle: feed.title, title: item.title, publishedAt: item.publishedAt,
-                        link: item.link, categories: item.categories))
-                }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                failed += 1
-                lastFailure = error
-            }
-        }
-        if attempted > 0, failed == attempted, let lastFailure { throw lastFailure }
-        return candidates
+        return try await NewsHeadlineCandidateReader.read(in: store, using: model.podcastFeedClient).candidates
     }
 
     // MARK: - Spoken interruptions
@@ -477,7 +450,7 @@ final class WiltedMacBulletinHub {
 
     /// One line for Settings, or nil while there is nothing to say.
     static func statusLine(_ status: BulletinProducerStatus, now: Date = Date()) -> String? {
-        if status.isPolling { return "Checking news feeds\u{2026}" }
+        if status.isPolling { return "Checking headline feeds\u{2026}" }
         if let waiting = status.waitingFor { return "Waiting: \(waiting)" }
         if let error = status.lastError {
             let retry = status.nextPollAt.map { " Next try \($0.formatted(date: .omitted, time: .shortened))." } ?? ""

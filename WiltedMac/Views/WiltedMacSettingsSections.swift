@@ -123,7 +123,7 @@ extension WiltedMacSettingsView {
         case .providers:
             WiltedMacProvidersSettingsView(model: model)
         case .reports:
-            WiltedMacReportsCard(model: model, location: location)
+            WiltedMacReportsCard(model: model, location: location, policyBoard: feedPolicyBoard)
         case .devices:
             syncCard
         case .about:

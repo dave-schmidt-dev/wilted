@@ -99,6 +99,12 @@ final class WiltedMacAdFeedbackController {
         await perform { try await $0.review(id: id, as: .accepted, label: nil, at: at) }
     }
 
+    /// Marks a counted press handled while keeping its label and corpus status.
+    func markHandled(_ id: String) async {
+        let at = now()
+        await perform { try await $0.markHandled(id: id, at: at) }
+    }
+
     private func perform(_ change: (WiltedMacAdFeedbackInbox) async throws -> Void) async {
         await loadIfNeeded()
         do {

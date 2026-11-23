@@ -13,7 +13,7 @@ enum WiltedMacFeedKind {
     }
 }
 
-/// One group of the Feeds list: podcasts, article feeds, or article feeds marked News (headline sources).
+/// One group of the Feeds list: podcasts, article feeds, or article feeds with Headlines only turned on.
 struct WiltedMacFeedSection: Identifiable, Equatable {
     enum Kind: String, CaseIterable {
         case podcasts, articles, headlines
@@ -22,7 +22,7 @@ struct WiltedMacFeedSection: Identifiable, Equatable {
             switch self {
             case .podcasts: "Podcasts"
             case .articles: "Articles"
-            case .headlines: "Headlines"
+            case .headlines: "Headline feeds"
             }
         }
     }

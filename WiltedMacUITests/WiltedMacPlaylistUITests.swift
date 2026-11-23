@@ -111,9 +111,8 @@ extension WiltedMacJourneyUITests {
         XCTAssertTrue(includeSummary.waitForNonExistence(timeout: 5), "the panel closes without sharing")
     }
 
-    /// The automatic editor: copied rules, a grouped formula with its live
-    /// preview, an unknown reference that clears both, a preview title's exact
-    /// notes, and a save whose pending and completion states are visible.
+    /// The automatic editor: help opens and closes, copied rules, a grouped
+    /// formula preview, inline errors, exact preview notes, and a visible save.
     func test08AutomaticPlaylistFormulaPreviewAndSave() throws {
         let app = try launchFixture(extraArguments: ["--wilted-ui-fixture-playlist-write-delay"])
         let episodeID = try keepFixtureEpisode(app)
@@ -129,6 +128,19 @@ extension WiltedMacJourneyUITests {
         editRules.click()
         let sheet = element(app, "wilted-playlist-rules-sheet")
         try requireElement(sheet, name: "Rules sheet", timeout: 10)
+
+        let help = app.buttons["wilted-playlist-rule-help"]
+        try requireControl(help, name: "Match expression help")
+        help.click()
+        let guidance = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@",
+                        "Rules are numbered above", "Rules are numbered above")
+        ).firstMatch
+        XCTAssertTrue(guidance.waitForExistence(timeout: 5), "help opens the expression instructions")
+        XCTAssertTrue(words(guidance).contains("combine them with AND, OR, NOT and parentheses"),
+                      "the popover explains the supported expression operators")
+        app.typeKey(.escape, modifierFlags: [])
+        XCTAssertTrue(guidance.waitForNonExistence(timeout: 5), "dismissing help hides its instructions")
 
         let add = app.buttons["wilted-playlist-rules-add"]
         try requireControl(add, name: "Add rule")
@@ -163,6 +175,9 @@ extension WiltedMacJourneyUITests {
         replaceText(expression, with: "99")
         let error = element(app, "wilted-playlist-rules-error")
         XCTAssertTrue(error.waitForExistence(timeout: 5), "an unknown rule must be named immediately")
+        XCTAssertGreaterThan(error.frame.minY, expression.frame.maxY - 1,
+                             "the invalid-expression error stays beside the field")
+        XCTAssertTrue(guidance.waitForNonExistence(timeout: 1), "the hidden help copy does not replace the inline error")
         let save = app.buttons["wilted-playlist-rules-save"]
         XCTAssertTrue(save.exists)
         XCTAssertFalse(save.isEnabled, "Save is disabled while the formula is invalid")

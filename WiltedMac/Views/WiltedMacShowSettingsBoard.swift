@@ -1,4 +1,14 @@
+import WiltedDomain
 import WiltedProducer
+
+struct WiltedMacShowSettingsResetUndo {
+    fileprivate let feedID: String
+    fileprivate let policy: FeedAutomationPolicy
+    fileprivate let isNews: Bool
+    fileprivate let isAdFree: Bool
+    fileprivate let removesSelfPromotion: Bool
+    fileprivate let sendsForAdFinding: Bool
+}
 
 enum WiltedMacShowSetting: String, CaseIterable {
     case autoKeep
@@ -38,6 +48,21 @@ extension WiltedMacFeedPolicyBoard {
         WiltedMacShowSetting.allCases.filter { isOverridden($0, for: feedID) }.count
     }
 
+    func customizedSettingNames(for feedID: String) -> [String] {
+        WiltedMacShowSetting.allCases.filter { isOverridden($0, for: feedID) }.map { setting in
+            return switch setting {
+            case .autoKeep: "Auto keep"
+            case .autoDownload: "Auto download"
+            case .autoPrepare: "Auto prepare"
+            case .keptLimit: "Kept limit"
+            case .news: "Headlines only"
+            case .removeAds: "Remove ads"
+            case .selfPromotion: "Remove the show's own promotion"
+            case .adFinding: "Send this show for ad finding"
+            }
+        }
+    }
+
     func reset(_ setting: WiltedMacShowSetting, for feedID: String) {
         guard isLoaded(feedID) else { return }
         switch setting {
@@ -74,8 +99,17 @@ extension WiltedMacFeedPolicyBoard {
     }
 
     /// Removes active overrides while keeping a previously refused show refused.
-    func resetAllOverrides(for feedID: String) {
-        guard isLoaded(feedID) else { return }
+    @discardableResult
+    func resetAllOverrides(for feedID: String) -> WiltedMacShowSettingsResetUndo? {
+        guard isLoaded(feedID) else { return nil }
+        refreshAdPreferences()
+        guard explicitOverrideCount(for: feedID) > 0 else { return nil }
+
+        let undo = WiltedMacShowSettingsResetUndo(
+            feedID: feedID, policy: policy(for: feedID), isNews: isNews(feedID),
+            isAdFree: isAdFree(feedID), removesSelfPromotion: removesSelfPromotion(feedID),
+            sendsForAdFinding: sendsForAdFinding(feedID)
+        )
 
         // Revoke an opt-in before other changes can restart preparation.
         resetAdFinding(for: feedID)
@@ -91,5 +125,52 @@ extension WiltedMacFeedPolicyBoard {
         if isOverridden(.news, for: feedID) { reset(.news, for: feedID) }
         if isOverridden(.selfPromotion, for: feedID) { reset(.selfPromotion, for: feedID) }
         if isOverridden(.removeAds, for: feedID) { reset(.removeAds, for: feedID) }
+        return undo
+    }
+
+    /// Restores reset choices that still have their reset value, preserving any later edits.
+    func undoResetAllOverrides(_ undo: WiltedMacShowSettingsResetUndo) async -> Bool {
+        let feedID = undo.feedID
+        guard isLoaded(feedID) else { return false }
+
+        await settle()
+        if model.store != nil {
+            await reload()
+            guard loadState == .loaded, isLoaded(feedID) else { return false }
+        }
+
+        let current = policy(for: feedID)
+        _ = update(
+            feedID,
+            autoKeep: current.autoKeep == .useGlobal ? undo.policy.autoKeep : nil,
+            autoDownload: current.autoDownload == .useGlobal ? undo.policy.autoDownload : nil,
+            autoPrepare: current.autoPrepare == .useGlobal ? undo.policy.autoPrepare : nil,
+            keptLimit: current.keptLimit == .useGlobal ? undo.policy.keptLimit : nil
+        )
+        if isArticleFeed(feedID), !isNews(feedID), undo.isNews {
+            _ = setNews(true, for: feedID)
+        }
+        if !removesSelfPromotion(feedID), undo.removesSelfPromotion {
+            _ = setRemoveSelfPromotion(true, for: feedID)
+        }
+        if !isAdFree(feedID), undo.isAdFree {
+            _ = setAdFree(true, for: feedID)
+        }
+        if !sendsForAdFinding(feedID), undo.sendsForAdFinding,
+           !AdLabellerPreferences(preferences: model.preferences).keptBackFeedIDs.contains(feedID) {
+            _ = setSendForAdFinding(true, for: feedID)
+        }
+        let expectedPolicy = policy(for: feedID)
+        let expectedHeadlinesOnly = isNews(feedID)
+        await settle()
+        refreshAdPreferences()
+        if let store = model.store {
+            guard let id = try? ItemID(rawValue: feedID),
+                  (try? await store.feedAutomationPolicy(for: id)) == expectedPolicy else { return false }
+            if isArticleFeed(feedID) {
+                return (try? await store.isNews(feedID: id)) == expectedHeadlinesOnly
+            }
+        }
+        return policy(for: feedID) == expectedPolicy && isNews(feedID) == expectedHeadlinesOnly
     }
 }

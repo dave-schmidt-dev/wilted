@@ -117,7 +117,8 @@ final class WiltedMorningReportController {
         let calendar = Calendar.current
         model.preferences.set(MorningReportSchedule.dayKey(now, calendar: calendar), forKey: Self.lastRunPreferenceKey)
         state = .building(fraction: 0, detail: "Starting the morning report")
-        let contact = model.automationSettings.nwsContact
+        let settings = model.automationSettings
+        let contact = settings.nwsContact
         let location = model.bulletinHub.location
         let builder = MorningReportBuilder(
             store: store,
@@ -130,6 +131,8 @@ final class WiltedMorningReportController {
                     repositoryURL: "https://github.com/dave-schmidt-dev/wilted", contact: contact)
                 return Self.todaysPeriods(try await client.forecast(lat: latitude, lon: longitude))
             },
+            feedClient: model.podcastFeedClient,
+            topics: HeadlineTopicFilter(skipSports: settings.skipSportsHeadlines, words: settings.skippedHeadlineWords),
             calendar: calendar)
         let outcome = await builder.build(now: now) { [weak self] step in
             Task { @MainActor in

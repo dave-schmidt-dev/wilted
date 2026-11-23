@@ -300,6 +300,20 @@ extension WiltedMacJourneyUITests {
                 XCTAssertTrue(element(app, "wilted-settings-section-\(section)").waitForExistence(timeout: 5), section)
                 XCTAssertTrue(element(app, control).waitForExistence(timeout: 5), section)
             }
+            if tab == "feeds-reports" {
+                let addSource = app.buttons["wilted-reports-add-news-feed"]
+                addSource.click()
+                let address = app.textFields["wilted-reports-headline-feed-address"]
+                XCTAssertTrue(address.waitForExistence(timeout: 5))
+                address.click()
+                address.typeText("not-a-feed")
+                app.buttons["wilted-reports-headline-feed-add"].click()
+                XCTAssertTrue(element(app, "wilted-reports-headline-feed-error").waitForExistence(timeout: 5))
+                XCTAssertEqual(address.value as? String, "not-a-feed")
+                app.typeKey(.escape, modifierFlags: [])
+                XCTAssertTrue(address.waitForNonExistence(timeout: 5))
+                XCTAssertTrue(addSource.exists, "closing headline setup returns to Reports")
+            }
             if tab == "ads-providers" {
                 let page = element(app, "wilted-providers-page")
                 let rows = page.descendants(matching: .any).matching(

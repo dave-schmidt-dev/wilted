@@ -25,7 +25,7 @@ final class WiltedMacFeedSectionTests: XCTestCase {
         let sections = WiltedMacFeedSection.sections([npr, show, blog, bbc, other], isNews: news.contains)
         XCTAssertEqual(sections.map(\.kind), [.podcasts, .articles, .headlines])
         XCTAssertEqual(sections.map { $0.subscriptions.map(\.title) }, [["show", "other"], ["blog"], ["npr", "bbc"]])
-        XCTAssertEqual(sections.map(\.kind.title), ["Podcasts", "Articles", "Headlines"])
+        XCTAssertEqual(sections.map(\.kind.title), ["Podcasts", "Articles", "Headline feeds"])
     }
 
     func testEmptyGroupsAreLeftOut() throws {

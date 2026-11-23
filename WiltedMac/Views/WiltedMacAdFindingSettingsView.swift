@@ -120,7 +120,7 @@ struct WiltedMacAdFindingSettingsView: View {
         .accessibilityIdentifier("wilted-ad-finding-controls")
     }
 
-    private var allShowsPage: some View {
+    var allShowsPage: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             HStack {
                 Text("All shows")
@@ -133,7 +133,7 @@ struct WiltedMacAdFindingSettingsView: View {
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(subscriptions.enumerated()), id: \.element.id) { index, subscription in
+                    ForEach(Array(podcastSubscriptions.enumerated()), id: \.element.id) { index, subscription in
                         if index > 0 { Divider() }
                         Button {
                             presentedDestination = .showSettings(subscription.id)
