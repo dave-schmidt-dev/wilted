@@ -312,9 +312,16 @@ struct LibraryPlayerCompletion: View {
         let row = model.queued.first { $0.id == entryID }
         let actions = row.map { model.decisionActions(for: $0) } ?? []
         VStack(spacing: WiltedTheme.Spacing.xSmall) {
-            HStack(spacing: WiltedTheme.Spacing.large) {
-                if actions.contains(.markDone) { button(.markCompleted(entryID), "wilted-player-mark-completed") }
-                if actions.contains(.removeFromLarder) { button(.removeFromLarder(entryID), "wilted-player-remove-from-larder") }
+            if !actions.isEmpty {
+                Menu {
+                    if actions.contains(.markDone) { button(.markCompleted(entryID), "wilted-player-mark-completed") }
+                    if actions.contains(.removeFromLarder) { button(.removeFromLarder(entryID), "wilted-player-remove-from-larder") }
+                } label: {
+                    Label("Episode actions", systemImage: "ellipsis.circle")
+                        .labelStyle(.iconOnly)
+                        .frame(minWidth: WiltedTheme.Spacing.minimumTouchTarget, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+                }
+                .accessibilityIdentifier("wilted-player-episode-actions")
             }
             LibraryStatusLine(
                 entryID: entryID, media: nil, decision: model.decisionStatus(for: entryID),
@@ -333,11 +340,11 @@ struct LibraryPlayerCompletion: View {
 
     private func button(_ question: LibrarySwipe.Confirmation, _ identifier: String) -> some View {
         let action: LibraryDecisionAction = question.isDestructive ? .removeFromLarder : .markDone
-        return Button { confirming = question; model.journal?.note("confirmation-asked question=\"\(question.title)\" entry=\(entryID.rawValue)") } label: {
+        return Button(role: question.isDestructive ? .destructive : nil) {
+            confirming = question
+            model.journal?.note("confirmation-asked question=\"\(question.title)\" entry=\(entryID.rawValue)")
+        } label: {
             Label(action.title, systemImage: action.systemImage)
-                .wiltedFont(.body)
-                .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
-                .contentShape(Rectangle())
         }
         .accessibilityIdentifier(identifier)
     }

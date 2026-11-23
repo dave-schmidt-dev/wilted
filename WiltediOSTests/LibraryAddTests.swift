@@ -1,4 +1,6 @@
 import Foundation
+import SwiftUI
+import UIKit
 import WiltedCatalog
 import WiltedDomain
 import WiltedLibrary
@@ -15,13 +17,14 @@ final class LibraryAddTests: XCTestCase {
     private let page = URL(string: "https://example.com/story")!
 
     private func makeModel(timeout: TimeInterval = 90, deviceKind: String = "iPhone",
-                           now: @escaping @Sendable () -> Date = { Date() }) -> LibraryAppModel {
+                           now: @escaping @Sendable () -> Date = { Date() },
+                           transport: (any LibraryTransport)? = nil) -> LibraryAppModel {
         let mirror = FileManager.default.temporaryDirectory.appendingPathComponent("add-mirror-\(UUID()).json")
         addTeardownBlock { try? FileManager.default.removeItem(at: mirror) }
         let suite = "library-add-tests-\(UUID().uuidString)"
         addTeardownBlock { UserDefaults().removePersistentDomain(forName: suite) }
         return LibraryAppModel(
-            transport: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"),
+            transport: transport ?? InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"),
             store: FileLibraryStore(url: mirror), deviceID: "phone", deviceKind: deviceKind,
             decisionTiming: LibraryDecisionTiming(confirmationTimeout: timeout),
             preferences: UserDefaults(suiteName: suite)!, now: now, timeZone: TimeZone(identifier: "UTC")!)
@@ -231,7 +234,8 @@ final class LibraryAddTests: XCTestCase {
         XCTAssertEqual(add.rows.first?.kind, .show(feed: resolved.feedURL, following: false))
     }
 
-    func testAnOtherLinkOffersArticleOrPodcastFeedAndTheChoiceIsTheUsers() async throws {
+    func testOtherLinkUsesOneMacIdentifiedAddAction() async throws {
+        try await macAdvertises(["subscribe", "addArticle", "addLink"])
         let model = makeModel()
         let add = session(model)
         add.text = "https://example.com/story"
@@ -239,6 +243,13 @@ final class LibraryAddTests: XCTestCase {
         XCTAssertEqual(add.rows.count, 1)
         XCTAssertEqual(add.rows.first?.kind, .link(page))
         XCTAssertEqual(add.rows.first?.title, "example.com/story")
+        XCTAssertEqual(add.rows.first?.detail, "Link")
+        XCTAssertFalse(add.statusMessage?.contains("Not sure what this link is") ?? false)
+
+        await add.send(try XCTUnwrap(add.rows.first))
+        let sent = try await firstIntent()
+        XCTAssertEqual(sent.action, .addLink(url: page))
+        XCTAssertEqual(add.text, "https://example.com/story", "the pasted address stays until the Mac answers")
     }
 
     func testAnApplePodcastsLinkWithoutAShowIDSaysSoInsteadOfAddingAnArticle() async throws {
@@ -264,16 +275,152 @@ final class LibraryAddTests: XCTestCase {
         XCTAssertEqual(sent.count, 1)
     }
 
-    func testSendingALinkClearsTheFieldAndListsTheAddBelow() async throws {
-        try await macAdvertises(["subscribe", "addArticle"])
+    func testARefusedLinkKeepsItsDraftAndCanBeRetried() async throws {
+        try await macAdvertises(["subscribe", "addArticle", "addLink"])
         let model = makeModel()
         let add = session(model)
         add.text = "https://example.com/story"
         await add.settle()
-        await add.send(try XCTUnwrap(add.rows.first), as: .article)
-        XCTAssertEqual(add.text, "")
+        await add.send(try XCTUnwrap(add.rows.first))
+        let first = try await firstIntent()
+        XCTAssertEqual(first.action, .addLink(url: page))
+        XCTAssertEqual(add.text, "https://example.com/story")
+
+        try await macAnswers(first, reason: IntentOutcome.reasonFailed)
+        await model.refresh()
+        let refused = try XCTUnwrap(model.adds.first)
+        XCTAssertEqual(refused.phase, .rejected(IntentOutcome.reasonFailed))
+        XCTAssertEqual(add.text, "https://example.com/story", "a refusal keeps the exact address available")
+        XCTAssertEqual(model.addStatus(for: refused).text, "Your Mac could not add it. Try again in a moment.")
+
+        model.clearFinishedAdds()
+        XCTAssertEqual(model.adds.first?.id, refused.id, "closing the sheet leaves a refusal retryable")
+        await model.retryAdd(refused.id)
+        let retriedIntents = try await intents()
+        let retried = try XCTUnwrap(retriedIntents.first { $0.id != first.id })
+        XCTAssertEqual(retried.action, .addLink(url: page))
+        XCTAssertNotEqual(retried.id, first.id, "a retry has a fresh intent id")
+        XCTAssertEqual(model.adds.count, 1)
+
+        try await macAnswers(retried)
+        await model.refresh()
+        XCTAssertEqual(add.text, "", "a successful Mac answer clears the saved link")
         XCTAssertTrue(add.rows.isEmpty)
-        XCTAssertEqual(model.adds.first?.intent.action, .addArticle(url: page))
+    }
+
+    func testAnAnswerForAnEarlierLinkLeavesTheNewDraftAlone() async throws {
+        try await macAdvertises(["addLink"])
+        let model = makeModel()
+        let add = session(model)
+        add.text = page.absoluteString
+        await add.settle()
+        await add.send(try XCTUnwrap(add.rows.first))
+        let intent = try await firstIntent()
+
+        add.text = "another show"
+        await model.resolveAdds(outcomes: [try IntentOutcome.applied(for: intent)])
+        XCTAssertEqual(add.text, "another show")
+        await add.settle()
+    }
+
+    func testResponseClockStartsWhenTheTransportAcceptsTheAdd() async throws {
+        let clock = AddClock()
+        let sends = OutboxSendScript(.hold)
+        let phone = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner")
+        let model = makeModel(timeout: 60, now: { clock.now },
+                              transport: OutboxScriptedTransport(base: phone, script: sends))
+        model.macAddActions = ["addLink"]
+
+        let adding = Task { await model.addToMac(.link(page), title: "example.com/story") }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while sends.attempts.isEmpty && ContinuousClock.now < deadline { await Task.yield() }
+        let pending = try XCTUnwrap(model.adds.first)
+        XCTAssertEqual(model.addStatus(for: pending).text, "Not sent yet. Trying again.")
+
+        clock.advance(3_600)
+        sends.release()
+        await adding.value
+        let sent = try XCTUnwrap(model.adds.first)
+        XCTAssertEqual(model.addStatus(for: sent).text, "Sent to your Mac")
+        clock.advance(61)
+        XCTAssertEqual(model.addStatus(for: sent).tone, .caution)
+    }
+
+    func testMacAnswerProvesDeliveryAfterThePhoneLosesTheAcknowledgment() async throws {
+        let sends = OutboxSendScript(.deliverThenFail)
+        let phone = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner")
+        let model = makeModel(transport: OutboxScriptedTransport(base: phone, script: sends))
+        model.macAddActions = ["addLink"]
+        await model.addToMac(.link(page), title: "example.com/story")
+        let intent = try await firstIntent()
+        let refusal = try IntentOutcome.rejected(for: intent, reason: IntentOutcome.reasonFailed)
+
+        await model.resolveAdds(outcomes: [refusal])
+
+        XCTAssertEqual(sends.attempts, [intent.id], "the Mac's answer proves the first delivery")
+        XCTAssertEqual(model.adds.first?.phase, .rejected(IntentOutcome.reasonFailed))
+        XCTAssertTrue(model.adds.first?.isSent == true)
+    }
+
+    func testOldMacLinkNoticeDoesNotDisableSearchSubscriptions() {
+        let model = makeModel()
+        model.macAddActions = ["subscribe"]
+
+        XCTAssertEqual(model.addCapabilityNotice, "Update Wilted on your Mac to add links from iPhone")
+        XCTAssertTrue(model.canAdd(.subscribe(feed)))
+        XCTAssertFalse(model.canAdd(.link(page)))
+    }
+
+    func testRejectedLinkAndUnsentStatusRenderWithoutDuplicateAddStatus() async throws {
+        await HostedAccessibility.prepare()
+        let model = makeModel()
+        model.macAddActions = ["subscribe", "addLink"]
+        model.addDraft = page.absoluteString
+        let linkIntent = try LibraryIntent.addLink(url: page, deviceID: "phone")
+        var refused = PendingAdd(intent: linkIntent, title: "example.com/story")
+        refused.phase = .rejected(IntentOutcome.reasonFailed)
+        model.adds = [refused]
+        let linkSession = model.makeAddSession(search: { _ in [] }, linkDebounce: .zero, searchDebounce: .zero)
+        let linkView = HostedView(
+            NavigationStack { LibraryAddSheet(model: model, onDone: {}, session: linkSession) },
+            size: CGSize(width: 390, height: 844))
+        let retry = try XCTUnwrap(linkView.element("wilted-add-retry-\(linkIntent.id)"))
+        XCTAssertTrue(retry.isButton)
+        XCTAssertEqual(retry.label, "Try adding example.com/story again")
+        XCTAssertNil(linkView.element("wilted-add-link-link"), "the refusal has one retry action below")
+        XCTAssertFalse(linkView.elements().contains { $0.label?.contains("Not sure what this link is") == true })
+        attach(linkView, named: "iphone-add-link-refused")
+
+        let clock = AddClock()
+        let showIntent = try LibraryIntent.subscribe(feedURL: feed, deviceID: "phone", createdAt: clock.now)
+        let waitingModel = makeModel(now: { clock.now })
+        waitingModel.macAddActions = ["subscribe", "addLink"]
+        waitingModel.addDraft = "garden"
+        waitingModel.adds = [PendingAdd(intent: showIntent, title: "The Show")]
+        let showSession = waitingModel.makeAddSession(
+            search: { _ in [Self.show(1, "The Show", feed: "https://feeds.example.com/show.xml")] },
+            linkDebounce: .zero, searchDebounce: .zero)
+        showSession.text = "garden"
+        await showSession.settle()
+        let showView = HostedView(
+            NavigationStack { LibraryAddSheet(model: waitingModel, onDone: {}, session: showSession) },
+            size: CGSize(width: 390, height: 844))
+        let status = try XCTUnwrap(showView.element("wilted-add-request-status-\(showIntent.id)"))
+        XCTAssertEqual(status.label, "Not sent yet. Trying again.")
+        XCTAssertNil(showView.element("wilted-add-following-show-1"))
+        XCTAssertNil(showView.element("wilted-add-subscribe-show-1"))
+        XCTAssertEqual(showView.elements().filter { $0.label == "Not sent yet. Trying again." }.count, 1)
+        attach(showView, named: "iphone-add-one-pending-status")
+    }
+
+    private func attach<Content: View>(_ hosted: HostedView<Content>, named name: String) {
+        let image = UIGraphicsImageRenderer(bounds: hosted.window.bounds).image { context in
+            hosted.window.layer.render(in: context.cgContext)
+        }
+        let attachment = XCTAttachment(image: image)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 }
 

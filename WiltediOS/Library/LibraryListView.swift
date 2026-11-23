@@ -157,8 +157,7 @@ struct LibraryListView: View {
             }
             if let banner = model.syncBanner {
                 Section {
-                    LibrarySyncBannerView(banner: banner, publicationSummary: model.publicationSummary,
-                        publicationDetail: model.publicationDetail, publicationQualifier: model.publicationQualifier) { Task { await model.recoverFromAccountChange() } }
+                    LibrarySyncBannerView(banner: banner) { Task { await model.recoverFromAccountChange() } }
                 }
             }
             if model.showsMacLinkNotice {

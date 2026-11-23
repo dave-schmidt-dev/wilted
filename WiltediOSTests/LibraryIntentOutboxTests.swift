@@ -324,6 +324,26 @@ final class LibraryIntentOutboxTests: XCTestCase {
         XCTAssertEqual(savedIDs(), [])
     }
 
+    func testRestoredPastedLinkKeepsItsAddressAndGetsTheFullResponseWindow() async throws {
+        let url = try XCTUnwrap(URL(string: "https://example.com/listen?episode=2"))
+        try await mac.publishStats(LibraryStats(supportedIntentActions: ["addLink"]))
+        let offline = launch(OutboxSendScript(.fail))
+        await offline.addToMac(.link(url), title: "example.com/listen")
+        let pending = try XCTUnwrap(offline.adds.first)
+        XCTAssertEqual(savedIDs(), [pending.id])
+
+        clock.advance(3600)
+        let online = launch(OutboxSendScript(.deliver))
+        await online.refresh()
+        let sent = try XCTUnwrap(online.adds.first)
+        let onServer = try await mac.listIntents()
+        XCTAssertEqual(onServer, [pending.intent])
+        XCTAssertEqual(sent.intent.action, .addLink(url: url))
+        XCTAssertEqual(online.addStatus(for: sent).text, "Sent to your Mac")
+        clock.advance(60)
+        XCTAssertTrue(online.addStatus(for: sent).text.contains("has not answered"))
+    }
+
     func testAnUnsentDecisionStaysOwedWhenTheMacMovesItsEntry() async throws {
         try await seed()
         let script = OutboxSendScript(.fail)

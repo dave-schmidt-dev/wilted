@@ -29,6 +29,19 @@ final class LibraryModelTests: XCTestCase {
         XCTAssertEqual(LibraryKind.articleFeed.rawValue, "article.feed")
     }
 
+    func testLibrarySourcePublisherIsOptionalForOlderSnapshots() throws {
+        let json = """
+        {"id":"\(try id("a"))","kind":"podcast.feed","title":"Old Show","locator":"https://example.test/feed.xml"}
+        """
+        let oldSource = try JSONDecoder().decode(LibrarySource.self, from: Data(json.utf8))
+        XCTAssertNil(oldSource.publisher)
+
+        let source = LibrarySource(
+            id: id("b"), kind: .podcastFeed, title: "New Show", publisher: "Example Audio",
+            locator: "https://example.test/new.xml")
+        XCTAssertEqual(try JSONDecoder().decode(LibrarySource.self, from: JSONEncoder().encode(source)), source)
+    }
+
     func testSortKeyBetweenFirstAndLast() throws {
         XCTAssertEqual(QueueSlot.sortKey(after: nil, before: nil), 0)
         XCTAssertEqual(QueueSlot.sortKey(after: 1, before: 2), 1.5)

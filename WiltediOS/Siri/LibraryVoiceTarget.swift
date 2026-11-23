@@ -20,6 +20,13 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
     }
 
     func voiceSnapshot() async -> VoiceSnapshot {
+        let resumeTarget: VoiceResumeTarget
+        if player.item == nil || player.status == .ended {
+            let endedID = player.status == .ended ? player.item?.entryID : nil
+            resumeTarget = .library(model.remoteResumeRow(excludingEndedEpisode: endedID).map(Self.episode))
+        } else {
+            resumeTarget = .loadedEpisode
+        }
         let rows = downloadedRows()
         let shows: [String]
         switch model.listOrder {
@@ -40,7 +47,8 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
             shows = collected
         }
         return VoiceSnapshot(
-            downloaded: rows.map(Self.episode), knownShowTitles: shows, nowPlaying: nowPlaying())
+            downloaded: rows.map(Self.episode), knownShowTitles: shows, nowPlaying: nowPlaying(),
+            resumeTarget: resumeTarget)
     }
 
     @discardableResult
@@ -75,7 +83,7 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
         case .pause:
             player.pause()
             return .done
-        case .resume: return await resumeLoaded(restarting: false)
+        case .resume: return await resume()
         case .skipForward:
             player.skipForward()
             return .done
@@ -114,6 +122,18 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
         let outcome = await start(row) { $0.item?.entryID == entryID }
         guard outcome.opensNowPlaying, player.item?.entryID == entryID else { return .failed }
         if restarting { player.seek(to: 0) }
+        return .done
+    }
+
+    /// A paused item resumes in place. With nothing loaded, or after the loaded item ended,
+    /// use the same unfinished library row as CarPlay and the other remote Play commands.
+    private func resume() async -> VoiceOutcome {
+        if case .starting = model.playbackCommand { return .failed }
+        guard player.item == nil || player.status == .ended else { return await resumeLoaded(restarting: false) }
+        model.rememberEndBeforeRemoteResume(player)
+        guard let row = model.remoteResumeRow else { return .failed }
+        let outcome = await start(row) { $0.item == nil || $0.status == .ended }
+        guard outcome.opensNowPlaying, player.item?.entryID == row.id else { return .failed }
         return .done
     }
 

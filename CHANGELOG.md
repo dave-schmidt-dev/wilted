@@ -12,13 +12,15 @@ All notable changes to this project are documented in this file.
 
 - The Mac checks for republished podcast episodes before downloading or preparing them. Uncertain matches wait in Feeds, where duplicate review opens on the closest candidate.
 
-### Changed
 - A podcast’s title and feed address no longer trigger an ad-free prompt on Add. Show settings has an explicit **This show is already ad-free** choice.
 - Mac ad settings distinguish the selected service, its checks and each reason for waiting. Episode preparation reports whether ads were checked or removed, lists passages left in, and identifies the transcript source when recorded.
 - **Headlines only** moves an article feed’s posts out of the Keep/Skip inbox. Feeds groups these sources under **Headline feeds**, and Show settings hides their unused automation controls.
 - Reports can add a headline feed by address or use one you already follow. The morning report reads those feeds directly for stories published in the past hour.
 - Show settings lists the choices Reset all will change and offers Undo. Restoring cut episodes asks you to confirm the number of downloads.
 - Ad feedback shows how many reports still need review. Marking a report handled keeps its label and count.
+- On iPhone, Add keeps pasted links while the Mac identifies them, shows when a request has been sent, and offers Try again after a refusal.
+- Watch Play and Siri Resume use the car’s next-episode choice after an episode ends. CarPlay keeps same-named shows separate and shows when the library is loading in either tab.
+- The iPhone Larder shows sync problems as they occur. The last Mac send time is under Devices. Now Playing groups Mark completed and Remove from Larder in the Episode actions menu.
 
 ## [0.7.2] - 2026-11-22
 

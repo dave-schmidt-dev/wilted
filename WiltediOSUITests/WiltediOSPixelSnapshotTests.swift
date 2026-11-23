@@ -248,16 +248,19 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
             field.typeText("garden\n")
             XCTAssertTrue(any["wilted-add-result-show-9001"].waitForExistence(timeout: 10))
             app.buttons["wilted-add-subscribe-show-9001"].tap()
-            // The refusal lands in the requests list and the row offers Subscribe again.
+            // The refusal lands in the requests list with its retry beside the answer.
             XCTAssertTrue(app.staticTexts["That feed has no audio episodes, so your Mac did not add it."].waitForExistence(timeout: 10))
+            XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "wilted-add-retry-")).firstMatch.exists)
         case .addSent:
             field.typeText("https://example.com/podcast\n")
             XCTAssertTrue(any["wilted-add-result-link"].waitForExistence(timeout: 10))
-            app.buttons["wilted-add-feed-link"].tap()
+            app.buttons["wilted-add-link-link"].tap()
             XCTAssertTrue(app.staticTexts["Sent to your Mac"].waitForExistence(timeout: 10))
+            XCTAssertFalse(app.staticTexts["Sent"].exists, "the result row leaves the request status below as the only status")
         case .addUpdateMac:
             field.typeText("https://example.com/podcast\n")
             XCTAssertTrue(any["wilted-add-result-link"].waitForExistence(timeout: 10))
+            XCTAssertTrue(app.buttons["wilted-add-link-link"].exists)
             XCTAssertTrue(app.staticTexts["Update Wilted on your Mac to add from iPhone"].waitForExistence(timeout: 10))
         default:
             XCTFail("Not an Add sheet screen")

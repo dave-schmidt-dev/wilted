@@ -78,13 +78,18 @@ public enum VoiceCommandPlanner {
             }
 
         case .resume:
-            guard let nowPlaying = snapshot.nowPlaying else {
-                return VoicePlan(action: .none, dialog: "Nothing to resume.")
-            }
-            if nowPlaying.isPlaying {
+            if snapshot.nowPlaying?.isPlaying == true {
                 return VoicePlan(action: .none, dialog: "Already playing.")
-            } else {
+            }
+            switch snapshot.resumeTarget {
+            case .loadedEpisode:
+                guard let nowPlaying = snapshot.nowPlaying else {
+                    return VoicePlan(action: .none, dialog: "Nothing to resume.")
+                }
                 return VoicePlan(action: .resume, dialog: "Resuming \(nowPlaying.episode.title).")
+            case let .library(episode):
+                guard let episode else { return VoicePlan(action: .none, dialog: "Nothing to resume.") }
+                return VoicePlan(action: .resume, dialog: "Resuming \(episode.title).")
             }
 
         case .skipForward:
