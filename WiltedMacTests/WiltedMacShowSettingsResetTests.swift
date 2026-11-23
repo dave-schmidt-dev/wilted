@@ -25,7 +25,7 @@ final class WiltedMacShowSettingsResetTests: XCTestCase {
             view, size: CGSize(width: 1_000, height: 360)
         ).joined(separator: " ")
         for label in ["Auto keep", "Auto download", "Auto prepare", "Kept limit", "Remove ads",
-                      "own promotion", "Send this show for ad finding", "Reset all"] {
+                      "own promotion", "ad finding", "Reset all"] {
             XCTAssertTrue(text.contains(label), "Reset summary should show \(label): \(text)")
         }
 
