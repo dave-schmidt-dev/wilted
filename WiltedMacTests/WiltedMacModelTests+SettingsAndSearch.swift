@@ -45,9 +45,9 @@ extension WiltedMacModelTests {
         let end = try XCTUnwrap(source.range(of: "func updateAutomationSettings",
                                              range: start.upperBound..<source.endIndex))
         let body = source[start.lowerBound..<end.lowerBound]
-        XCTAssertTrue(body.contains("downloadAllAvailableLarderEpisodes()"),
+        XCTAssertTrue(body.contains("downloadAllAvailableLarderEpisodes(automatic: true)"),
                       "the download override must reuse the Larder's bulk admission")
-        XCTAssertTrue(body.contains("prepareAllDownloadedLarderEpisodes()"),
+        XCTAssertTrue(body.contains("prepareAllDownloadedLarderEpisodes(automatic: true)"),
                       "the prepare override must reuse the Larder's bulk admission")
     }
 

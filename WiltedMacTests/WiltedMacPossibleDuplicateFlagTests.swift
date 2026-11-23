@@ -148,9 +148,7 @@ final class WiltedMacPossibleDuplicateFlagTests: XCTestCase {
         _ = try await store.clearPodcastEpisodePossibleDuplicate(second)
         let done = await model.catchUpAfterPossibleDuplicateCleared(second.rawValue)
         XCTAssertTrue(done)
-        let claims = try await store.unfinishedPodcastDownloads().map(\.episodeID)
-        XCTAssertTrue(claims.contains(second) || model.podcastDownloadTasks[second.rawValue] != nil,
-                      "the download Keep asked for is no longer lost")
+        try await assertTheHeldDownloadWasClaimed(model, second, "the download Keep asked for is no longer lost")
         model.notePossibleDuplicateCatchUp(second.rawValue, pending: false)
         XCTAssertEqual(model.preferences.stringArray(forKey: WiltedMacModel.possibleDuplicateCatchUpKey) ?? [], [])
     }
@@ -180,8 +178,18 @@ final class WiltedMacPossibleDuplicateFlagTests: XCTestCase {
         let heldAfter = try await store.podcastEpisodeIdentityReviewHeldIDs()
         XCTAssertFalse(heldAfter.contains(second), "the owner's answer is honoured, not discarded")
         XCTAssertEqual(model.preferences.stringArray(forKey: WiltedMacModel.possibleDuplicateCatchUpKey) ?? [], [])
-        let claims = try await store.unfinishedPodcastDownloads().map(\.episodeID)
-        XCTAssertTrue(claims.contains(second) || model.podcastDownloadTasks[second.rawValue] != nil)
+        try await assertTheHeldDownloadWasClaimed(model, second, "the held download was started after the relaunch")
+    }
+
+    /// The held download left a claim behind: a queued or running row, a live task, or the row of a
+    /// transfer that has already finished or failed (the test has no network, so a started transfer
+    /// can end before it is looked at). A download that was never started leaves none of these.
+    private func assertTheHeldDownloadWasClaimed(
+        _ model: WiltedMacModel, _ id: ItemID, _ message: String
+    ) async throws {
+        let store = try XCTUnwrap(model.store)
+        let rows = try await store.downloads().map(\.episodeID)
+        XCTAssertTrue(rows.contains(id) || model.podcastDownloadTasks[id.rawValue] != nil, message)
     }
 
     func testACatchUpThatCannotFinishKeepsItsNote() async throws {

@@ -77,6 +77,8 @@ extension WiltedMacModel {
         // Unreadable, or still flagged after the answer: not finished, try again later.
         guard let held = await refreshPossibleDuplicateHolds(from: store), !held.contains(episodeID) else { return false }
         await reloadLibraryRows()
+        // The kept-and-queued answer below reads the queue, so it must be read fresh too.
+        await refreshPodcastQueueState()
         // A model that is closing or has swapped stores has not done the work: keep the note.
         guard !isClosingTemporaryState, self.store === store else { return false }
         guard let episode = episodes.first(where: { $0.id == episodeID }), episode.removalKind == nil,
