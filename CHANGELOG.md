@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-11-23
+
 ### Added
 - Mac Settings › Processing has a **Prepare in the background** switch, on by default: episode preparation (speech-to-text, ad finding and the tools they start) runs at a low priority so it doesn't slow down the rest of the Mac. Playback and the app stay at normal priority.
 
