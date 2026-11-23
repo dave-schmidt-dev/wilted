@@ -8,8 +8,8 @@ The operator owns the inventory, evidence, experiments, and dispositions.
 ## 1. Preserve and account for every report
 
 At intake, snapshot the current `ad-feedback.json` and record its capture time.
-Keep this snapshot and all episode-specific evidence in private local storage,
-never in tracked files or external review packets. Retain the original report.
+Keep the snapshot and supporting evidence together outside the repository. Retain
+the original report.
 An investigation must not silently relabel or dismiss the owner's inbox entry.
 
 Create one ledger row per feedback ID, including dismissed, duplicate, unmapped,
@@ -52,10 +52,9 @@ Preservation is an explicit intake operation today. Do not claim otherwise.
 | Prepared audio or display transcript | Diagnostic listening/content evidence with explicit timeline mapping; cannot reconstruct removed material or prove original-input replay |
 | Report metadata alone | Unresolved report with a concrete recovery action; no guessed verdict |
 
-Try bounded source recovery before declaring an input unavailable. Public
-enclosure retrieval must retain progress, a deadline, and source-hash comparison.
-Private feed credentials and personal request data retain their authorization
-boundaries. A missing input blocks only its dependent proof, not other cases.
+When retrieving an episode, show download progress, set a deadline, and compare
+the downloaded file with the original source hash. Use credentials or personal
+request data only as authorized. A missing input blocks only the checks that need it.
 
 ## 3. Verify what the report means
 

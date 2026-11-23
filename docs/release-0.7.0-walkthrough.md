@@ -67,6 +67,7 @@ Mark each line pass, fail, or skip. A fail that crashes, loses data or breaks so
 
 ## F. Prepared episodes (listen)
 
+- [ ] Prepare an episode with a known sponsor break and **Remove ads** on. Check its transcript and listen across the cut. Turn **Remove ads** off and use **Restore Full Episode** on the cut episode. Verify the original break plays.
 - [ ] On a freshly prepared episode, pauses longer than half a second are shortened, and a saved position resumes on speech (A1).
 - [ ] On a fresh AI Daily Brief episode, sponsor spots at ad-break edges are gone and the show is intact (F5, F8, F9; also decision 4).
 - [ ] On a long episode (for example Giant Bombcast), ads are cut. If the review could not finish, the original audio plays and the info popover says why (F4, F41, C2, C20).
