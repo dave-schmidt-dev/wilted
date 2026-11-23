@@ -93,9 +93,55 @@ extension WiltedMacFeedDecisionTests {
         await fixture.model.closeAbandonedSoftSkips(in: fixture.store)
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: mediaURL.path))
-        XCTAssertTrue(fixture.model.pendingSoftSkips.isEmpty)
+        XCTAssertEqual(fixture.model.pendingSoftSkips.count, 1, "the entry stays until the slot has been released")
         XCTAssertEqual(fixture.model.softSkipReleaseFeedIDs, [fixture.feedID.rawValue],
                        "the feed is owed a release of the slot, done once its rows are loaded")
+
+        fixture.model.releaseSlotsOfAbandonedSoftSkips()
+        await drainDecisionWriters(fixture.model)
+        XCTAssertTrue(fixture.model.pendingSoftSkips.isEmpty, "the entry goes once the release has run")
+        XCTAssertTrue(fixture.model.softSkipReleaseFeedIDs.isEmpty)
+    }
+
+    func testAQuitBeforeTheSlotReleaseLeavesTheEntryForTheNextLaunch() async throws {
+        let fixture = try await makeFixture(count: 1, queueIndexes: [])
+        addTeardownBlock { await fixture.model.close() }
+        let mediaURL = try await seedDownloadedEpisode(fixture)
+        fixture.model.skipFeedEpisode(fixture.episodes[0], offerUndo: true)
+        await drainDecisionWriters(fixture.model)
+        fixture.model.openSoftSkips.removeAll()
+        await fixture.model.closeAbandonedSoftSkips(in: fixture.store)
+
+        // A second quit before the release: only the ledger survives.
+        fixture.model.softSkipReleaseFeedIDs = []
+        fixture.model.softSkipRecoveryLedgerUpdates = []
+        XCTAssertEqual(fixture.model.pendingSoftSkips.count, 1)
+        await fixture.model.closeAbandonedSoftSkips(in: fixture.store)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: mediaURL.path))
+        XCTAssertEqual(fixture.model.softSkipReleaseFeedIDs, [fixture.feedID.rawValue],
+                       "the next launch owes the same release again")
+    }
+
+    func testClosingASkipOfThePlayingEpisodeKeepsItsAudioAndItsEntry() async throws {
+        let fixture = try await makeFixture(count: 1, queueIndexes: [])
+        addTeardownBlock { await fixture.model.close() }
+        let itemID = fixture.itemIDs[0]
+        let mediaURL = try await seedDownloadedEpisode(fixture)
+        fixture.model.skipFeedEpisode(fixture.episodes[0], offerUndo: true)
+        await drainDecisionWriters(fixture.model)
+        fixture.model.currentPodcastEpisodeID = itemID.rawValue
+
+        fixture.model.undoToast.withdrawAll()
+        await drainDecisionWriters(fixture.model)
+        for _ in 0..<100 where fixture.model.pendingSoftSkips.first?.retiredIDs != [itemID] {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: mediaURL.path), "the loaded episode keeps its audio")
+        XCTAssertEqual(fixture.model.pendingSoftSkips.first?.retiredIDs, [itemID], "its cleanup is still owed")
+        let reserved = try await fixture.store.manualCompletionCapacityReservations()
+        XCTAssertNil(reserved[fixture.feedID], "but the slot is given up all the same")
     }
 
     func testUndoGivesTheEpisodeBackWithItsAudioHistoryAndNoNewKeep() async throws {

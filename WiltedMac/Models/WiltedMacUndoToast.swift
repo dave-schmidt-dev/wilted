@@ -64,6 +64,8 @@ final class WiltedMacUndoToastCenter {
     @ObservationIgnored private var narrowers: [UUID: @MainActor (Set<String>) -> Void] = [:]
     /// Offers whose undo is running right now, so a withdrawal inside it is not a close.
     @ObservationIgnored private var undoing: Set<UUID> = []
+    /// Offers whose entry on the window's undo stack was used up by a Command-Z and not yet replaced.
+    @ObservationIgnored private var spentStackEntries: Set<UUID> = []
     @ObservationIgnored private var registrations: [UUID: Registration] = [:]
     @ObservationIgnored private weak var undoManager: UndoManager?
     @ObservationIgnored private var expiryTask: Task<Void, Never>?
@@ -140,23 +142,32 @@ final class WiltedMacUndoToastCenter {
     /// Takes back one offer. An offer that was already taken back does nothing, and neither does one
     /// whose window has closed, even if the expiry timer has not fired yet: it is closed instead.
     func undo(_ id: UUID) {
+        // Command-Z pops an entry off the window's undo stack before running it, and that entry is
+        // spent whatever happens next. The newest offer is always the one Command-Z takes back, so an
+        // entry left over from a busy undo still reaches it, not an older offer.
+        let fromUndoStack = undoManager?.isUndoing == true
+        var id = id
+        if fromUndoStack {
+            spentStackEntries.insert(id)
+            if let newest = offers.last?.id { id = newest }
+        }
+        defer {
+            // The stack is busy until this returns, so entries that must go back on it do so right
+            // after. Until then the redirect above keeps Command-Z on the newest offer.
+            if fromUndoStack, !spentStackEntries.isEmpty {
+                Task { @MainActor [weak self] in self?.reregisterSpentEntries() }
+            }
+        }
         guard let action = actions[id], let offer = offers.first(where: { $0.id == id }) else { return }
         guard expiry(of: offer) > now() else {
             forget(id, closing: true)
             scheduleExpiry()
             return
         }
-        // Command-Z pops this offer off the window's undo stack before running it.
-        let fromUndoStack = undoManager?.isUndoing == true
         undoing.insert(id)
         let result = action()
         undoing.remove(id)
         if result == .done { forget(id, closing: false) }
-        else if fromUndoStack {
-            // A kept-open offer must go back on the stack, or the next Command-Z would take back an
-            // older action while the toast still offers this one. The stack is busy until this returns.
-            Task { @MainActor [weak self] in self?.reregister(id) }
-        }
         scheduleExpiry()
     }
 
@@ -240,15 +251,19 @@ final class WiltedMacUndoToastCenter {
         if ownsGroup { undoManager.groupsByEvent = groupsByEvent }
     }
 
-    private func reregister(_ id: UUID) {
-        guard let offer = offers.first(where: { $0.id == id }) else { return }
-        register(offer)
+    /// Puts the offers whose undo-stack entry was spent back on the stack, oldest first so the newest
+    /// is on top again.
+    private func reregisterSpentEntries() {
+        let spent = spentStackEntries
+        spentStackEntries = []
+        for offer in offers where spent.contains(offer.id) { register(offer) }
     }
 
     /// Removes an offer. `closing` says it ended without being taken, so its `onClose` runs, unless
     /// the offer is in the middle of its own undo.
     private func forget(_ id: UUID, closing: Bool) {
         offers.removeAll { $0.id == id }
+        spentStackEntries.remove(id)
         actions[id] = nil
         let closer = closers.removeValue(forKey: id)
         narrowers[id] = nil

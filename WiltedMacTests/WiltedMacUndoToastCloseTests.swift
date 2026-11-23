@@ -85,14 +85,20 @@ final class WiltedMacUndoToastCloseTests: XCTestCase {
         offer(on: center, counting: newer) { answers.removeFirst() }
 
         manager.undo()
-        // The stack is busy until the undo returns; the offer goes back on it right after.
-        for _ in 0..<50 where !manager.canUndo { await Task.yield() }
         XCTAssertEqual([older.undone, newer.undone], [0, 1])
-        XCTAssertNotNil(center.current, "the busy undo kept the newer offer")
+        XCTAssertEqual(center.offers.count, 2, "the busy undo kept the newer offer")
 
+        // Straight away, before the spent entry has been put back: the stack's top is the older offer's
+        // entry, and Command-Z must still take back the newer offer.
         manager.undo()
         XCTAssertEqual([older.undone, newer.undone], [0, 2], "the second Command-Z reaches the same offer, not the older one")
         XCTAssertEqual(center.offers.count, 1, "only the older offer is still waiting")
+
+        // The older offer's entry that Command-Z used up goes back on the stack.
+        for _ in 0..<50 where !manager.canUndo { await Task.yield() }
+        XCTAssertTrue(manager.canUndo, "the older offer can still be taken back with Command-Z")
+        manager.undo()
+        XCTAssertEqual([older.undone, newer.undone], [1, 2])
     }
 
     func testAnExpiredOfferDoesNothingEvenBeforeItsTimerFires() async {

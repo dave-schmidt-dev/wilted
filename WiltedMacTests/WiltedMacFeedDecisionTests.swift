@@ -441,7 +441,8 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
         await fixture.model.reloadLibraryRowsForTesting()
         try await assertRetiredDecision(fixture.model, store: fixture.store, itemID: itemID, at: retirement)
 
-        // The durable output of a preparation finishing after Skip must not restore its episode.
+        // A download finishing after Skip is refused: the skipped episode keeps no media, and nothing
+        // the late work records may restore it.
         let mediaURL = fixture.directory.appendingPathComponent("late-prepared.m4a")
         try Data("late prepared audio".utf8).write(to: mediaURL)
         let contentHash = try MediaHash.sha256(fileAt: mediaURL)
@@ -449,20 +450,18 @@ final class WiltedMacFeedDecisionTests: XCTestCase {
         let revision = try AudioRevision(
             itemID: itemID, revisionID: revisionID, durationSeconds: 12, byteCount: 19,
             contentHash: contentHash, mediaType: "audio/mpeg", createdAt: fixture.createdAt, schemaVersion: 3)
-        try await fixture.store.finalizePodcastDownload(
-            revision: revision, mediaURL: mediaURL,
-            download: try PodcastDownload(episodeID: itemID, status: .completed, bytesReceived: 19,
-                expectedByteCount: 19, localURL: mediaURL, contentHash: contentHash, updatedAt: fixture.createdAt))
-        try await fixture.store.saveReadyRevision(
-            revision, mediaURL: mediaURL,
-            transcript: Transcript(itemID: itemID, revisionID: revisionID, availability: .absent, updatedAt: fixture.createdAt),
-            outcome: PodcastPreparationOutcome(episodeID: itemID, revisionID: revisionID,
-                policyDigest: "fixture-policy", pipelineFingerprint: "fixture-pipeline", semanticVersion: "fixture-1",
-                producedAt: fixture.createdAt, eligibility: .current))
+        do {
+            try await fixture.store.finalizePodcastDownload(
+                revision: revision, mediaURL: mediaURL,
+                download: try PodcastDownload(episodeID: itemID, status: .completed, bytesReceived: 19,
+                    expectedByteCount: 19, localURL: mediaURL, contentHash: contentHash, updatedAt: fixture.createdAt))
+            XCTFail("a download for a skipped episode must be refused")
+        } catch {}
+        let stored = try await fixture.store.download(for: itemID)
+        XCTAssertNil(stored, "the refused download left no row behind")
         await fixture.model.reloadLibraryRowsForTesting()
         await fixture.model.larderAdditionTask?.value
-        XCTAssertEqual(fixture.model.episodes.first { $0.id == episode.id }?.downloadState, .completed)
-        XCTAssertTrue(fixture.model.episodes.first { $0.id == episode.id }?.preparationState.isPrepared == true)
+        XCTAssertNotEqual(fixture.model.episodes.first { $0.id == episode.id }?.downloadState, .completed)
         await fixture.model.performAutoAddPreparedEpisodesToLarder([episode.id])
         try await assertRetiredDecision(fixture.model, store: fixture.store, itemID: itemID, at: retirement)
 

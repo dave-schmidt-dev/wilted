@@ -106,10 +106,14 @@ extension WiltedMacModel {
             let close = try await store.finalizeSoftSkip(
                 record.retiredIDs, at: record.retiredAt, protecting: livePlaybackEpisodeIDs())
             openSoftSkips.removeAll { $0 === open }
-            replacePending(record, with: record.keeping(Set(close.held)))
             guard !isClosingTemporaryState else { return }
-            for id in close.finished { withdrawPreparationRequest(for: id.rawValue) }
-            if !close.finished.isEmpty { await releaseWaitingEpisodes(feedIDs: open.feedIDs) }
+            // A member the player keeps loaded still gives its slot up and stops waiting for preparation.
+            let touched = close.finished + close.held
+            for id in touched { await withdrawPreparationRequestAwaiting(for: id.rawValue) }
+            if !touched.isEmpty { await releaseWaitingEpisodes(feedIDs: open.feedIDs) }
+            // The ledger entry goes only once its follow-up work has finished, so a quit before then
+            // leaves it for the next launch; a member kept for playback stays owed.
+            replacePending(record, with: record.keeping(Set(close.held)))
         } catch {
             podcastOperationMessage = "Skipped audio could not be cleared; it will be tried again."
         }
@@ -121,25 +125,40 @@ extension WiltedMacModel {
         for record in pendingSoftSkips where !openSoftSkips.contains(where: { $0.record == record }) {
             guard let close = try? await store.finalizeSoftSkip(
                 record.retiredIDs, at: record.retiredAt, protecting: livePlaybackEpisodeIDs()) else { continue }
-            replacePending(record, with: record.keeping(Set(close.held)))
+            let remaining = record.keeping(Set(close.held))
             // What the live close does for its members: no waiting preparation, and the slot goes to the
             // feed's next waiting episode once the library is read.
-            for id in close.finished {
-                withdrawPreparationRequest(for: id.rawValue)
-                if let feedID = try? await store.podcastEpisode(for: id)?.feedID {
-                    softSkipReleaseFeedIDs.insert(feedID.rawValue)
-                }
+            let touched = close.finished + close.held
+            var feeds = Set<String>()
+            for id in touched {
+                await withdrawPreparationRequestAwaiting(for: id.rawValue)
+                if let feedID = try? await store.podcastEpisode(for: id)?.feedID { feeds.insert(feedID.rawValue) }
+            }
+            if feeds.isEmpty {
+                replacePending(record, with: remaining)
+            } else {
+                // The ledger entry stays until the admission pass has run, so a second quit before it
+                // does not lose the work (see `releaseSlotsOfAbandonedSoftSkips`).
+                softSkipReleaseFeedIDs.formUnion(feeds)
+                softSkipRecoveryLedgerUpdates.append((record, remaining))
             }
         }
     }
 
     /// Lets the feeds whose abandoned Skips just closed fill the slots those Skips freed. Called once the
-    /// library rows are loaded, which admission counts from.
+    /// library rows are loaded, which admission counts from. Each Skip leaves the ledger afterwards.
     func releaseSlotsOfAbandonedSoftSkips() {
         let feeds = softSkipReleaseFeedIDs
+        let updates = softSkipRecoveryLedgerUpdates
         softSkipReleaseFeedIDs = []
-        guard !feeds.isEmpty else { return }
-        enqueueFeedWriteAfterDecisions { [weak self] in await self?.releaseWaitingEpisodes(feedIDs: feeds) }
+        softSkipRecoveryLedgerUpdates = []
+        guard !feeds.isEmpty || !updates.isEmpty else { return }
+        enqueueFeedWriteAfterDecisions { [weak self] in
+            guard let self else { return }
+            await self.releaseWaitingEpisodes(feedIDs: feeds)
+            guard !self.isClosingTemporaryState else { return }
+            for (record, remaining) in updates { self.replacePending(record, with: remaining) }
+        }
     }
 
     /// Takes back a soft Skip in the store and reloads what shows it. The undo changes only members

@@ -43,7 +43,15 @@ public struct MediaSweepReport: Equatable, Sendable {
 }
 
 extension LocalLibraryStore {
-    public func save(download: PodcastDownload) throws {
+    /// The coordinator's status writes: a row for an episode the library no longer has is not created.
+    public func save(downloadStatus download: PodcastDownload) throws {
+        try save(download: download, requireEpisode: true)
+    }
+
+    /// `requireEpisode` also refuses to create a row for an episode the library does not know (removed
+    /// outright, such as by unsubscribing); without it only an episode that is known and keeps no media
+    /// is refused.
+    public func save(download: PodcastDownload, requireEpisode: Bool = false) throws {
         let context = ModelContext(container)
         let episodeID = download.episodeID.rawValue
         var descriptor = FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>(
@@ -54,7 +62,12 @@ extension LocalLibraryStore {
             existing.status = download.status.rawValue; existing.bytesReceived = download.bytesReceived; existing.expectedByteCount = download.expectedByteCount
             existing.localURL = download.localURL?.absoluteString; existing.contentHash = download.contentHash; existing.updatedAt = download.updatedAt.date
             existing.failureKind = download.failureKind?.rawValue
-        } else { context.insert(LocalLibrarySchemaV10Models.PodcastDownloadRecord(download)) }
+        } else {
+            // A row is created only for an episode that still keeps media, so a late status write
+            // cannot bring one back after cleanup or an unsubscribe.
+            guard try episodeAcceptsDownload(download.episodeID, in: context, allowingUnknown: !requireEpisode) else { return }
+            context.insert(LocalLibrarySchemaV10Models.PodcastDownloadRecord(download))
+        }
         try context.save()
     }
 
@@ -70,7 +83,9 @@ extension LocalLibraryStore {
     /// after that save succeeds, and only if no surviving record still names
     /// it -- a file another episode shares is kept, and a re-download of
     /// identical content deletes nothing.
-    public func finalizePodcastDownload(revision: AudioRevision, mediaURL: URL, download: PodcastDownload) throws {
+    public func finalizePodcastDownload(
+        revision: AudioRevision, mediaURL: URL, download: PodcastDownload, requireEpisode: Bool = false
+    ) throws {
         guard revision.itemID == download.episodeID,
               download.status == .completed,
               download.localURL == mediaURL,
@@ -79,15 +94,11 @@ extension LocalLibraryStore {
             throw LocalLibraryStoreError.invalidPodcastState("completed download revision")
         }
         let context = ModelContext(container)
-        // A retired episode keeps no media: one whose cleanup is done (or that was never part of a soft
-        // Skip) refuses a download that finishes late, which would otherwise bring its records back for
-        // good. A member of an open soft Skip is still cleaned at the window's close, so it may finish.
-        let lookup = try EpisodeAssociationReadLookup(in: context)
-        if let episode = lookup.episodes[revision.itemID.rawValue],
-           episode.removalKind == PodcastEpisodeRemovalKind.retired.rawValue,
-           (lookup.state(for: revision.itemID)?.memberIDs.count ?? 1) <= 1,
-           softSkipHolds[revision.itemID]?.retiredAt != episode.retiredAt {
-            throw LocalLibraryStoreError.invalidPodcastState("download finished for a retired episode")
+        // Nothing is recorded for an episode that no longer keeps media (see `episodeAcceptsDownload`),
+        // even inside a soft Skip's Undo window: a download that finishes then must not replace the
+        // audio the player may have loaded.
+        guard try episodeAcceptsDownload(revision.itemID, in: context, allowingUnknown: !requireEpisode) else {
+            throw LocalLibraryStoreError.invalidPodcastState("download finished for an episode that keeps no media")
         }
         let revisions = try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
         if let existing = revisions.first(where: { $0.id == revision.revisionID.rawValue }) {

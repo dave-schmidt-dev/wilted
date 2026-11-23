@@ -626,6 +626,12 @@ extension WiltedMacModel {
 
     /// Gives up a request's place, for a row that can no longer run: a retired,
     /// hidden, or removed episode. The sequence itself is not reused.
+    /// Withdraws the request and returns once the work ticket records it as cancelled.
+    func withdrawPreparationRequestAwaiting(for episodeID: String) async {
+        preparationRequestSequences.removeValue(forKey: episodeID)
+        await recordWorkTicketTransition(kind: .podcastPreparation, subjectID: episodeID, state: .cancelled)
+    }
+
     func withdrawPreparationRequest(for episodeID: String) {
         preparationRequestSequences.removeValue(forKey: episodeID)
         Task { [weak self] in

@@ -396,6 +396,8 @@ final class WiltedMacModel {
     @ObservationIgnored var openSoftSkips: [OpenSoftSkip] = []
     /// Feeds whose abandoned soft Skips closed at launch and are owed a slot release once the library is loaded.
     @ObservationIgnored var softSkipReleaseFeedIDs: Set<String> = []
+    /// Ledger changes owed once the admission pass for abandoned Skips has run.
+    @ObservationIgnored var softSkipRecoveryLedgerUpdates: [(SoftSkipRecord, SoftSkipRecord?)] = []
     var failedFeedDecisionIDs: Set<String> = []
     /// Posts of followed article feeds that no rule or policy decided: the Feeds inbox lists them
     /// beside podcast episodes. In memory; the next refresh offers them again.

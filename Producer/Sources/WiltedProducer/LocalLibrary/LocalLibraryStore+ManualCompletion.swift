@@ -247,8 +247,9 @@ extension LocalLibraryStore {
             guard let episode = lookup.episodes[id.rawValue], episode.retiredAt == hold.retiredAt,
                   episode.removalKind == PodcastEpisodeRemovalKind.retired.rawValue else { continue }
             let members = lookup.state(for: id)?.memberIDs ?? [id]
-            // A linked partner still on the feed already holds the group's slot.
-            guard members.allSatisfy({ lookup.episodes[$0.rawValue]?.removalKind == PodcastEpisodeRemovalKind.retired.rawValue }) else { continue }
+            // A linked partner still on the feed already holds the group's slot. One that was dismissed
+            // or removed does not: admission counts only live members, so the slot is held here.
+            guard !members.contains(where: { lookup.episodes[$0.rawValue]?.removalKind == nil }) else { continue }
             let key = lookup.state(for: id)?.representativeID ?? id
             if reserved.insert(key).inserted { capacity[hold.feedID, default: 0] += 1 }
         }

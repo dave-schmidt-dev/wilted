@@ -133,7 +133,7 @@ extension LocalLibraryStore {
             }
         }
         if context.hasChanges { try context.save() }
-        for id in record.retiredIDs { softSkipHolds[id] = nil }
+        releaseSoftSkipHolds(record.retiredIDs, at: record.retiredAt)
         return restored
     }
 
@@ -145,12 +145,16 @@ extension LocalLibraryStore {
     /// check and the deletion share one save. Safe to repeat.
     @discardableResult
     public func finalizeSoftSkip(
-        _ ids: [ItemID], at retiredAt: Timestamp, protecting: Set<ItemID> = []
+        _ requested: [ItemID], at retiredAt: Timestamp, protecting: Set<ItemID> = []
     ) throws -> SoftSkipClose {
         let context = ModelContext(container)
         context.autosaveEnabled = false
         defer { if context.hasChanges { context.rollback() } }
         let lookup = try EpisodeAssociationReadLookup(in: context)
+        // A Skip of one row retires its linked members too, and the record may name only the row. The
+        // members are read from the store, so none is left out whatever the caller recorded.
+        var seen = Set<ItemID>()
+        let ids = requested.flatMap { lookup.state(for: $0)?.memberIDs ?? [$0] }.filter { seen.insert($0).inserted }
         var finished: [ItemID] = []
         var held: [ItemID] = []
         var doomed = Set<String>()
@@ -163,14 +167,22 @@ extension LocalLibraryStore {
             if (lookup.state(for: id)?.memberIDs.count ?? 1) <= 1 { doomed.insert(id.rawValue) }
         }
         guard !doomed.isEmpty else {
-            for id in ids { softSkipHolds[id] = nil }
+            releaseSoftSkipHolds(ids, at: retiredAt)
             return SoftSkipClose(finished: finished, held: held)
         }
         let media = try Self.deleteMediaRecords(forEpisodesWithIDs: doomed, in: context)
         try context.save()
         // From here a download that finishes for these members is refused (see `finalizePodcastDownload`).
-        for id in ids { softSkipHolds[id] = nil }
+        // A member whose audio stays because the player has it loaded gives its slot up all the same.
+        releaseSoftSkipHolds(ids, at: retiredAt)
         deleteMediaIfUnreferenced(media)
         return SoftSkipClose(finished: finished, held: held)
+    }
+
+    /// Frees the slots a Skip held, but only the ones this very Skip took: an episode that was
+    /// restored and skipped again holds its slot for the newer Skip, which a stale close or Undo
+    /// must not release.
+    func releaseSoftSkipHolds(_ ids: [ItemID], at retiredAt: Timestamp) {
+        for id in ids where softSkipHolds[id]?.retiredAt == retiredAt.date { softSkipHolds[id] = nil }
     }
 }

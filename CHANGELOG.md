@@ -5,6 +5,7 @@ All notable changes to this project are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- A skipped episode now stays off the feed for good: a download that finishes late, or after an unsubscribe, is refused instead of bringing its audio back. Closing a Skip also frees the episode's slot and stops its waiting preparation, including after a relaunch, and Cmd-Z keeps working across several Skips.
 - Mac Skip with Undo: while the Undo window is open, a refresh can no longer fill the slot of a skipped kept episode, a second Command-Z after a busy Undo no longer takes back an older action, a download that finishes after the audio was cleared no longer brings it back, and a quit between the Skip and its offer still gets the audio cleared at the next launch, with waiting preparation withdrawn and the freed slot given to the feed's next waiting episode.
 - When a Skip rule holds an episode's audio for deletion, playback keeps its media status and automatic advance tries the next episode. A linked copy that is still opening also blocks the Skip.
 - A rule Skip and the player can no longer race: the Skip takes a short hold on the episode's audio, a load that is already starting blocks the Skip, and an episode on hold cannot start loading. A link made after the Mac last read the library no longer hides a playing twin from the check.

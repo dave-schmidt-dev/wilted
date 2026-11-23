@@ -245,7 +245,7 @@ public actor PodcastDownloadCoordinator {
         var responseMediaType: String?
         let storedMediaType: String
         let queued = try PodcastDownload(episodeID: episodeID, status: .queued, updatedAt: Timestamp(now()))
-        try await store.save(download: queued)
+        try await store.save(downloadStatus: queued)
         onStatus(.init(stage: .queued, bytesReceived: 0, expectedByteCount: expected))
 
         do {
@@ -255,7 +255,7 @@ public actor PodcastDownloadCoordinator {
             }
             storedMediaType = try Self.validatedMediaType(episode.enclosureMediaType)
         } catch let error as PodcastDownloadCoordinatorError {
-            try? await store.save(download: PodcastDownload(
+            try? await store.save(downloadStatus: PodcastDownload(
                 episodeID: episodeID, status: .failed, bytesReceived: 0,
                 expectedByteCount: expected, updatedAt: Timestamp(now()),
                 failureKind: error.failureKind
@@ -274,7 +274,7 @@ public actor PodcastDownloadCoordinator {
             }
             handle = try FileHandle(forWritingTo: stagingURL)
         } catch {
-            try? await store.save(download: PodcastDownload(
+            try? await store.save(downloadStatus: PodcastDownload(
                 episodeID: episodeID, status: .failed, bytesReceived: 0,
                 expectedByteCount: expected, updatedAt: Timestamp(now()),
                 failureKind: .retryable
@@ -292,7 +292,7 @@ public actor PodcastDownloadCoordinator {
 
         do {
             let startedAt = now()
-            try await store.save(download: PodcastDownload(
+            try await store.save(downloadStatus: PodcastDownload(
                 episodeID: episodeID, status: .downloading, bytesReceived: 0,
                 expectedByteCount: expected, updatedAt: Timestamp(startedAt)
             ))
@@ -321,7 +321,7 @@ public actor PodcastDownloadCoordinator {
                         expected = responseExpected
                         enforcedExpected = responseExpected
                     }
-                    try await store.save(download: PodcastDownload(
+                    try await store.save(downloadStatus: PodcastDownload(
                         episodeID: episodeID, status: .downloading, bytesReceived: received,
                         expectedByteCount: expected, updatedAt: Timestamp(now())
                     ))
@@ -339,7 +339,7 @@ public actor PodcastDownloadCoordinator {
                     received += Int64(data.count)
                     if moment.timeIntervalSince(lastProgressSaveAt) >= 1 {
                         lastProgressSaveAt = moment
-                        try await store.save(download: PodcastDownload(
+                        try await store.save(downloadStatus: PodcastDownload(
                             episodeID: episodeID, status: .downloading, bytesReceived: received,
                             expectedByteCount: Self.persistedExpectedByteCount(expected, received: received),
                             updatedAt: Timestamp(moment)
@@ -396,6 +396,12 @@ public actor PodcastDownloadCoordinator {
             // is still being published.
             store.inFlightMedia.begin(finalURL)
             defer { store.inFlightMedia.end(finalURL) }
+            // An episode that was skipped, dismissed or unsubscribed while this transfer ran keeps no
+            // media: stop before the file moves into the library, and leave nothing behind.
+            guard try await store.episodeAcceptsDownload(episodeID) else {
+                try? FileManager.default.removeItem(at: stagingURL)
+                throw PodcastDownloadCoordinatorError.cancelled
+            }
             onStatus(.init(stage: .publishing, bytesReceived: received, expectedByteCount: expected))
             if FileManager.default.fileExists(atPath: finalURL.path) {
                 guard try await verificationHash(of: finalURL, onStatus: onStatus) == contentHash else {
@@ -420,7 +426,8 @@ public actor PodcastDownloadCoordinator {
                 expectedByteCount: Self.persistedExpectedByteCount(expected, received: received),
                 localURL: finalURL, contentHash: contentHash, updatedAt: Timestamp(now())
             )
-            try await store.finalizePodcastDownload(revision: revision, mediaURL: finalURL, download: completed)
+            try await store.finalizePodcastDownload(
+                revision: revision, mediaURL: finalURL, download: completed, requireEpisode: true)
             await persistReceivedBytes(byteMeter.pendingAmount, meter: &byteMeter)
             onStatus(.init(stage: .completed, bytesReceived: received, expectedByteCount: expected))
             return PodcastDownloadResult(revision: revision, mediaURL: finalURL, download: completed)
@@ -440,8 +447,8 @@ public actor PodcastDownloadCoordinator {
             )
             // A quit must not approve an interrupted transfer whose durable
             // disposition could not be written. Other outcomes keep their policy.
-            if interrupted { try await store.save(download: terminal) }
-            else { try? await store.save(download: terminal) }
+            if interrupted { try await store.save(downloadStatus: terminal) }
+            else { try? await store.save(downloadStatus: terminal) }
             if interrupted { throw PodcastDownloadCoordinatorError.interrupted }
             if cancelled { throw PodcastDownloadCoordinatorError.cancelled }
             throw typedError
