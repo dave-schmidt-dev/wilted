@@ -68,6 +68,30 @@ final class WiltedMacPossibleDuplicateFlagTests: XCTestCase {
         XCTAssertNil(originalDecision)
     }
 
+    func testSameEpisodeDismissesOnlyTheQueuedNewcomer() async throws {
+        let (model, first, second) = try await flaggedModel()
+        let store = try XCTUnwrap(model.store)
+        try await store.addPodcastQueueEpisode(first)
+        try await store.addPodcastQueueEpisode(second)
+        await model.refreshPodcastQueueState()
+        await model.reloadLibraryRows()
+        XCTAssertTrue(model.podcastQueueIDs.contains(second.rawValue))
+        let flagged = try XCTUnwrap(model.episodes.first { $0.id == second.rawValue })
+        XCTAssertNotNil(flagged.possibleDuplicateOf)
+
+        model.removePossibleDuplicate(flagged)
+        for _ in 0..<100 where !model.dismissedEpisodes.contains(where: { $0.id == second.rawValue }) {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+
+        XCTAssertTrue(model.dismissedEpisodes.contains { $0.id == second.rawValue })
+        XCTAssertFalse(model.dismissedEpisodes.contains { $0.id == first.rawValue })
+        let queue = try await store.podcastQueueState()
+        XCTAssertEqual(queue.episodeIDs, [first])
+        let original = try await store.podcastEpisode(for: first)
+        XCTAssertNotNil(original)
+    }
+
     func testDifferentClearsTheFlagAndLiftsTheExclusion() async throws {
         let (model, _, second) = try await flaggedModel()
         let flagged = try XCTUnwrap(model.episodes.first { $0.id == second.rawValue })

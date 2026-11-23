@@ -172,6 +172,8 @@ final class WiltedMacEpisodeListParityTests: XCTestCase {
         let model = WiltedMacModel(arguments: [], preferences: preferences)
         let playlist = Playlist(id: "prefs-playlist", name: "Prefs", kind: .manual, matchAll: true, sortIndex: 0)
         model.playlists.playlists = [playlist]
+        model.episodes = [episode()]
+        XCTAssertFalse(model.feedsEpisodeCandidates.isEmpty)
 
         let feedsText = try WiltedMacHeadless.recognizedText(
             WiltedMacFeedsView(model: model), size: CGSize(width: 1100, height: 700)

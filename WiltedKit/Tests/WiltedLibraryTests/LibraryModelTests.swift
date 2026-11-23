@@ -37,7 +37,7 @@ final class LibraryModelTests: XCTestCase {
         XCTAssertNil(oldSource.publisher)
 
         let source = LibrarySource(
-            id: id("b"), kind: .podcastFeed, title: "New Show", publisher: "Example Audio",
+            id: try id("b"), kind: .podcastFeed, title: "New Show", publisher: "Example Audio",
             locator: "https://example.test/new.xml")
         XCTAssertEqual(try JSONDecoder().decode(LibrarySource.self, from: JSONEncoder().encode(source)), source)
     }

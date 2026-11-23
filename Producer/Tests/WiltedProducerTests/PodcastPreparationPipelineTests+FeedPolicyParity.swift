@@ -198,7 +198,7 @@ extension PodcastPreparationPipelineTests {
             #expect(initialResult.adRemovalOutcome == "disabled")
             #expect(try Data(contentsOf: initialResult.mediaURL) == Fixture.originalBody)
         } else {
-            #expect(initialResult.adRemovalOutcome == "uncertain")
+            #expect(initialResult.adRemovalOutcome == "disabled")
             #expect(initialResult.warning == scenario.notSentReason?.warning)
             #expect(try Data(contentsOf: initialResult.mediaURL) == Fixture.originalBody)
         }

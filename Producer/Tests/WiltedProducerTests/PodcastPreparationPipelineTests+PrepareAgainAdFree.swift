@@ -226,7 +226,7 @@ extension PodcastPreparationPipelineTests {
         services.preferences.setConfirmed(feedID: feed.rawValue, false)
         let result = try await fixture.pipeline(WorkerStub(response: Self.uncutResponse(audioURL: fixture.audioURL)))
             .prepare(episodeID: fixture.episodeID)
-        #expect(result.adRemovalOutcome == "uncertain")
+        #expect(result.adRemovalOutcome == "disabled")
 
         let input = RemoteLabellingInput(feedID: feed.rawValue)
         let policy = PodcastPreparationPolicySnapshot(transcriptPolicy: .bestAvailable, removeAds: true)
