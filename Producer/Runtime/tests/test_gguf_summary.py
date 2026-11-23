@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from wilted.gguf_summary import PromptBudgetExceeded
+from wilted.gguf_summary import PromptBudgetExceeded, SummaryOutputTruncated
 from wilted.llm import GgufBackend
 
 pytestmark = pytest.mark.unit
@@ -155,7 +155,8 @@ def test_unloaded_or_reloaded_model_cannot_generate(backend):
 def test_truncated_or_missing_finish_reason_never_succeeds(backend, reason):
     prepared = backend.prepare_summary("s", "u")
     backend._llm.finish_reason = reason
-    with pytest.raises(ValueError, match="finish"):
+    error = SummaryOutputTruncated if reason == "length" else ValueError
+    with pytest.raises(error, match="finish"):
         backend.generate_summary(prepared)
 
 
@@ -213,7 +214,7 @@ def test_reserve_boundary_stop_is_valid_and_length_is_not(backend):
     backend._llm.usage_override = {"prompt_tokens": prepared.token_count, "completion_tokens": 32}
     assert backend.generate_summary(prepared) == ("Whole transcript summary", 32)
     backend._llm.finish_reason = "length"
-    with pytest.raises(ValueError, match="finish"):
+    with pytest.raises(SummaryOutputTruncated, match="finish"):
         backend.generate_summary(prepared)
 
 

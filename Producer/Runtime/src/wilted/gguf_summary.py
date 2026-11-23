@@ -61,6 +61,13 @@ class PromptBudgetExceeded(ValueError):
         )
 
 
+class SummaryOutputTruncated(ValueError):
+    """The model hit its output limit before finishing a summary."""
+
+    def __init__(self) -> None:
+        super().__init__("Summary incomplete finish status (output may be truncated)")
+
+
 def _positive_integer(value: Any) -> bool:
     return type(value) is int and value > 0
 
@@ -224,7 +231,10 @@ def generate_prepared_prompt(
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         raise ValueError("Summary missing finish status")
     choice = choices[0]
-    if choice.get("finish_reason") != "stop":
+    finish_reason = choice.get("finish_reason")
+    if finish_reason == "length":
+        raise SummaryOutputTruncated()
+    if finish_reason != "stop":
         raise ValueError("Summary incomplete finish status (output may be truncated)")
     message = choice.get("message")
     text = message.get("content") if isinstance(message, dict) else None

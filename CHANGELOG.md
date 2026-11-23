@@ -4,6 +4,9 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Local transcript summaries now retry shorter passages when the model reaches its 512-token output limit, including during reduction, while preserving whole-transcript coverage.
+
 ## [0.7.4] - 2026-11-23
 
 ### Added
