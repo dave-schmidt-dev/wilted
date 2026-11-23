@@ -389,7 +389,7 @@ extension WiltedMacModel {
     /// nothing: its back catalogue is offered, not queued for the GPU. A refresh keeps what the feed's
     /// rules and policy keep, one article at a time through the shared preparation gate.
     func refreshArticleFeed(
-        url: URL, subscribing: Bool, store: LocalLibraryStore
+        url: URL, subscribing: Bool, store: LocalLibraryStore, isHeadlineSource: Bool = false
     ) async throws -> (feedID: ItemID, title: String, duplicate: Bool) {
         let document = try await podcastFeedClient.loadArticleFeed(url)
         if subscribing, document.items.isEmpty { throw PodcastFeedHasNoAudio() }
@@ -397,6 +397,11 @@ extension WiltedMacModel {
             canonicalURL: url, title: document.title, author: document.author, createdAt: Timestamp(Date())
         )
         try await store.save(articleFeed: feed)
+        if isHeadlineSource {
+            // Save this choice before following the feed, so the first refresh
+            // cannot offer posts to the Keep/Skip inbox.
+            try await store.save(isNews: true, feedID: feed.itemID)
+        }
         try Task.checkCancellation()
         var duplicate = false
         if subscribing {
@@ -405,7 +410,7 @@ extension WiltedMacModel {
             )
             duplicate = !inserted
         }
-        // A feed marked News only supplies bulletin headlines: none of its posts is offered or kept.
+        // A headlines-only feed supplies reports and bulletins without offering or keeping its posts.
         if try await store.isNews(feedID: feed.itemID) {
             newsFeedIDs.insert(feed.itemID.rawValue)
             setOfferedArticles([], feed: feed)
@@ -458,7 +463,9 @@ extension WiltedMacModel {
     func startPodcastRefresh(
         urls: [URL], subscribing: Bool,
         initialMetadataLimit: Int? = nil,
-        requestID: UUID? = nil
+        requestID: UUID? = nil,
+        headlineOnly: Bool = false,
+        onRefreshed: ((PodcastRefreshResult) -> Void)? = nil
     ) {
         guard !isClosingTemporaryState, podcastRefreshTask == nil else { return }
         isRefreshingPodcasts = true
@@ -486,17 +493,19 @@ extension WiltedMacModel {
             do {
                 let result = try await self.refreshPodcastURLs(
                     urls, subscribing: subscribing, initialMetadataLimit: initialMetadataLimit,
-                    requestID: requestID
+                    requestID: requestID,
+                    headlineOnly: headlineOnly
                 )
                 guard self.podcastRefreshOperationID == operationID,
                       requestID == nil || self.podcastSubscriptionRequestID == requestID else { return }
+                onRefreshed?(result)
                 self.lastPodcastRefreshNewEpisodeIDs = result.newEpisodeIDs.map(\.rawValue)
                 if !subscribing, result.successfulFeedCount > 0 {
                     self.setLastAutomationRefresh(Date())
                 }
                 if subscribing {
                     let showName = result.successfulFeedTitles.first ?? "this podcast"
-                    self.podcastFeedDraft = ""
+                    if !headlineOnly { self.podcastFeedDraft = "" }
                     if let duplicate = result.duplicateSubscription {
                         self.selectedPodcastFeedID = duplicate.rawValue
                         self.podcastFeedDraftStatus = "Already following \(showName)."
@@ -535,13 +544,19 @@ extension WiltedMacModel {
                       requestID == nil || self.podcastSubscriptionRequestID == requestID else { return }
                 self.podcastFeedDraftStatus = PodcastFeedHasNoAudio.message
                 self.podcastOperationMessage = PodcastFeedHasNoAudio.message
+            } catch is PodcastFeedIsNotArticleFeed {
+                guard self.podcastRefreshOperationID == operationID,
+                      requestID == nil || self.podcastSubscriptionRequestID == requestID else { return }
+                self.podcastFeedDraftStatus = PodcastFeedIsNotArticleFeed.message
+                self.podcastOperationMessage = PodcastFeedIsNotArticleFeed.message
             } catch {
                 guard self.podcastRefreshOperationID == operationID,
                       requestID == nil || self.podcastSubscriptionRequestID == requestID else { return }
-                self.podcastFeedDraftStatus = subscribing
-                    ? "Podcast feed unavailable. Check the address or retry when online."
-                    : self.podcastFeedDraftStatus
-                self.podcastOperationMessage = "Podcast feed unavailable. Check the address or retry when online."
+                let message = headlineOnly
+                    ? "Headline feed unavailable. Check the address or retry when online."
+                    : "Podcast feed unavailable. Check the address or retry when online."
+                if subscribing { self.podcastFeedDraftStatus = message }
+                self.podcastOperationMessage = message
             }
         }
         if let podcastRefreshTask {

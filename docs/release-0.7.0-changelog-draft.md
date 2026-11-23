@@ -112,7 +112,7 @@ Counts: 0.7.0 102 (Added 14, Changed 31, Removed 5, Fixed 52); added to 0.6.0 13
 - Marking the playing episode completed now shows the existing Wilted animated feedback, “Loading next episode…”, while the next episode opens; it honors Reduce Motion and clears if the advance is cancelled or fails.
 - Feed-owned unreferenced artwork is reclaimed after an unsubscribe commit finishes, with existing shared-file guards preserved.
 - AudioAssembler atomic temporary output retains `.m4a` to prevent AVURLAsset inspection and playback regression.
-- An older failed News save cannot overwrite a newer optimistic choice in feed settings.
+- An older failed Headlines only save cannot overwrite a newer optimistic choice in feed settings.
 - Larder sort preferences (such as Age, oldest first) persist across playback, natural continuation, and app relaunch without resetting to Custom; explicit manual drag and reorder operations continue to select Custom.
 - Ready-media reconciliation and export use the existing publication snapshot to skip unrelated transcript and preparation-history decoding while retaining exact prepared-media proof.
 - The Mac transcript panel shows when the selected saved transcript is loading, distinguishes read failure from confirmed absence, and offers Retry after a failed read.
@@ -129,7 +129,7 @@ These go into the existing 0.6.0 section, merged by group.
 ### Added
 
 - Reports (off by default): spoken news headlines and National Weather Service alerts interrupt playback at the next pause in speech, then resume where you were, on the Mac and the iPhone; each device uses its own approximate location, never your IP address. The Mac can build a morning report with the forecast and headlines, and Settings shows its status with Build now.
-- Article feeds: follow a feed without audio, refresh it for new posts, and add the ones you want from the Feeds inbox; a News switch in the feed popover marks news feeds.
+- Article feeds: follow a feed without audio, refresh it for new posts, and add the ones you want from the Feeds inbox; the Headlines only switch makes an article feed a headline source.
 - Audiobooks and books on the Mac: Import book in the Add sheet (or drop files) imports audio files or a folder as one audiobook with chapters, and turns EPUB or PDF text into a spoken book; progress shows with Cancel, and refused files say why. Importing the same files again finds the same book.
 - Chapters: book rows show their chapter, and the Mac player and iPhone player step between chapters.
 - Playlists on the Mac: a Playlists section in the sidebar holds manual playlists (Add to Playlist from a Larder row, reorder, remove) and automatic playlists built from rules. Playing a playlist never changes the Larder order.

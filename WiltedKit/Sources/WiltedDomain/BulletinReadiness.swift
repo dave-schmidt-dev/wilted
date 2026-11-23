@@ -7,9 +7,9 @@ public struct BulletinReadiness: Equatable, Sendable {
 
         public var text: String {
             switch self {
-            case .news: "No news source yet. Add a news feed and mark it as News."
-            case .checkingNews: "Checking for a news source…"
-            case .unknownNews: "Wilted couldn’t check your news feeds."
+            case .news: "Turn on Headlines only for an article feed."
+            case .checkingNews: "Checking for a headline feed…"
+            case .unknownNews: "Wilted couldn’t check your headline feeds."
             case .weather: "Weather alerts need a location."
             case .locationDenied: "Location access is off. Allow access or enter a location for weather alerts."
             case .sound: "Bulletins are paused because Wilted couldn’t check the sound output."

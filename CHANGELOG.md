@@ -15,6 +15,10 @@ All notable changes to this project are documented in this file.
 ### Changed
 - A podcast’s title and feed address no longer trigger an ad-free prompt on Add. Show settings has an explicit **This show is already ad-free** choice.
 - Mac ad settings distinguish the selected service, its checks and each reason for waiting. Episode preparation reports whether ads were checked or removed, lists passages left in, and identifies the transcript source when recorded.
+- **Headlines only** moves an article feed’s posts out of the Keep/Skip inbox. Feeds groups these sources under **Headline feeds**, and Show settings hides their unused automation controls.
+- Reports can add a headline feed by address or use one you already follow. The morning report reads those feeds directly for stories published in the past hour.
+- Show settings lists the choices Reset all will change and offers Undo. Restoring cut episodes asks you to confirm the number of downloads.
+- Ad feedback shows how many reports still need review. Marking a report handled keeps its label and count.
 
 ## [0.7.2] - 2026-11-22
 
@@ -94,7 +98,7 @@ Every build installed since 0.6.0 was labelled 0.7.0, and no 0.7.0 section was e
 - A Larder row's context menu offers Review Possible Duplicate for podcast copies: an exact same-show pair is shown with read-only evidence (raw episode IDs and publisher GUIDs, original-download and prepared-revision proof, progress, decisions, queue slots and ambiguity hints), nothing changes until you compare the pair, confirm it, and review the prepared consequences before Apply. Changing the pair or representative voids the old comparison and confirmation. Stale previews are refused, and reversal is equally explicit, naming each member that loses inherited Keep or suppression before later feed automation can retire it and delete unprotected media.
 - The feed settings popover explains inline when Auto prepare On is suppressed by global Processing Manual while Prepare everything downloaded is Off.
 - Reports (off by default): spoken news headlines and National Weather Service alerts interrupt playback at the next pause in speech, then resume where you were, on the Mac and the iPhone; each device uses its own approximate location, never your IP address. The Mac can build a morning report with the forecast and headlines, and Settings shows its status with Build now.
-- Article feeds: follow a feed without audio, refresh it for new posts, and add the ones you want from the Feeds inbox; a News switch in the feed popover marks news feeds.
+- Article feeds: follow a feed without audio, refresh it for new posts, and add the ones you want from the Feeds inbox; the Headlines only switch makes an article feed a headline source.
 - Audiobooks and books on the Mac: Import book in the Add sheet (or drop files) imports audio files or a folder as one audiobook with chapters, and turns EPUB or PDF text into a spoken book; progress shows with Cancel, and refused files say why. Importing the same files again finds the same book.
 - Chapters: book rows show their chapter, and the Mac player and iPhone player step between chapters.
 - Playlists on the Mac: a Playlists section in the sidebar holds manual playlists (Add to Playlist from a Larder row, reorder, remove) and automatic playlists built from rules. Playing a playlist never changes the Larder order.
@@ -311,7 +315,7 @@ Every build installed since 0.6.0 was labelled 0.7.0, and no 0.7.0 section was e
 - Marking the playing episode completed now shows the existing Wilted animated feedback, “Loading next episode…”, while the next episode opens; it honors Reduce Motion and clears if the advance is cancelled or fails.
 - Feed-owned unreferenced artwork is reclaimed after an unsubscribe commit finishes, with existing shared-file guards preserved.
 - AudioAssembler atomic temporary output retains `.m4a` to prevent AVURLAsset inspection and playback regression.
-- An older failed News save cannot overwrite a newer optimistic choice in feed settings.
+- An older failed Headlines only save cannot overwrite a newer optimistic choice in feed settings.
 - Larder sort preferences (such as Age, oldest first) persist across playback, natural continuation, and app relaunch without resetting to Custom; explicit manual drag and reorder operations continue to select Custom.
 - Ready-media reconciliation and export use the existing publication snapshot to skip unrelated transcript and preparation-history decoding while retaining exact prepared-media proof.
 - The Mac transcript panel shows when the selected saved transcript is loading, distinguishes read failure from confirmed absence, and offers Retry after a failed read.

@@ -43,13 +43,13 @@ enum LibrarySettingsFormat {
         if channel.headlinesEnabled {
             if articleFeedCount == nil {
                 lines.append(isRefreshingLibrary
-                    ? "Checking your library for a news feed…"
-                    : "Wilted has not checked for a news feed yet. Refresh the library to check.")
+                    ? "Checking your library for a headline feed…"
+                    : "Wilted has not checked for a headline feed yet. Refresh the library to check.")
             } else if articleFeedCount == 0 {
                 lines.append(BulletinReadiness.Line.news.text)
                 lines.append("Set this up on your Mac.")
             } else {
-                lines.append("Wilted can’t tell if one of your feeds is marked as News.")
+                lines.append("Wilted can’t tell whether Headlines only is on for any feed.")
                 lines.append("Check Wilted on your Mac.")
             }
         }

@@ -85,6 +85,7 @@ struct WiltedMacAdFeedbackEntry: Codable, Equatable, Identifiable, Sendable {
     var review: Review
     var label: CorpusLabel?
     var reviewedAt: Date?
+    var handledAt: Date?
 
     /// The label the export will use: the listener's, else the one the press suggests.
     var effectiveLabel: CorpusLabel { label ?? .suggested(for: kind) }
@@ -112,7 +113,7 @@ struct WiltedMacAdFeedbackEntry: Codable, Equatable, Identifiable, Sendable {
             },
             engineVersion: engineVersion, pipelineFingerprint: pipelineFingerprint, createdAt: createdAt,
             deviceID: deviceID, source: source, showTitle: showTitle, episodeTitle: episodeTitle,
-            review: .accepted, label: nil, reviewedAt: nil)
+            review: .accepted, label: nil, reviewedAt: nil, handledAt: nil)
     }
 }
 
@@ -189,6 +190,15 @@ actor WiltedMacAdFeedbackInbox {
         next[index].review = review
         next[index].label = review == .pending ? nil : label
         next[index].reviewedAt = review == .pending ? nil : date
+        try persist(next)
+    }
+
+    /// Marks a filed press handled without changing whether it counts or its label.
+    func markHandled(id: String, at date: Date) throws {
+        guard let index = entries.firstIndex(where: { $0.id == id }), entries[index].counts,
+              entries[index].handledAt == nil else { return }
+        var next = entries
+        next[index].handledAt = date
         try persist(next)
     }
 

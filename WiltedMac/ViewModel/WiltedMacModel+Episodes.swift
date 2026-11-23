@@ -62,9 +62,13 @@ extension WiltedMacModel {
     struct PodcastFeedHasNoAudio: Error {
         static let message = "This feed has no audio and no posts to follow."
     }
+    struct PodcastFeedIsNotArticleFeed: Error {
+        static let message = "This feed contains audio. Use an article feed for headlines."
+    }
 
     func refreshPodcastURLs(
-        _ urls: [URL], subscribing: Bool, initialMetadataLimit: Int? = nil, requestID: UUID? = nil
+        _ urls: [URL], subscribing: Bool, initialMetadataLimit: Int? = nil, requestID: UUID? = nil,
+        headlineOnly: Bool = false
     ) async throws -> PodcastRefreshResult {
         guard let store else { throw CancellationError() }
         var withheld = 0
@@ -87,6 +91,9 @@ extension WiltedMacModel {
                 guard requestID == nil || podcastSubscriptionRequestID == requestID else {
                     throw CancellationError()
                 }
+                if headlineOnly, !loaded.episodes.isEmpty {
+                    throw PodcastFeedIsNotArticleFeed()
+                }
                 // The parser keeps only items with an audio enclosure, so a feed with none is followed as an
                 // article feed: when subscribing, and when refreshing a feed already followed as one (a
                 // podcast whose episodes were all removed must not turn into an article feed).
@@ -97,7 +104,10 @@ extension WiltedMacModel {
                     ) != nil
                 }
                 if loaded.episodes.isEmpty, subscribing || followedAsArticleFeed {
-                    let article = try await refreshArticleFeed(url: url, subscribing: subscribing, store: store)
+                    let article = try await refreshArticleFeed(
+                        url: url, subscribing: subscribing, store: store,
+                        isHeadlineSource: headlineOnly
+                    )
                     try Task.checkCancellation()
                     if article.duplicate { result.duplicateSubscription = article.feedID }
                     result.articleFeedIDs.insert(article.feedID)

@@ -121,12 +121,12 @@ final class LibrarySettingsFormatTests: XCTestCase {
         XCTAssertEqual(
             LibrarySettingsFormat.bulletinLines(
                 channel: headlines, hasCheckedChannel: true, articleFeedCount: nil, location: .none),
-            ["Wilted has not checked for a news feed yet. Refresh the library to check."])
+            ["Wilted has not checked for a headline feed yet. Refresh the library to check."])
         XCTAssertEqual(
             LibrarySettingsFormat.bulletinLines(
                 channel: headlines, hasCheckedChannel: true, articleFeedCount: nil, location: .none,
                 isRefreshingLibrary: true),
-            ["Checking your library for a news feed…"])
+            ["Checking your library for a headline feed…"])
         XCTAssertEqual(
             LibrarySettingsFormat.bulletinLines(
                 channel: headlines, hasCheckedChannel: true, articleFeedCount: 0, location: .none),
@@ -134,7 +134,7 @@ final class LibrarySettingsFormatTests: XCTestCase {
         XCTAssertEqual(
             LibrarySettingsFormat.bulletinLines(
                 channel: headlines, hasCheckedChannel: true, articleFeedCount: 1, location: .none),
-            ["Wilted can’t tell if one of your feeds is marked as News.", "Check Wilted on your Mac."])
+            ["Wilted can’t tell whether Headlines only is on for any feed.", "Check Wilted on your Mac."])
 
         let alerts = try LibraryBulletins(alertsEnabled: true, headlinesEnabled: false)
         XCTAssertEqual(

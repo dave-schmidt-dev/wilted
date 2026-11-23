@@ -255,10 +255,10 @@ final class BulletinProducerTests: XCTestCase {
         let offline = URLError(
             .notConnectedToInternet,
             userInfo: [NSURLErrorFailingURLStringErrorKey: "https://news.example.test/feed?token=SECRET-TOKEN"])
-        XCTAssertEqual(BulletinProducer.describe(offline), "Could not check news: this Mac is offline.")
+        XCTAssertEqual(BulletinProducer.describe(offline), "Could not check headline feeds while this Mac is offline.")
         XCTAssertEqual(BulletinProducer.describe(URLError(.timedOut)),
-                       "Could not check news: the connection timed out.")
-        XCTAssertEqual(BulletinProducer.describe(Boom()), "Could not check news.")
+                       "The connection timed out while checking headline feeds.")
+        XCTAssertEqual(BulletinProducer.describe(Boom()), "Could not check headline feeds.")
     }
 
     func testAnOfflinePollFailureIsAPlainSentenceInSettings() async throws {
@@ -269,7 +269,7 @@ final class BulletinProducerTests: XCTestCase {
         let producer = h.producer()
         await producer.poll()
         let status = await producer.status
-        XCTAssertEqual(status.lastError, "Could not check news: this Mac is offline.")
+        XCTAssertEqual(status.lastError, "Could not check headline feeds while this Mac is offline.")
         let statusLine = await WiltedMacBulletinHub.statusLine(status)
         let line = try XCTUnwrap(statusLine)
         XCTAssertFalse(line.contains("Error Domain"), line)

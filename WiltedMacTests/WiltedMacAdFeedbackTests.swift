@@ -205,6 +205,21 @@ final class WiltedMacAdFeedbackTests: XCTestCase {
 
     }
 
+    func testMarkHandledIsSavedWithoutChangingTheLabelOrCount() async throws {
+        let url = wiltedTemporaryDirectory("handled").appendingPathComponent(WiltedMacAdFeedbackInbox.fileName)
+        let inbox = WiltedMacAdFeedbackInbox(fileURL: url)
+        try await inbox.add(entry(id: "one", timeline: timeline()))
+        try await inbox.review(id: "one", as: .accepted, label: .mustKeep, at: clock)
+        try await inbox.markHandled(id: "one", at: clock)
+        try await inbox.markHandled(id: "one", at: clock.addingTimeInterval(1))
+
+        let reopened = await WiltedMacAdFeedbackInbox(fileURL: url).all()
+        let saved = try XCTUnwrap(reopened.first)
+        XCTAssertEqual(saved.handledAt, clock)
+        XCTAssertTrue(saved.counts)
+        XCTAssertEqual(saved.effectiveLabel, .mustKeep)
+    }
+
     func testSettingsLabelsUseThePlayersWords() {
         typealias Label = WiltedMacAdFeedbackEntry.CorpusLabel
         XCTAssertEqual(Label.allCases.map(\.title), ["Ad", "Not an ad", "Either is fine"])
@@ -316,6 +331,27 @@ final class WiltedMacAdFeedbackTests: XCTestCase {
         await feedback.restore("b")
         XCTAssertEqual(Set(feedback.counted.map(\.id)), ["a", "b"])
         XCTAssertEqual(feedback.entries.first { $0.id == "b" }?.effectiveLabel, .mustCut, "restored with its default label")
+    }
+
+    func testReviewCardUsesPlainWordsAndShowsTheHandledState() async throws {
+        let feedback = WiltedMacAdFeedbackController(inbox: WiltedMacAdFeedbackInbox(fileURL: nil))
+        await feedback.file(try entry(id: "one", timeline: nil))
+        await feedback.loadIfNeeded()
+        let card = WiltedMacAdFeedbackCard(feedback: feedback)
+            .frame(width: 900, height: 620)
+            .environment(\.colorScheme, .light)
+
+        let before = try WiltedMacHeadless.recognizedText(card, size: CGSize(width: 900, height: 620))
+            .joined(separator: " ").lowercased()
+        XCTAssertTrue(before.contains("1 report, 1 to review"), before)
+        XCTAssertTrue(before.contains("mark handled"), before)
+        XCTAssertFalse(before.contains("ad-feedback-drafts"), before)
+
+        await feedback.markHandled("one")
+        let after = try WiltedMacHeadless.recognizedText(card, size: CGSize(width: 900, height: 620))
+            .joined(separator: " ").lowercased()
+        XCTAssertTrue(after.contains("1 report, all handled"), after)
+        XCTAssertFalse(after.contains("mark handled"), after)
     }
 
     // MARK: A phone's intent

@@ -14,14 +14,16 @@ extension WiltedMacModel {
 
     /// Starts one bounded subscription request. The stored setting controls
     /// only the first metadata window; it never requests audio or queue work.
+    @discardableResult
     func startPodcastSubscriptionIntake(
-        _ url: URL, initialMetadataCount: Int? = nil
-    ) {
+        _ url: URL, initialMetadataCount: Int? = nil,
+        headlineOnly: Bool = false, onRefreshed: ((PodcastRefreshResult) -> Void)? = nil
+    ) -> Bool {
         guard url.scheme?.lowercased() == "https", url.host != nil else {
             podcastFeedDraftStatus = "Enter a complete HTTPS podcast feed URL."
-            return
+            return false
         }
-        guard !isClosingTemporaryState else { return }
+        guard !isClosingTemporaryState else { return false }
         let limit = initialMetadataCount ?? automationSettings.initialEpisodeMetadataCount
         guard podcastRefreshTask == nil else {
             // A classifier can finish while a manual refresh owns the single
@@ -33,11 +35,11 @@ extension WiltedMacModel {
                 let showName = url.host ?? "this podcast"
                 podcastFeedDraftStatus = "A refresh is already running for \(showName) (\(limit) initial episodes). Try again when it finishes."
             }
-            return
+            return false
         }
         guard WiltedAutomationSettings.validInitialEpisodeMetadataCount(limit) != nil else {
             podcastFeedDraftStatus = "Choose between 1 and 100 initial episodes."
-            return
+            return false
         }
         let requestID = UUID()
         podcastSubscriptionRequestID = requestID
@@ -45,8 +47,10 @@ extension WiltedMacModel {
         podcastFeedDraftStatus = "Adding podcast feed…"
         pendingPodcastSubscriptionInitialMetadataCount = nil
         startPodcastRefresh(
-            urls: [url], subscribing: true, initialMetadataLimit: limit, requestID: requestID
+            urls: [url], subscribing: true, initialMetadataLimit: limit, requestID: requestID,
+            headlineOnly: headlineOnly, onRefreshed: onRefreshed
         )
+        return true
     }
 #endif
 }

@@ -72,11 +72,16 @@ extension WiltedMacModel {
         }
     }
 
-    /// Starts a prepare-again run for each cut episode on the feed that can be
-    /// restored. No-op while temporary state is closing.
-    func restoreCutEpisodes(feedID: String) {
-        guard !isClosingTemporaryState else { return }
-        for episode in episodesToRestore(feedID: feedID) { prepareAgain(episode) }
+    /// Starts a restore only while the full eligible set still matches the IDs the person confirmed.
+    @discardableResult
+    func restoreCutEpisodes(feedID: String, candidateIDs: [String]) -> Bool {
+        guard !isClosingTemporaryState else { return false }
+        let current = episodesToRestore(feedID: feedID)
+        let requested = Set(candidateIDs)
+        guard requested.count == candidateIDs.count,
+              requested == Set(current.map(\.id)) else { return false }
+        for episode in current { prepareAgain(episode) }
+        return true
     }
 
     /// Larder context-menu title for an eligible prepare-again row.

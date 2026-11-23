@@ -35,7 +35,7 @@ final class WiltedMacArticleShowSettingsTests: XCTestCase {
         board.reset(.autoPrepare, for: id)
         await board.settle()
         XCTAssertEqual(board.explicitOverrideCount(for: id), 3)
-        board.resetAllOverrides(for: id)
+        let undo = try XCTUnwrap(board.resetAllOverrides(for: id))
         await board.settle()
 
         let fresh = WiltedMacFeedPolicyBoard(model: model)
@@ -47,6 +47,17 @@ final class WiltedMacArticleShowSettingsTests: XCTestCase {
         let store = try XCTUnwrap(model.store)
         let saved = try await store.subscription(for: feed.itemID)
         XCTAssertEqual(saved?.displayName, "My journal")
+
+        board.beforeFeedPolicySaveHookForTesting = { _ in throw CocoaError(.fileWriteNoPermission) }
+        let firstAttempt = await board.undoResetAllOverrides(undo)
+        XCTAssertFalse(firstAttempt, "a partial Undo remains available for retry")
+        board.beforeFeedPolicySaveHookForTesting = nil
+        let retry = await board.undoResetAllOverrides(undo)
+        XCTAssertTrue(retry)
+        let restored = try await store.feedAutomationPolicy(for: feed.itemID)
+        XCTAssertEqual(restored, FeedAutomationPolicy(autoKeep: .off, autoDownload: .on, keptLimit: .explicit(4)))
+        let headlinesOnly = try await store.isNews(feedID: feed.itemID)
+        XCTAssertTrue(headlinesOnly)
     }
 
     func testLarderArticleSettingsUseSavedFeedRelationEvenWhenSourcesMatch() async throws {
