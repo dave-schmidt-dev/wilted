@@ -157,7 +157,8 @@ extension WiltedMacFeedDecisionTests {
         backend.beforeMediaOpenForTesting = { await gate.hold() }
         let controller = PlaybackController(store: fixture.store, backend: backend, deviceID: "fixture")
         fixture.model.playback = controller
-        let revision = try XCTUnwrap(try await fixture.store.revisions(for: itemID).first).revision
+        let revisions = try await fixture.store.revisions(for: itemID)
+        let revision = try XCTUnwrap(revisions.first).revision
         let loading = Task { try await controller.load(revision: revision, mediaURL: mediaURL) }
         guard await gate.waitUntilHeld() else {
             gate.release()
