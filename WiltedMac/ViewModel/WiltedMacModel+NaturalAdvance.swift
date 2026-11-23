@@ -93,6 +93,10 @@ extension WiltedMacModel {
                     self.requestPlaybackPresentation(itemID: id, includesCuts: true, refreshQueue: true)
                     self.enqueueNaturalEndFollowUp(finishedItemID, end: end)
                     return
+                } catch PlaybackControllerError.mediaDeletionInProgress {
+                    // A rule is deciding whether to remove this candidate.
+                    // Leave it eligible for a later pass and try the next row.
+                    continue
                 } catch PlaybackControllerError.podcastMediaUnavailable {
                     // A removed or missing candidate does not end the Ready walk or flash an error.
                     continue

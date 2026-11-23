@@ -23,7 +23,8 @@ extension PlaybackController {
         let order = state.episodeIDs
         let completedIndex = order.firstIndex(of: completedItemID)
         var anchor = completedItemID
-        var skipped: [ItemID] = []
+        var skipped = Set<ItemID>()
+        var lastMediaFailure: ItemID?
         for _ in 0...order.count {
             let found = try? await nextEligibleEpisodeID(after: anchor)
             guard generation == loadedBackendGeneration, itemID == completedItemID else { return }
@@ -32,13 +33,16 @@ extension PlaybackController {
             guard startsIf() else { return }
             switch await loadAdvance(to: next, from: completedItemID, generation: generation, startsIf: startsIf) {
             case .settled: return
-            case .unavailable: skipped.append(next); anchor = next
+            case .unavailable: lastMediaFailure = next
+            case .leased: lastMediaFailure = nil
             }
+            skipped.insert(next)
+            anchor = next
         }
-        finishAdvance(completedItemID, skippedTo: skipped.last)
+        finishAdvance(completedItemID, skippedTo: lastMediaFailure)
     }
 
-    private enum AdvanceLoad { case settled, unavailable }
+    private enum AdvanceLoad { case settled, unavailable, leased }
 
     /// Loads one looked-up successor. `.unavailable` means it failed the
     /// load-time eligibility or media check and the finished episode is still
@@ -63,6 +67,9 @@ extension PlaybackController {
         } catch PlaybackControllerError.podcastMediaUnavailable(let missing)
                     where missing == next && loadedBackendGeneration == generation && itemID == completedItemID {
             return .unavailable
+        } catch PlaybackControllerError.mediaDeletionInProgress(let leased)
+                    where leased == next && loadedBackendGeneration == generation && itemID == completedItemID {
+            return .leased
         } catch {
             guard loadedBackendGeneration == activeGeneration, itemID == activeItemID else { return .settled }
             stopAfterFailedAdvance(completedItemID, failed: next)

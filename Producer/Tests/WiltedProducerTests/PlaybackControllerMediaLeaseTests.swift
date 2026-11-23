@@ -29,9 +29,10 @@ final class PlaybackControllerMediaLeaseTests: XCTestCase {
         do {
             try await controller.load(revision: revision, mediaURL: media)
             XCTFail("an episode under lease cannot start loading")
-        } catch { XCTAssertEqual(error as? PlaybackControllerError, .podcastMediaUnavailable(revision.itemID)) }
+        } catch { XCTAssertEqual(error as? PlaybackControllerError, .mediaDeletionInProgress(revision.itemID)) }
         XCTAssertEqual(backend.loadCount, 0, "the audio file was never opened")
         XCTAssertNil(controller.itemID)
+        XCTAssertNil(controller.recoverableFault)
 
         controller.release(lease)
         try await controller.load(revision: revision, mediaURL: media)
@@ -50,11 +51,20 @@ final class PlaybackControllerMediaLeaseTests: XCTestCase {
         let (controller, backend, revision, media, root) = try await controller()
         defer { try? FileManager.default.removeItem(at: root) }
 
+        let reached = expectation(description: "load admitted before backend open")
+        var resume: CheckedContinuation<Void, Never>?
+        backend.beforeMediaOpenForTesting = {
+            await withCheckedContinuation {
+                resume = $0
+                reached.fulfill()
+            }
+        }
         let loading = Task { @MainActor in try await controller.load(revision: revision, mediaURL: media) }
-        await Task.yield()
-        // The load has begun but has not opened the file yet: a deletion's player check cannot see it,
-        // the lease can.
+        await fulfillment(of: [reached], timeout: 5)
+        XCTAssertNil(controller.itemID)
+        XCTAssertEqual(backend.loadCount, 0)
         XCTAssertNil(controller.leaseMediaForDeletion([revision.itemID]), "the in-flight load blocks the lease")
+        try XCTUnwrap(resume).resume()
         try await loading.value
         XCTAssertEqual(backend.loadCount, 1)
         XCTAssertTrue(controller.loadsInFlight.isEmpty, "a finished load leaves nothing counted")

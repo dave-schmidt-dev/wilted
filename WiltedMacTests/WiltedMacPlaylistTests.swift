@@ -301,6 +301,35 @@ final class WiltedMacPlaylistTests: XCTestCase {
         XCTAssertTrue(model.episodes.contains { $0.id == f.ids[0].rawValue })
     }
 
+    func testPlaylistLoadRefusedByDeletionLeaseDoesNotMarkItsRowUnavailable() async throws {
+        let f = try await fixture("lease-refusal", count: 1)
+        let model = f.model
+        let backend = WiltedMacScriptedBackend()
+        model.installPlaybackBackendForTesting(backend)
+        let playlist = try await created(model, .manual, "Leased")
+        await model.addToPlaylist(playlist.id, entryID: f.ids[0].rawValue)
+        let id = f.ids[0]
+        let controller = try XCTUnwrap(model.playback)
+        let lease = try XCTUnwrap(controller.leaseMediaForDeletion([id]))
+
+        model.playPlaylist(playlist)
+        await model.waitForPlaybackOperationForTesting()
+
+        XCTAssertNil(model.playbackCommands.failure)
+        XCTAssertNil(model.playbackError)
+        XCTAssertTrue(try XCTUnwrap(model.episodes.first { $0.id == id.rawValue }).isReadyMediaAvailable)
+        XCTAssertEqual(model.playlists.session?.entryIDs, [id.rawValue], "the refused row stays in the playlist session")
+        XCTAssertNil(controller.itemID)
+        XCTAssertEqual(backend.loadCount, 0, "the leased file never reached the backend")
+
+        controller.release(lease)
+        model.playPlaylist(playlist)
+        await model.waitForPlaybackOperationForTesting()
+        XCTAssertEqual(controller.itemID, id)
+        XCTAssertEqual(backend.loadCount, 1)
+        await model.close()
+    }
+
     func testALoadThatFinishesAfterANewerOneNeverRevertsANewPlaylistOrItsSelection() async throws {
         let f = try await fixture("stale-load", count: 1)
         let model = f.model

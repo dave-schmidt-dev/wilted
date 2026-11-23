@@ -420,6 +420,10 @@ extension WiltedMacModel {
     ) async {
         guard playbackCommands.generation == command.token else { return }
         if let playback { isPlaying = playback.liveIsPlaying }
+        // A rule is holding this file while it decides whether to remove it.
+        // The listener can retry after that short operation settles. Do not
+        // turn the temporary refusal into a missing-audio command failure.
+        if case PlaybackControllerError.mediaDeletionInProgress = error { return }
         let failure: WiltedMacPlaybackFailure
         switch error {
         case PlaybackTransportError.backendRefused(let id):

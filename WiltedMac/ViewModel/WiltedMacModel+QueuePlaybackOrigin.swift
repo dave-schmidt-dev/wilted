@@ -104,6 +104,7 @@ extension WiltedMacModel {
         playbackError = switch fault {
         case .podcastMediaUnavailable?: "This episode's saved audio is unavailable."
         case .podcastMediaUnreadable?: "This episode's saved audio could not be opened."
+        case .mediaDeletionInProgress?: nil
         case .some: "Podcast playback could not continue."
         case nil: nil
         }

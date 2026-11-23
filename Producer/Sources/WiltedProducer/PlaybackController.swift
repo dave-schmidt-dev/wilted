@@ -16,11 +16,21 @@ public protocol PlaybackBackend: AnyObject {
     var loadedGeneration: UInt64 { get }
     var completionHandler: (@MainActor @Sendable (UInt64, Bool) -> Void)? { get set }
 
+    #if DEBUG
+    /// A test backend can hold a revision load before its synchronous open.
+    var beforeMediaOpenForTesting: (@MainActor () async -> Void)? { get }
+    #endif
     func load(url: URL) throws
     @discardableResult func play() -> Bool
     func pause()
     func stop()
 }
+
+#if DEBUG
+extension PlaybackBackend {
+    public var beforeMediaOpenForTesting: (@MainActor () async -> Void)? { nil }
+}
+#endif
 
 /// AVFoundation implementation used by the Mac producer at runtime.
 @MainActor
@@ -102,6 +112,7 @@ public enum PlaybackControllerError: Error, Equatable, Sendable {
     case noLoadedRevision
     case invalidSeek(TimeInterval)
     case podcastMediaUnavailable(ItemID)
+    case mediaDeletionInProgress(ItemID)
     case podcastMediaUnreadable(ItemID)
     /// The audio engine reported unsuccessful playback, including failure at
     /// the final frame. Recoverable: the listener can press play again.
@@ -225,7 +236,7 @@ public final class PlaybackController {
     @ObservationIgnored var lifetimeMeter = PlaybackLifetimeMeter()
     /// Episodes whose audio is being opened right now, counted from the first line of a load to its last.
     @ObservationIgnored var loadsInFlight: [ItemID: Int] = [:]
-    /// Episodes whose audio a deletion is about to remove, by lease. See `leaseMediaForDeletion`.
+    /// Episodes whose audio a deletion is about to remove, by lease.
     @ObservationIgnored var mediaLeases: [UUID: Set<ItemID>] = [:]
     /// Monotonic seconds used to measure active listening. System uptime
     /// stops while the Mac sleeps, so sleep is never counted as listening.
@@ -263,11 +274,12 @@ public final class PlaybackController {
     ) async throws -> UInt64 {
         // Checked and recorded before the first suspension, so a deletion either sees this load or
         // is seen by it, never neither (see `leaseMediaForDeletion`).
-        guard !isLeasedForDeletion(revision.itemID) else {
-            throw PlaybackControllerError.podcastMediaUnavailable(revision.itemID)
-        }
+        try checkMediaLease(revision.itemID)
         loadsInFlight[revision.itemID, default: 0] += 1
         defer { endLoadInFlight(revision.itemID) }
+        #if DEBUG
+        if let beforeOpen = backend.beforeMediaOpenForTesting { await beforeOpen() }
+        #endif
         endOutputLossWatch()
         // Admit the outgoing attempt's measured time before it is replaced, so
         // switching items never leaves more than the crash-tail bound unsaved.
@@ -324,6 +336,7 @@ public final class PlaybackController {
     public func restorePodcastQueue() async {
         guard let current = try? await store.podcastQueueState().currentEpisodeID else { return }
         do { try await loadQueuedEpisode(current, playAfterLoad: false) }
+        catch PlaybackControllerError.mediaDeletionInProgress { return }
         catch { podcastStateHandler?(current, recoverableFault) }
     }
 
@@ -369,6 +382,7 @@ public final class PlaybackController {
         _ episodeID: ItemID, listenerRateSince: UInt64? = nil, startsIf shouldStart: () -> Bool = { true }
     ) async throws {
         guard try await isEpisodeEligible(episodeID) else {
+            try checkMediaLease(episodeID)
             recoverableFault = .podcastMediaUnavailable(episodeID)
             throw PlaybackControllerError.podcastMediaUnavailable(episodeID)
         }

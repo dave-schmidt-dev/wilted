@@ -353,15 +353,17 @@ extension LocalLibraryStore {
     @discardableResult
     public func retireEpisodeBySkipRule(_ episodeID: ItemID, ruleID: UUID,
                                         at decidedAt: Timestamp = Timestamp(Date()),
-                                        protecting livePlayback: Set<ItemID> = []) throws -> Bool {
+                                        protecting livePlayback: Set<ItemID> = [],
+                                        lease: MediaDeletionLease? = nil) throws -> Bool {
         guard !livePlayback.contains(episodeID) else { return false }
         let context = ModelContext(container)
         let identifier = episodeID.rawValue
-        // The caller's playing set is only as current as its last library snapshot, so a member linked
-        // to this episode since then is found here, from the store's own association rows.
-        if !livePlayback.isEmpty,
-           let members = try EpisodeAssociationReadLookup(in: context).state(for: episodeID)?.memberIDs,
-           !livePlayback.isDisjoint(with: members) { return false }
+        // A link can change between the player's reservation and this transaction.
+        if lease != nil || !livePlayback.isEmpty {
+            let members = try Self.expandedLogicalEpisodeIDs([episodeID], in: context)
+            guard livePlayback.isDisjoint(with: members),
+                  lease?.members.isSuperset(of: members) != false else { return false }
+        }
         guard let episode = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
             .first(where: { $0.id == identifier }), episode.removalKind == nil else { return false }
         let existing = try context.fetch(FetchDescriptor<DecisionRecord>()).first { $0.episodeID == identifier }

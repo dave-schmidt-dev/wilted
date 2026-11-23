@@ -82,6 +82,32 @@ extension PlaybackControllerTests {
         }
     }
 
+    func testLeaseRefusalPreservesMediaAndAdvancesToNextPlayableEpisode() async throws {
+        let path = storeURL()
+        let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: path)
+        let (ids, backend, controller, log) = try await advanceRig([51, 52, 53], root: root, store: store)
+        let lease = try XCTUnwrap(controller.leaseMediaForDeletion([ids[1]]))
+        defer { controller.release(lease) }
+
+        await XCTAssertThrowsErrorAsync(try await controller.playPodcastQueueEpisodeNow(ids[1])) {
+            XCTAssertEqual($0 as? PlaybackControllerError, .mediaDeletionInProgress(ids[1]))
+        }
+        XCTAssertNil(controller.recoverableFault)
+        let ready = try await store.readyRevision(for: ids[1])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(ready).mediaURL.path))
+        backend.finish(successfully: true)
+        await waitUntil { !log.observed.isEmpty || log.finishes > 0 }
+        let state = try await store.podcastQueueState()
+        XCTAssertEqual(state.currentEpisodeID, ids[2])
+        XCTAssertEqual(controller.itemID, ids[2])
+        XCTAssertTrue(backend.isPlaying)
+        XCTAssertTrue(log.faults.isEmpty)
+        XCTAssertNil(controller.recoverableFault)
+    }
+
     private func advanceRig(
         _ indices: [Int], current: Int = 0, root: URL, store: LocalLibraryStore
     ) async throws -> ([ItemID], FakeBackend, PlaybackController, AdvanceLog) {

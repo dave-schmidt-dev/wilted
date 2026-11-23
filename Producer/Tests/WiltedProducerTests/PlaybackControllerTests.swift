@@ -7,6 +7,7 @@ import WiltedDomain
 final class PlaybackControllerTests: XCTestCase {
     final class FakeBackend: PlaybackBackend {
         var duration: TimeInterval = 42
+        var beforeMediaOpenForTesting: (@MainActor () async -> Void)?
         var currentTime: TimeInterval = 0
         var isPlaying = false
         var loadCount = 0
@@ -165,8 +166,8 @@ final class PlaybackControllerTests: XCTestCase {
             .appendingPathComponent("wilted-generation-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let first = try makePlayableAudio(at: directory.appendingPathComponent("first.m4a"))
-        let second = try makePlayableAudio(at: directory.appendingPathComponent("second.m4a"))
+        let first = try AudiobookTestAudio.writeTone(to: directory.appendingPathComponent("first.wav"), seconds: 0.1, container: .wav)
+        let second = try AudiobookTestAudio.writeTone(to: directory.appendingPathComponent("second.wav"), seconds: 0.1, container: .wav)
 
         let backend = AVAudioPlayerBackend()
         XCTAssertEqual(backend.trackedGenerationCount, 0)
@@ -197,7 +198,7 @@ final class PlaybackControllerTests: XCTestCase {
             .appendingPathComponent("wilted-generation-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
-        let playable = try makePlayableAudio(at: directory.appendingPathComponent("playable.m4a"))
+        let playable = try AudiobookTestAudio.writeTone(to: directory.appendingPathComponent("playable.wav"), seconds: 0.1, container: .wav)
         let unreadable = directory.appendingPathComponent("missing.m4a")
 
         let backend = AVAudioPlayerBackend()
@@ -206,21 +207,6 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertThrowsError(try backend.load(url: unreadable))
         XCTAssertEqual(backend.trackedGenerationCount, 1, "a throwing load must not drop the live player's entry")
         XCTAssertEqual(backend.loadedGeneration, 1, "a throwing load must not consume a generation")
-    }
-
-    private func makePlayableAudio(at url: URL) throws -> URL {
-        let samples = (0..<4_410).map { index in
-            Float(0.2 * sin(2 * Double.pi * 220 * Double(index) / 44_100))
-        }
-        _ = try AudioAssembler().assemble(
-            pcm: samples,
-            itemID: try ItemID(rawValue: "item-" + String(repeating: "9", count: 64)),
-            destinationURL: url,
-            extractedTextSHA256: String(repeating: "a", count: 64),
-            voiceID: "voice-test",
-            synthesisSettingsCanonicalJSON: "{}"
-        )
-        return url
     }
 
     func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {

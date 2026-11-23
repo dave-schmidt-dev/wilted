@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 @testable import WiltedProducer
 
@@ -32,14 +33,16 @@ enum OwnedTestTemp {
 
     /// `ps -o lstart= -p <pid>`, the value `scripts/check-temp-leaks.py` compares.
     static func processStart(_ pid: Int32) -> String {
-        let process = Process()
-        let output = Pipe()
-        process.executableURL = URL(fileURLWithPath: "/bin/ps")
-        process.arguments = ["-o", "lstart=", "-p", String(pid)]
-        process.standardOutput = output
-        do { try process.run() } catch { fatalError("cannot run ps: \(error)") }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout.size(ofValue: info))
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else {
+            fatalError("cannot read process start time")
+        }
+        var started = time_t(info.pbi_start_tvsec)
+        var local = tm()
+        localtime_r(&started, &local)
+        var buffer = [CChar](repeating: 0, count: 64)
+        strftime(&buffer, buffer.count, "%a %b %e %T %Y", &local)
+        return String(cString: buffer)
     }
 }

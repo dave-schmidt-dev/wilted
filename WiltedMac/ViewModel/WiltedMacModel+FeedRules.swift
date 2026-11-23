@@ -247,8 +247,8 @@ extension WiltedMacModel {
     /// load already under way (which the playing check cannot see) refuses the Skip. False when the
     /// Skip did not happen, whatever the reason.
     func retireUnderMediaLease(_ id: ItemID, ruleID: UUID, at decidedAt: Timestamp, store: LocalLibraryStore) async throws -> Bool {
+        let members = Set(try await store.logicalEpisodeIDs([id]))
         let player = playback
-        let members = Set(logicalMemberIDs(id.rawValue).compactMap { try? ItemID(rawValue: $0) }).union([id])
         let protected = livePlaybackEpisodeIDs()
         var lease: MediaDeletionLease?
         if let player {
@@ -256,7 +256,7 @@ extension WiltedMacModel {
             lease = granted
         }
         defer { if let lease { player?.release(lease) } }
-        return try await store.retireEpisodeBySkipRule(id, ruleID: ruleID, at: decidedAt, protecting: protected)
+        return try await store.retireEpisodeBySkipRule(id, ruleID: ruleID, at: decidedAt, protecting: protected, lease: lease)
     }
 
     /// The episodes the player has loaded or the model names as playing, with their linked members.

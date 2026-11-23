@@ -7,9 +7,10 @@ import WiltedDomain
 /// load can start, open the file and begin playing just before the store removes it. Here the check and the
 /// reservation happen in one main-actor step, and a load makes the matching check in one step as well, so
 /// whichever comes first wins: a lease is refused while an episode is loaded or loading, and a load of an
-/// episode under lease is refused as unavailable.
+/// episode under lease is refused before the backend opens it.
 public struct MediaDeletionLease: Equatable, Sendable {
     let id: UUID
+    let members: Set<ItemID>
 }
 
 extension PlaybackController {
@@ -18,7 +19,7 @@ extension PlaybackController {
     public func leaseMediaForDeletion(_ ids: Set<ItemID>) -> MediaDeletionLease? {
         if let itemID, ids.contains(itemID) { return nil }
         guard ids.isDisjoint(with: loadsInFlight.keys) else { return nil }
-        let lease = MediaDeletionLease(id: UUID())
+        let lease = MediaDeletionLease(id: UUID(), members: ids)
         mediaLeases[lease.id] = ids
         return lease
     }
@@ -27,8 +28,10 @@ extension PlaybackController {
         mediaLeases[lease.id] = nil
     }
 
-    func isLeasedForDeletion(_ id: ItemID) -> Bool {
-        mediaLeases.values.contains { $0.contains(id) }
+    func checkMediaLease(_ id: ItemID) throws {
+        if mediaLeases.values.contains(where: { $0.contains(id) }) {
+            throw PlaybackControllerError.mediaDeletionInProgress(id)
+        }
     }
 
     func endLoadInFlight(_ id: ItemID) {

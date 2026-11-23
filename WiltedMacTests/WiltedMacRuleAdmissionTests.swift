@@ -1,7 +1,7 @@
 import Foundation
 import XCTest
 import WiltedDomain
-import WiltedProducer
+@testable import WiltedProducer
 @testable import WiltedMac
 
 /// A per-feed Skip rule retires every new matching episode whatever the
@@ -124,6 +124,136 @@ final class WiltedMacRuleAdmissionTests: XCTestCase {
         XCTAssertNil(rig.episode("fight")?.removalKind)
     }
 
+    func testApplyKeepsCandidateAudioWhileItsLinkedSiblingIsLoading() async throws {
+        let fixture = try await makeMediaLeaseFixture("apply")
+        let result = try await withSuspendedSiblingLoad(fixture) {
+            try await fixture.rig.model.applyFeedRules(
+                feedID: fixture.rig.feedID.rawValue,
+                rules: EpisodeMatchRules(rules: [Self.skipFightCompanions]), progress: { _, _ in }
+            )
+        }
+
+        try await assertCandidateSurvived(fixture)
+        try await assertUnleasedControlWasRetired(fixture)
+        XCTAssertTrue(try XCTUnwrap(result.undo).retired.contains(fixture.controlID))
+    }
+
+    func testAutomaticAdmissionKeepsCandidateAudioWhileItsLinkedSiblingIsLoading() async throws {
+        let fixture = try await makeMediaLeaseFixture("refresh")
+        let outcome = try await withSuspendedSiblingLoad(fixture) {
+            try await fixture.rig.model.admitAutomatically(
+                feedID: fixture.rig.feedID, feedEpisodes: fixture.rig.model.episodes,
+                newlySaved: [fixture.fightID.rawValue, fixture.controlID.rawValue], store: fixture.rig.store
+            )
+        }
+
+        XCTAssertEqual(outcome.ruleSkipped, [fixture.controlID.rawValue], "the unleased match is the positive control")
+        try await assertCandidateSurvived(fixture)
+        try await assertUnleasedControlWasRetired(fixture)
+    }
+
+    private func makeMediaLeaseFixture(_ name: String) async throws -> RuleAdmissionMediaLeaseFixture {
+        let items = [
+            RuleAdmissionItem(guid: "fight", title: Self.fightTitle, day: 1),
+            RuleAdmissionItem(guid: "control", title: "Fight Companion control", day: 2)
+        ]
+        let rig = try await makeRig(feedItems: [], storedItems: items)
+        let fightID = try ItemID(rawValue: rig.id("fight"))
+        let controlID = try ItemID(rawValue: rig.id("control"))
+        let fightAudio = try await saveAudio(for: fightID, name: "\(name)-fight", rig: rig)
+        let controlAudio = try await saveAudio(for: controlID, name: "\(name)-control", rig: rig)
+        let siblingID = try await addLinkedSibling(to: fightID, guid: "\(name)-playing-sibling", rig: rig)
+        let siblingAudio = try await saveAudio(for: siblingID, name: "\(name)-sibling", rig: rig)
+        let gate = RuleAdmissionMediaOpenGate()
+        let backend = WiltedMacScriptedBackend()
+        backend.beforeMediaOpenForTesting = { await gate.hold() }
+        let controller = PlaybackController(store: rig.store, backend: backend, deviceID: "fixture")
+        rig.model.playback = controller
+        let revision = try AudioRevision(
+            itemID: siblingID, revisionID: try RevisionID(rawValue: "\(name)-sibling-load"),
+            durationSeconds: 60, byteCount: 1, contentHash: "sha256:\(String(repeating: "a", count: 64))",
+            mediaType: "audio/mpeg", createdAt: Timestamp(Date()), schemaVersion: 1
+        )
+        let loading = Task { try await controller.load(revision: revision, mediaURL: siblingAudio) }
+        guard await gate.waitUntilHeld() else {
+            gate.release()
+            _ = await loading.result
+            throw RuleAdmissionGateTimeout()
+        }
+        return RuleAdmissionMediaLeaseFixture(
+            rig: rig, fightID: fightID, controlID: controlID, fightAudio: fightAudio,
+            controlAudio: controlAudio, gate: gate, loading: loading
+        )
+    }
+
+    private func withSuspendedSiblingLoad<Value>(
+        _ fixture: RuleAdmissionMediaLeaseFixture, operation: @MainActor () async throws -> Value
+    ) async throws -> Value {
+        do {
+            let value = try await operation()
+            fixture.gate.release()
+            try await fixture.loading.value
+            return value
+        } catch {
+            fixture.gate.release()
+            _ = await fixture.loading.result
+            throw error
+        }
+    }
+
+    private func assertCandidateSurvived(_ fixture: RuleAdmissionMediaLeaseFixture) async throws {
+        let removal = try await fixture.rig.store.removalKind(for: fixture.fightID)
+        let decision = try await fixture.rig.store.episodeDecision(for: fixture.fightID)
+        let audio = try await fixture.rig.store.download(for: fixture.fightID)
+        let episode = fixture.rig.episode("fight")
+        XCTAssertNil(removal, "the candidate linked to the in-flight load stays live")
+        XCTAssertNil(decision, "no Skip decision is written for the candidate")
+        XCTAssertNotNil(audio, "the candidate's download record remains")
+        XCTAssertNotNil(episode, "the candidate episode remains in the model")
+        XCTAssertNil(episode?.removalKind, "the candidate episode remains live in the model")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.fightAudio.path), "the candidate audio remains")
+    }
+
+    private func assertUnleasedControlWasRetired(_ fixture: RuleAdmissionMediaLeaseFixture) async throws {
+        let removal = try await fixture.rig.store.removalKind(for: fixture.controlID)
+        let decision = try await fixture.rig.store.episodeDecision(for: fixture.controlID)
+        XCTAssertEqual(removal, .retired, "the matching candidate with no active load is retired")
+        XCTAssertEqual(decision?.source, .rule)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.controlAudio.path), "its unleased audio is deleted")
+    }
+
+    private func saveAudio(for id: ItemID, name: String, rig: RuleAdmissionRig) async throws -> URL {
+        let mediaURL = rig.directory.appendingPathComponent("\(name).mp3")
+        let bytes = Data("audio".utf8)
+        try bytes.write(to: mediaURL)
+        try await rig.store.save(download: PodcastDownload(
+            episodeID: id, status: .completed, bytesReceived: Int64(bytes.count), localURL: mediaURL,
+            contentHash: "sha256:" + String(repeating: "a", count: 64), updatedAt: Timestamp(Date())
+        ))
+        return mediaURL
+    }
+
+    private func addLinkedSibling(to targetID: ItemID, guid: String, rig: RuleAdmissionRig) async throws -> ItemID {
+        let enclosure = ruleAdmissionEnclosure(guid)
+        let siblingID = try ItemID.derivePodcastEpisode(
+            feedURL: rig.feedURL, rssGUID: guid, enclosureURL: enclosure
+        )
+        let now = Timestamp(Date())
+        try await rig.store.savePodcastEpisodes([try PodcastEpisode(
+            itemID: siblingID, feedID: rig.feedID, feedURL: rig.feedURL, rssGUID: guid,
+            title: "Fight Companion sibling", publishedTime: now, enclosureURL: enclosure,
+            enclosureMediaType: "audio/mpeg", createdAt: now
+        )], admission: .backfill)
+        let preview = try await rig.store.previewEpisodeAssociation(
+            confirming: PodcastEpisodePairConfirmation(
+                confirmationID: UUID(), feedID: rig.feedID, first: targetID, second: siblingID, confirmedAt: now
+            ),
+            representativeID: targetID
+        )
+        _ = try await rig.store.applyEpisodeAssociation(preview, at: now)
+        return siblingID
+    }
+
     // MARK: Pure planning
 
     func testFightCompanionTitleMatchesTheSkipRuleWhileKeepRulesWaitForAutoKeep() {
@@ -178,6 +308,59 @@ final class WiltedMacRuleAdmissionTests: XCTestCase {
     }
 }
 
+@MainActor
+private struct RuleAdmissionMediaLeaseFixture {
+    let rig: RuleAdmissionRig
+    let fightID: ItemID
+    let controlID: ItemID
+    let fightAudio: URL
+    let controlAudio: URL
+    let gate: RuleAdmissionMediaOpenGate
+    let loading: Task<Void, Error>
+}
+
+@MainActor
+private final class RuleAdmissionMediaOpenGate {
+    private var isHeld = false
+    private var isReleased = false
+    private var loadContinuation: CheckedContinuation<Void, Never>?
+    private var heldContinuation: CheckedContinuation<Bool, Never>?
+
+    func hold() async {
+        isHeld = true
+        heldContinuation?.resume(returning: true)
+        heldContinuation = nil
+        await withCheckedContinuation { continuation in
+            if isReleased {
+                continuation.resume()
+            } else {
+                loadContinuation = continuation
+            }
+        }
+    }
+
+    func waitUntilHeld() async -> Bool {
+        if isHeld { return true }
+        return await withCheckedContinuation { continuation in
+            heldContinuation = continuation
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(5))
+                guard let self, let heldContinuation = self.heldContinuation else { return }
+                self.heldContinuation = nil
+                heldContinuation.resume(returning: false)
+            }
+        }
+    }
+
+    func release() {
+        isReleased = true
+        loadContinuation?.resume()
+        loadContinuation = nil
+    }
+}
+
+private struct RuleAdmissionGateTimeout: Error {}
+
 // MARK: - Fixture
 
 private struct RuleAdmissionItem {
@@ -203,6 +386,7 @@ private struct RuleAdmissionRig {
     let feedURL: URL
     let feedID: ItemID
     let otherEpisodeID: ItemID
+    let directory: URL
 
     func id(_ guid: String) -> String {
         (try? ItemID.derivePodcastEpisode(
@@ -247,8 +431,9 @@ extension WiltedMacRuleAdmissionTests {
             """
         }.joined()
         let xml = "<rss version=\"2.0\"><channel><title>Rule Admission</title>\(items)</channel></rss>"
+        let directory = wiltedTemporaryDirectory("rule-admission")
         let model = WiltedMacModel(
-            arguments: [], stateDirectoryOverride: wiltedTemporaryDirectory("rule-admission"),
+            arguments: [], stateDirectoryOverride: directory,
             storeBootstrap: { url in
                 let store = try LocalLibraryStore(url: url)
                 try await store.save(feed: try PodcastFeed(
@@ -288,7 +473,7 @@ extension WiltedMacRuleAdmissionTests {
         addTeardownBlock { await model.close() }
         return RuleAdmissionRig(
             model: model, store: try XCTUnwrap(model.store), feedURL: feedURL, feedID: feedID,
-            otherEpisodeID: otherEpisodeID
+            otherEpisodeID: otherEpisodeID, directory: directory
         )
     }
 

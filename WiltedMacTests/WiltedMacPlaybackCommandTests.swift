@@ -392,6 +392,34 @@ final class WiltedMacPlaybackCommandTests: XCTestCase {
         XCTAssertNil(model.playbackCommands.failure)
     }
 
+    func testPlayNowLeaseRefusalDoesNotMarkTheAudioMissing() async throws {
+        let (model, backend, episode) = makePlaybackCommandModel()
+        await model.waitForFixturePodcastInstallForTesting()
+        let controller = try XCTUnwrap(model.playback)
+        let store = try XCTUnwrap(model.store)
+        let id = try ItemID(rawValue: episode.id)
+        let stored = try await store.readyRevision(for: id)
+        let ready = try XCTUnwrap(stored)
+        let lease = try XCTUnwrap(controller.leaseMediaForDeletion([id]))
+
+        model.playEpisode(episode)
+        await model.waitForPlaybackOperationForTesting()
+
+        XCTAssertNil(model.playbackCommands.failure)
+        XCTAssertNil(model.playbackError)
+        XCTAssertTrue(try XCTUnwrap(model.episodes.first { $0.id == episode.id }).isReadyMediaAvailable)
+        XCTAssertNil(controller.itemID)
+        XCTAssertEqual(backend.loadCount, 0, "the leased file never reached the backend")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ready.mediaURL.path))
+
+        controller.release(lease)
+        model.playEpisode(episode)
+        await model.waitForPlaybackOperationForTesting()
+        XCTAssertEqual(controller.itemID, id)
+        XCTAssertEqual(backend.loadCount, 1)
+        await model.close()
+    }
+
     /// Ends the loaded run with an engine failure, as AVAudioPlayer reports it.
     private func failEngine(_ model: WiltedMacModel, _ backend: WiltedMacScriptedBackend) async throws {
         let playing = try XCTUnwrap(model.playback)

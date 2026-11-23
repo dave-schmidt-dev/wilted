@@ -507,6 +507,9 @@ extension WiltedMacModel {
                 self.requestPlaybackPresentation(itemID: id, includesCuts: true,
                                                  refreshQueue: true, traceToken: command.token)
                 if self.isCurrentPlaybackCommand(command) { self.playbackError = nil }
+            } catch PlaybackControllerError.mediaDeletionInProgress {
+                // The selection made no queue move and the backend never opened the file.
+                return
             } catch {
                 if !(error is WiltedMacPlaybackSuperseded) { await self.refreshPodcastQueueState() }
                 Self.playbackLog.error(

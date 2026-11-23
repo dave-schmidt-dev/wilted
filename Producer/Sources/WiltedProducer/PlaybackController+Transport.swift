@@ -101,6 +101,7 @@ extension PlaybackController {
         // keeps it (PB-7).
         let listenerRateBaseline = listenerRateSince ?? listenerRateSerial
         guard try await isEpisodeEligible(episodeID) else {
+            try checkMediaLease(episodeID)
             recoverableFault = .podcastMediaUnavailable(episodeID)
             throw PlaybackControllerError.podcastMediaUnavailable(episodeID)
         }
@@ -110,6 +111,7 @@ extension PlaybackController {
         }
         guard let stored = ready,
               FileManager.default.fileExists(atPath: stored.mediaURL.path) else {
+            try checkMediaLease(episodeID)
             recoverableFault = .podcastMediaUnavailable(episodeID)
             throw PlaybackControllerError.podcastMediaUnavailable(episodeID)
         }
@@ -124,6 +126,8 @@ extension PlaybackController {
             )
         } catch is CancellationError {
             throw CancellationError()
+        } catch PlaybackControllerError.mediaDeletionInProgress(let id) {
+            throw PlaybackControllerError.mediaDeletionInProgress(id)
         } catch {
             recoverableFault = .podcastMediaUnreadable(episodeID)
             throw PlaybackControllerError.podcastMediaUnreadable(episodeID)

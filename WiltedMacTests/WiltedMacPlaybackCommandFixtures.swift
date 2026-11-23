@@ -36,6 +36,7 @@ extension XCTestCase {
 @MainActor
 final class WiltedMacScriptedBackend: PlaybackBackend {
     var duration: TimeInterval = 600
+    var beforeMediaOpenForTesting: (@MainActor () async -> Void)?
     var currentTime: TimeInterval = 0
     private(set) var isPlaying = false
     var rate: Float = 1

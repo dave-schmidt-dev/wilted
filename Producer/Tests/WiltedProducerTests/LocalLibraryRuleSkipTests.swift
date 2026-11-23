@@ -149,12 +149,16 @@ final class LocalLibraryRuleSkipTests: XCTestCase {
             title: "Fight Companion - October 11, 2026 (repeat)", publishedTime: now,
             enclosureURL: twinEnclosure, enclosureMediaType: "audio/mpeg", createdAt: now
         )], admission: .backfill)
+        let staleLease = MediaDeletionLease(id: UUID(), members: [fixture.episodeID])
         let preview = try await fixture.store.previewEpisodeAssociation(
             confirming: PodcastEpisodePairConfirmation(
                 confirmationID: UUID(), feedID: feedID, first: fixture.episodeID, second: twinID, confirmedAt: now),
             representativeID: fixture.episodeID)
         _ = try await fixture.store.applyEpisodeAssociation(preview, at: now)
 
+        let retired = try await fixture.store.retireEpisodeBySkipRule(fixture.episodeID, ruleID: UUID(), lease: staleLease)
+        XCTAssertFalse(retired, "the link added after leasing must also be covered")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.mediaURL.path))
         try await assertLeftAlone(fixture, protecting: [twinID])
     }
 
