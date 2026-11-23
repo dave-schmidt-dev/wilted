@@ -142,9 +142,9 @@ public enum InProgressOrdering {
     }
 
     /// Shows with an in-progress episode first (the newest play first), the others in their given order.
-    public static func orderedShows(
-        _ shows: [String], progressByShow: [String: Date]
-    ) -> [String] {
+    public static func orderedShows<Show: Hashable>(
+        _ shows: [Show], progressByShow: [Show: Date]
+    ) -> [Show] {
         let pinned = shows.enumerated().compactMap { offset, show in progressByShow[show].map { (offset, $0, show) } }
             .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0 < $1.0 }
             .map(\.2)

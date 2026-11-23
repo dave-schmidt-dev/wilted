@@ -143,11 +143,79 @@ final class CarEpisodeListTests: XCTestCase {
         XCTAssertEqual(CarShowList.make(rows: rows, onPhone: Set(rows.map(\.id)), limit: 2).count, 2, "the car's cap applies")
     }
 
+    func testSameTitleShowsStaySeparateByFeedAndShowTheirPublishers() {
+        var rows = [
+            row("a", show: "Daily Briefing"), row("b", show: "Daily Briefing"),
+            row("c", show: "Daily Briefing"),
+        ]
+        rows[0].showID = id("feed-one")
+        rows[0].showPublisher = "North Audio"
+        rows[1].showID = id("feed-two")
+        rows[1].showPublisher = "South Radio"
+        rows[2].showID = id("feed-one")
+        rows[2].showPublisher = "North Audio"
+
+        let progress = [id("b"): EpisodeProgress(positionSeconds: 10, lastPlayedAt: Date(timeIntervalSince1970: 20))]
+        let shows = CarShowList.make(rows: rows, onPhone: Set(rows.map(\.id)), progress: progress)
+
+        XCTAssertEqual(shows.map(\.identity), [.source(id("feed-two")), .source(id("feed-one"))])
+        XCTAssertEqual(shows.map(\.title), ["Daily Briefing", "Daily Briefing"])
+        XCTAssertEqual(shows.map(\.downloaded), [1, 2])
+        XCTAssertEqual(shows.map(\.detail), ["South Radio · 1 downloaded", "North Audio · 2 downloaded"])
+        let secondShow = CarShowList.episodes(
+            of: .source(id("feed-two")), rows: rows,
+            onPhone: Set(rows.map(\.id)), playingID: nil)
+        XCTAssertEqual(episodes(secondShow).map(\.id.rawValue), ["b"], "opening a show uses its feed identity")
+    }
+
+    func testMissingIdentityFallbackDoesNotMergeIntoAnIdentifiedShow() {
+        var identified = row("a", show: "Daily Briefing")
+        identified.showID = id("feed")
+        let anonymous = row("b", show: "Daily Briefing")
+
+        let shows = CarShowList.make(rows: [anonymous, identified], onPhone: [id("a"), id("b")])
+
+        XCTAssertEqual(shows.map(\.identity), [.title("Daily Briefing"), .source(id("feed"))])
+        let identifiedEpisodes = CarShowList.episodes(
+            of: .source(id("feed")), rows: [anonymous, identified], onPhone: [id("a"), id("b")], playingID: nil)
+        XCTAssertEqual(episodes(identifiedEpisodes).map(\.id.rawValue), ["a"])
+    }
+
+    func testRowsCarryTheSourcePublisherAndFeedIdentity() throws {
+        let showID = id("feed")
+        let episodeID = id("episode")
+        let source = LibrarySource(
+            id: showID, kind: .podcastFeed, title: "Daily Briefing", publisher: "North Audio",
+            locator: "https://feeds.example.test/daily.xml")
+        let episode = try LibraryEntry.podcastEpisode(
+            id: episodeID, sourceID: showID, title: "Today", summary: "",
+            publishedAt: Date(timeIntervalSince1970: 1_000),
+            payload: PodcastEpisodePayload(enclosureURL: URL(string: "https://media.example.test/today.mp3")!))
+        let content = LibrarySnapshot(
+            sources: [source], entries: [episode], slots: [try QueueSlot(entryID: episodeID, sortKey: 0)])
+
+        let projected = try XCTUnwrap(LibraryRowBuilder.rows(
+            content: content, checkpoints: [:], clock: LibraryClockFormat(timeZone: .gmt)).first)
+
+        XCTAssertEqual(projected.showID, showID)
+        XCTAssertEqual(projected.showPublisher, "North Audio")
+    }
+
+    func testShowsAndDownloadedTabsShareEmptyAndLoadingMessages() {
+        XCTAssertEqual(CarEpisodeList.emptyMessage(forInitialLoad: false), "No episodes on this iPhone")
+        XCTAssertEqual(CarEpisodeList.emptyMessage(forInitialLoad: true), "Loading episodes")
+        XCTAssertTrue(CarEpisodeList.isInitialLoad(localStateLoaded: false, lastSynchronizedAt: nil, isRefreshing: false))
+        XCTAssertTrue(CarEpisodeList.isInitialLoad(localStateLoaded: true, lastSynchronizedAt: nil, isRefreshing: true))
+        XCTAssertFalse(CarEpisodeList.isInitialLoad(localStateLoaded: true, lastSynchronizedAt: nil, isRefreshing: false))
+        XCTAssertFalse(CarEpisodeList.isInitialLoad(
+            localStateLoaded: true, lastSynchronizedAt: Date(timeIntervalSince1970: 1), isRefreshing: true))
+    }
+
     func testAShowsEpisodesUseTheSameRowsAndPutInProgressFirst() {
         let rows = [row("a", show: "Alpha"), row("b", show: "Beta"), row("c", show: "Alpha")]
         let progress = [id("c"): EpisodeProgress(positionSeconds: 60, lastPlayedAt: Date(timeIntervalSince1970: 9))]
         let list = CarShowList.episodes(
-            of: "Alpha", rows: rows, onPhone: Set(rows.map(\.id)), playingID: nil, progress: progress)
+            of: .title("Alpha"), rows: rows, onPhone: Set(rows.map(\.id)), playingID: nil, progress: progress)
         XCTAssertEqual(episodes(list).map(\.id.rawValue), ["c", "a"])
         XCTAssertEqual(episodes(list).first?.detail, "Alpha · 09:00 left")
     }

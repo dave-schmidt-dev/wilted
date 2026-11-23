@@ -61,6 +61,13 @@ final class CarPlaySourceTests: XCTestCase {
         XCTAssertTrue(delegate.contains("CPListTemplate.maximumItemCount"), "list length comes from the car")
     }
 
+    func testDownloadedAndShowsTabsUseTheSameInitialLoadingState() throws {
+        let delegate = try XCTUnwrap(carPlaySources().first { $0.name == "CarPlaySceneDelegate.swift" }).text
+        XCTAssertTrue(delegate.contains("isLoading: CarEpisodeList.isInitialLoad(model)"))
+        XCTAssertTrue(delegate.contains("CarEpisodeList.emptyMessage(forInitialLoad: CarEpisodeList.isInitialLoad(model))"))
+        XCTAssertTrue(delegate.contains("model.$localStateLoaded.map"), "the first local read refreshes both tabs")
+    }
+
     func testCarPlayCodeNeverTouchesTheAudioSession() throws {
         for (name, text) in try carPlaySources() {
             for forbidden in ["AVAudioSession", "import AVFoundation", "setActive", "setCategory"] {

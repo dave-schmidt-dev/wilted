@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- On iPhone, Add keeps pasted links while the Mac identifies them, shows when a request has been sent, and offers Try again after a refusal.
+- Watch Play and Siri Resume use the car’s next-episode choice after an episode ends. CarPlay keeps same-named shows separate and shows when the library is loading in either tab.
+- The iPhone Larder shows sync problems as they occur. The last Mac send time is under Devices. Now Playing groups Mark completed and Remove from Larder in the Episode actions menu.
+
 ## [0.7.2] - 2026-11-22
 
 ### Changed

@@ -45,7 +45,13 @@ extension LibraryAppModel {
 
     /// The one sync status the Larder shows, or nil when there is nothing to say.
     var syncBanner: LibrarySyncBanner? {
-        LibrarySyncBanner.resolve(
-            quarantined: accountQuarantined, throttleNotice: throttleNotice, retrying: throttleRetrying, error: errorMessage) ?? .publication
+        if let problem = LibrarySyncBanner.resolve(
+            quarantined: accountQuarantined, throttleNotice: throttleNotice, retrying: throttleRetrying, error: errorMessage) {
+            return problem
+        }
+        if let sent = lastObservedPublication?.publishedAt, sent > now() {
+            return .problem(WiltedPublicationAge.futureSendTime)
+        }
+        return nil
     }
 }

@@ -8,9 +8,22 @@ extension LibraryAppModel {
     /// Nil when every episode on the phone is completed, or none is: a finished episode is never restarted from the car.
     /// An episode the listener finished on this phone counts as completed here whatever its row shows
     /// (`LibraryAppModel+FinishedHere`).
-    var remoteResumeRow: LibraryRow? {
+    var remoteResumeRow: LibraryRow? { remoteResumeRow(excludingEndedEpisode: nil) }
+
+    /// The same choice before an ended item is persisted as finished by a remote Play command.
+    func remoteResumeRow(excludingEndedEpisode entryID: ItemID?) -> LibraryRow? {
         let finished = logicalFinished
-        return playOrderRows.first { LibraryListing.completionDate($0, finished: finished) == nil && !isFinishedHere($0.id) }
+        return playOrderRows.first { row in
+            LibraryListing.completionDate(row, finished: finished) == nil && !isFinishedHere(row.id)
+                && (entryID.map { !sameLogicalEpisode(row.id, $0) } ?? true)
+        }
+    }
+
+    /// A remote Play can arrive at the end before the natural completion has been saved.
+    func rememberEndBeforeRemoteResume(_ player: LibraryPlayer) {
+        if player.status == .ended, let ended = player.item?.entryID, !isFinishedHere(ended) {
+            rememberFinishedHere(ended)
+        }
     }
 }
 
@@ -30,9 +43,7 @@ extension LibraryRuntime {
     func resumeFromIdleRemote(_ command: LibraryRemoteCommand) -> Bool {
         // A loaded episode at its end is finished here, also when its finish was never taken up (a
         // pause right at the end withdraws it): the library must not hand the same episode back.
-        if player.status == .ended, let ended = player.item?.entryID, !model.isFinishedHere(ended) {
-            model.rememberFinishedHere(ended)
-        }
+        model.rememberEndBeforeRemoteResume(player)
         if model.localStateLoaded, model.remoteResumeRow == nil {
             playerLog.notice("Remote resume \(command.logName, privacy: .public): nothing on this iPhone to resume")
             journal?.note("remote-resume command=\(command.logName) result=nothing-to-resume")

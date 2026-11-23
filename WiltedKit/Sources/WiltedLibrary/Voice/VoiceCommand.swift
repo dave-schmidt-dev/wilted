@@ -85,6 +85,14 @@ public struct VoiceNowPlaying: Sendable, Equatable {
     }
 }
 
+/// Which episode an unnamed Resume can start from the current playback state.
+public enum VoiceResumeTarget: Sendable, Equatable {
+    /// A loaded, paused episode is the item to resume.
+    case loadedEpisode
+    /// With nothing loaded or after an episode ended, the library chooses an unfinished episode.
+    case library(VoiceEpisode?)
+}
+
 /// Everything the planner may read, captured once per command.
 public struct VoiceSnapshot: Sendable, Equatable {
     /// Episodes on the phone, in the order the Larder currently lists them.
@@ -93,11 +101,16 @@ public struct VoiceSnapshot: Sendable, Equatable {
     /// can be told apart from a show that does not exist.
     public let knownShowTitles: [String]
     public let nowPlaying: VoiceNowPlaying?
+    public let resumeTarget: VoiceResumeTarget
 
-    public init(downloaded: [VoiceEpisode], knownShowTitles: [String], nowPlaying: VoiceNowPlaying?) {
+    public init(
+        downloaded: [VoiceEpisode], knownShowTitles: [String], nowPlaying: VoiceNowPlaying?,
+        resumeTarget: VoiceResumeTarget = .loadedEpisode
+    ) {
         self.downloaded = downloaded
         self.knownShowTitles = knownShowTitles
         self.nowPlaying = nowPlaying
+        self.resumeTarget = resumeTarget
     }
 }
 

@@ -35,6 +35,10 @@ final class FakeDecisionHost: WiltedMacDecisionHost {
         calls.append("addArticle \(url.absoluteString)")
         return addResult
     }
+    func addLink(_ url: URL) async -> WiltedMacAddResult {
+        calls.append("addLink \(url.absoluteString)")
+        return addResult
+    }
     /// What the model reports for an `adFeedback` intent.
     var filesFeedback = true
     func recordAdFeedback(_ intent: LibraryIntent) async -> Bool {
@@ -322,6 +326,22 @@ final class WiltedMacIntentApplierTests: XCTestCase {
         XCTAssertEqual(published["art-feed"]?.reason, WiltedMacIntentApplier.reasonIsAFeed)
         XCTAssertEqual(published["art-dup"]?.reason, WiltedMacIntentApplier.reasonAlreadyAdded)
         XCTAssertEqual(r.appliedCount.value, 1)
+    }
+
+    func testAddLinkBypassesUnknownEntryAndPublishesMacClassificationResult() async throws {
+        let r = rig()
+        let add = try intent(.addLink(url: articleURL), id: "link-1")
+        try await r.applier.apply(add)
+        try await r.applier.apply(add)
+        XCTAssertEqual(r.host.calls, ["addLink https://example.test/post"])
+        let appliedOutcomes = try await outcomes(r)
+        XCTAssertEqual(appliedOutcomes.first?.disposition, .applied)
+        XCTAssertEqual(r.appliedCount.value, 1)
+
+        r.host.addResult = .noAudio
+        try await r.applier.apply(intent(.addLink(url: articleURL), id: "link-no-audio"))
+        let published = Dictionary(uniqueKeysWithValues: try await outcomes(r).map { ($0.intentID, $0) })
+        XCTAssertEqual(published["link-no-audio"]?.reason, WiltedMacIntentApplier.reasonNoAudio)
     }
 
     func testAddIntentsBypassTheUnknownEntryCheckAndExpire() async throws {

@@ -32,9 +32,11 @@ public struct WiltedAccountRecoveryNotice: View {
 
 /// The same neutral author-age line on both apps. No elapsed-age cutoff means fresh or converged.
 public enum WiltedPublicationAge {
+    public static let futureSendTime = "The Mac’s last send time is in the future."
+
     public static func summary(_ publishedAt: Date?, verified: Bool, now: Date = Date()) -> String {
-        guard let publishedAt else { return "Mac publication unknown" }
-        guard publishedAt <= now else { return "Mac publication clock uncertain" }
+        guard let publishedAt else { return "No Mac send time recorded" }
+        guard publishedAt <= now else { return futureSendTime }
         let formatter = RelativeDateTimeFormatter(); formatter.unitsStyle = .full
         let age = formatter.localizedString(for: publishedAt, relativeTo: now)
         return "\(verified ? "Mac last sent library changes" : "Saved: Mac last sent library changes") \(age)"
@@ -42,7 +44,9 @@ public enum WiltedPublicationAge {
     public static func macSidebarSummary(
         _ publishedAt: Date?, verified: Bool, held: Bool, now: Date = Date()
     ) -> String {
-        guard verified, !held, let publishedAt, publishedAt <= now else { return "Device sync status unknown" }
+        if held { return "Account review needed" }
+        guard verified, let publishedAt else { return "Sync activity" }
+        guard publishedAt <= now else { return "Check Mac clock" }
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .short
         return "Library changes sent \(formatter.localizedString(for: publishedAt, relativeTo: now))"

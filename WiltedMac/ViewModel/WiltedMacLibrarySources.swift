@@ -65,6 +65,7 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
         let feeds = snapshot.feeds.values.sorted { $0.itemID.rawValue < $1.itemID.rawValue }.map { feed in
             LibrarySource(
                 id: feed.itemID, kind: .podcastFeed, title: displayNames[feed.itemID] ?? feed.title,
+                publisher: feed.author,
                 locator: feed.canonicalURL.absoluteString, artworkRef: feed.artworkURL?.absoluteString
             )
         }

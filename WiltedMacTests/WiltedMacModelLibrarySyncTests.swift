@@ -30,9 +30,10 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
     }
 
     /// One feed with episodes "a", "b", "c" (none downloaded), returned in that order.
-    private func seedEpisodes(_ store: LocalLibraryStore) async throws -> [ItemID] {
+    private func seedEpisodes(_ store: LocalLibraryStore, author: String? = nil) async throws -> [ItemID] {
         let feedID = try ItemID.derivePodcastFeed(from: feedURL)
-        try await store.save(feed: try PodcastFeed(itemID: feedID, canonicalURL: feedURL, title: "Show", createdAt: created))
+        try await store.save(feed: try PodcastFeed(
+            itemID: feedID, canonicalURL: feedURL, title: "Show", author: author, createdAt: created))
         var ids: [ItemID] = []
         for (index, guid) in ["a", "b", "c"].enumerated() {
             let enclosure = URL(string: "https://media.example.test/\(guid).mp3")!
@@ -425,6 +426,15 @@ final class WiltedMacModelLibrarySyncTests: XCTestCase {
         XCTAssertEqual(try bytes(state), try bytes(expected))
         XCTAssertEqual(state.episodes.count, 3)
         XCTAssertTrue(state.episodes.allSatisfy { $0.kind == .podcastEpisode })
+    }
+
+    func testPodcastPublisherIsPublishedOnItsFeedSource() async throws {
+        let (_, store) = try await bootstrapped("library-sync-feed-publisher")
+        _ = try await seedEpisodes(store, author: "Example Audio")
+
+        let state = try await source(store).currentState()
+
+        XCTAssertEqual(state.feeds.first?.publisher, "Example Audio")
     }
 
     // MARK: Intents

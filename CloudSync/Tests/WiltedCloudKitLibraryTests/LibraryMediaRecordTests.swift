@@ -420,7 +420,11 @@ final class LibraryMediaRecordTests: XCTestCase {
         let mac = try fixture.endpoint("mac", writer: true)
         let phone = try fixture.endpoint("phone", writer: false)
         let intent = try LibraryIntent.requestMedia(entryID: item("ep-1"), deviceID: "phone", createdAt: Date(timeIntervalSince1970: 5), id: "i-1")
+        let addLink = try LibraryIntent.addLink(
+            url: XCTUnwrap(URL(string: "https://example.com/story")), deviceID: "phone",
+            createdAt: Date(timeIntervalSince1970: 6), id: "i-2")
         try await phone.transport.send(intent: intent)
+        try await phone.transport.send(intent: addLink)
         try await phone.transport.publish(makePosition(device: "phone", entry: "ep-1"), as: .nowPlaying)
         try await phone.transport.publish(makePosition(device: "phone", entry: "ep-1"), as: .progress)
         try await mac.transport.publishMedia(offer: try fixture.offer(), fileURL: try fixture.audioFile())
@@ -428,7 +432,7 @@ final class LibraryMediaRecordTests: XCTestCase {
         await mac.transport.track(devices: ["phone"])
         for _ in 0..<3 {
             let intents = try await mac.transport.listIntents()
-            XCTAssertEqual(intents, [intent])
+            XCTAssertEqual(intents, [intent, addLink])
             let records = try await mac.transport.fetchDeviceRecords()
             XCTAssertEqual(records.nowPlaying.map(\.record.deviceID), ["phone"])
             XCTAssertEqual(records.progress.map(\.record.entryID.rawValue), ["ep-1"])

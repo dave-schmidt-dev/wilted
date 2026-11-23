@@ -47,6 +47,8 @@ protocol WiltedMacDecisionHost: AnyObject {
     /// Classifies `url` and, when it is not a feed, starts the single-article path; answers what
     /// became of it. `.added` means the Mac accepted the article and began preparing it.
     func addArticleLink(_ url: URL) async -> WiltedMacAddResult
+    /// Classifies one pasted link and sends it to the matching article or podcast intake.
+    func addLink(_ url: URL) async -> WiltedMacAddResult
     /// Files one `adFeedback` intent in the review inbox; true once it is saved (or was already).
     func recordAdFeedback(_ intent: LibraryIntent) async -> Bool
 }
@@ -56,7 +58,7 @@ extension WiltedMacDecisionHost {
     func recordAdFeedback(_ intent: LibraryIntent) async -> Bool { false }
 }
 
-/// What the Mac's add path concluded for one phone `subscribe` or `addArticle` request.
+/// What the Mac's add path concluded for one phone request.
 enum WiltedMacAddResult: Equatable, Sendable {
     case added
     case alreadyFollowed
@@ -150,7 +152,7 @@ actor WiltedMacIntentOutcomeBook {
 // MARK: - Applier
 
 /// Applies the phone's decision intents (`keep`, `skip`, `markDone`, `removeFromLarder`, `restore`, `reorder`,
-/// `subscribe`, `addArticle`) on the Mac and answers each with an `IntentOutcome`.
+/// `subscribe`, `addArticle`, `addLink`) on the Mac and answers each with an `IntentOutcome`.
 ///
 /// An intent id goes into the ledger before anything is applied, so it is applied at most once
 /// even across a restart. An intent older than `IntentRetention.maximumAge` is answered `expired`
@@ -225,11 +227,20 @@ final class WiltedMacIntentApplier {
         func applied() throws -> IntentOutcome { try .applied(for: intent, at: at) }
         func rejected(_ reason: String) throws -> IntentOutcome { try .rejected(for: intent, reason: reason, at: at) }
         func result(_ took: Bool) throws -> IntentOutcome { try took ? applied() : rejected(IntentOutcome.reasonFailed) }
+        func linkResult(_ value: WiltedMacAddResult) throws -> IntentOutcome {
+            switch value {
+            case .added: return try applied()
+            case .alreadyFollowed: return try rejected(Self.reasonAlreadyFollowed)
+            case .alreadyAdded: return try rejected(Self.reasonAlreadyAdded)
+            case .notAPodcastFeed: return try rejected(Self.reasonNotAPodcastFeed)
+            case .isAFeed: return try rejected(Self.reasonIsAFeed)
+            case .noAudio: return try rejected(Self.reasonNoAudio)
+            case .failed: return try rejected(IntentOutcome.reasonFailed)
+            }
+        }
 
         if case .unsupported = intent.action { return try rejected(IntentOutcome.reasonUnsupportedAction) }
         guard let host else { return try rejected(IntentOutcome.reasonFailed) }
-        // Their entry IDs name items the Mac does not hold yet, so they must not reach the
-        // unknownEntry check below.
         switch intent.action {
         case let .subscribe(feedURL):
             switch await host.subscribeFeed(feedURL) {
@@ -246,11 +257,13 @@ final class WiltedMacIntentApplier {
             case .isAFeed, .notAPodcastFeed, .noAudio: return try rejected(Self.reasonIsAFeed)
             case .failed: return try rejected(IntentOutcome.reasonFailed)
             }
-        // Feedback is about audio the phone played, which may have left the Larder since; it is
-        // filed whatever the entry's state.
+        case let .addLink(url):
+            return try linkResult(await host.addLink(url))
         case .adFeedback:
+            // Feedback belongs to an episode that may have left the Larder already.
             return try result(await host.recordAdFeedback(intent))
-        default: break
+        default:
+            break
         }
         let entryID = intent.action.entryID
         if let dated = await host.applyOwnerIntent(intent) {
@@ -316,7 +329,7 @@ final class WiltedMacIntentApplier {
             return try result(await host.moveQueueEntry(from: index, to: index, resulting: host.decisionQueue))
         case .unsupported:
             return try rejected(IntentOutcome.reasonUnsupportedAction)
-        case .requestMedia, .mediaCached, .subscribe, .addArticle, .adFeedback:
+        case .requestMedia, .mediaCached, .subscribe, .addArticle, .addLink, .adFeedback:
             return try rejected(notApplicable)
         }
     }
@@ -559,10 +572,28 @@ extension WiltedMacModel: WiltedMacDecisionHost {
     }
 
     func subscribeFeed(_ url: URL) async -> WiltedMacAddResult {
-        guard let feedID = try? ItemID.derivePodcastFeed(from: url), store != nil else { return .failed }
+        guard (try? ItemID.derivePodcastFeed(from: url)) != nil, store != nil else { return .failed }
         let kind: PastedLinkKind
         do { kind = try await pastedLinkClassifier.classify(url) } catch { return .failed }
         guard case .podcastFeed = kind else { return .notAPodcastFeed }
+        return await subscribeClassifiedFeed(url)
+    }
+
+    func addLink(_ url: URL) async -> WiltedMacAddResult {
+        let kind: PastedLinkKind
+        do { kind = try await pastedLinkClassifier.classify(url) } catch { return .failed }
+        switch kind {
+        case .podcastFeed:
+            return await subscribeClassifiedFeed(url)
+        case let .podcastCatalogShow(show):
+            return await subscribeClassifiedFeed(show.feedURL)
+        case .article, .articleAdvertisingFeed:
+            return await addClassifiedArticle(url)
+        }
+    }
+
+    private func subscribeClassifiedFeed(_ url: URL) async -> WiltedMacAddResult {
+        guard let feedID = try? ItemID.derivePodcastFeed(from: url), store != nil else { return .failed }
         if subscriptions.contains(where: { $0.id == feedID.rawValue }) { return .alreadyFollowed }
         // The intake takes the single fetch slot; wait for a running refresh rather than lose the request.
         // Loop, because another request can take the slot before this continuation resumes. The model is
@@ -593,20 +624,29 @@ extension WiltedMacModel: WiltedMacDecisionHost {
 
     func addArticleLink(_ url: URL) async -> WiltedMacAddResult {
         guard let articleID = try? ItemID.derive(from: url) else { return .failed }
+        if articles.contains(where: { $0.id == articleID.rawValue }) { return .alreadyAdded }
         let kind: PastedLinkKind
         do { kind = try await pastedLinkClassifier.classify(url) } catch { return .failed }
         switch kind {
         case .podcastFeed, .podcastCatalogShow: return .isAFeed
-        case .article, .articleAdvertisingFeed: break
+        case .article, .articleAdvertisingFeed: return await startClassifiedArticle(url)
         }
+    }
+
+    private func addClassifiedArticle(_ url: URL) async -> WiltedMacAddResult {
+        guard let articleID = try? ItemID.derive(from: url) else { return .failed }
         if articles.contains(where: { $0.id == articleID.rawValue }) { return .alreadyAdded }
+        return await startClassifiedArticle(url)
+    }
+
+    private func startClassifiedArticle(_ url: URL) async -> WiltedMacAddResult {
         // The article path replaces a run in flight; a phone request must not cancel the owner's work.
         guard !articlePreparationIsPending else { return .failed }
         let draft = urlDraft
         urlDraft = url.absoluteString
-        addArticle()
+        let started = addArticle()
         urlDraft = draft
-        return articlePreparationIsPending ? .added : .failed
+        return started ? .added : .failed
     }
 
     /// Runs a model method that starts durable work and waits for the writers it registered, then
