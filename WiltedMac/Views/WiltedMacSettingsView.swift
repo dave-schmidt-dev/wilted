@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import WiltedDomain
+import WiltedProducer
 
 // MARK: - Settings
 
@@ -13,6 +14,8 @@ struct WiltedMacSettingsView: View {
     let location: WiltedLocationProvider
     @Environment(\.colorScheme) private var colorScheme
     @State private var choosesCustomMetadataCount = false
+    /// Read by the preparation worker at each launch (see `WorkerPriority`).
+    @AppStorage(WorkerPriority.userSettingKey) private var processesInBackground = true
     @State var feedPolicyBoard: WiltedMacFeedPolicyBoard
 
     init(
@@ -238,6 +241,13 @@ struct WiltedMacSettingsView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("wilted-automation-off-peak-explanation")
             }
+
+            Toggle("Prepare in the background", isOn: $processesInBackground)
+                .accessibilityIdentifier("wilted-processing-low-priority")
+            Text("Gives preparation a low priority so it doesn't slow down the rest of your Mac. Playback is unaffected. Applies from the next preparation.")
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
 
             Divider()
 

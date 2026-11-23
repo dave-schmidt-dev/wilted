@@ -4,6 +4,9 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Mac Settings › Processing has a **Prepare in the background** switch, on by default: episode preparation (speech-to-text, ad finding and the tools they start) runs at a low priority so it doesn't slow down the rest of the Mac. Playback and the app stay at normal priority.
+
 ### Fixed
 - Closing a Skip's Undo offer now takes the same hold on the episode's audio from the player as a rule Skip, so audio that is still opening is never deleted under it; the cleanup waits for the next try instead.
 - A skipped episode now stays off the feed for good: a download that finishes late, or after an unsubscribe, is refused instead of bringing its audio back. Closing a Skip also frees the episode's slot and stops its waiting preparation, including after a relaunch, and Cmd-Z keeps working across several Skips.

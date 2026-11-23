@@ -240,6 +240,7 @@ INVENTORY = {
         'wilted-automation-off-peak-start',
         'wilted-automation-off-peak-end',
         'wilted-automation-off-peak-explanation',
+        'wilted-processing-low-priority',
         'wilted-automation-transcript-policy',
         'wilted-automation-transcript-conflict',
     ],

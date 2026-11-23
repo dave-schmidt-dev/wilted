@@ -20,6 +20,13 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
         /// shells out to ffmpeg, and an app launched from Finder inherits a
         /// PATH that has never heard of Homebrew.
         public var toolSearchPaths: [String]
+        /// How hard the worker may compete with the rest of the Mac. Read at each launch, so the
+        /// Settings switch applies to the next preparation without a relaunch.
+        public var priority: WorkerPriority
+        /// Lowers a launched worker's priority; tests record the call instead.
+        var lowerPriority: @Sendable (pid_t, Int32) -> Void = { pid, nice in
+            _ = setpriority(PRIO_PROCESS, id_t(pid), nice)
+        }
 
         public static let defaultToolSearchPaths = ["/opt/homebrew/bin", "/usr/local/bin"]
 
@@ -28,13 +35,15 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
             workerURL: URL,
             pythonPath: URL? = nil,
             timeout: TimeInterval = 7_200,
-            toolSearchPaths: [String] = Configuration.defaultToolSearchPaths
+            toolSearchPaths: [String] = Configuration.defaultToolSearchPaths,
+            priority: WorkerPriority = .userSetting
         ) {
             self.interpreterURL = interpreterURL
             self.workerURL = workerURL
             self.pythonPath = pythonPath
             self.timeout = timeout
             self.toolSearchPaths = toolSearchPaths
+            self.priority = priority
         }
 
         /// The PATH the worker runs with: the inherited one, then any search
@@ -151,6 +160,8 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
         environment["PYTHONUNBUFFERED"] = "1"
         environment["PATH"] = configuration.workerPATH(inherited: environment["PATH"])
         process.environment = environment
+        let lowPriority = configuration.priority.isLow()
+        if lowPriority { process.qualityOfService = .utility }
         let exitObservation = ProcessExitObservation()
         process.terminationHandler = { child in
             exitObservation.record(terminationStatus: child.terminationStatus)
@@ -183,6 +194,9 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
         do { try process.run() } catch {
             throw PodcastPreparationError.workerUnavailable(String(describing: error))
         }
+        // Before the worker has started its own tools: speech-to-text, ffmpeg and the labeller all
+        // inherit this, while playback and the app itself stay at normal priority.
+        if lowPriority { configuration.lowerPriority(process.processIdentifier, WorkerPriority.lowNiceValue) }
         // The child owns its duplicated stdin reader now. Keeping this parent's
         // reader open would let a blocked writer wait forever after child exit.
         try? input.fileHandleForReading.close()
@@ -454,5 +468,28 @@ final class WorkerOutputCollector: @unchecked Sendable {
             return
         }
         recordDiagnostic(line)
+    }
+}
+
+/// How the preparation worker shares the Mac. Low runs it, and every tool it starts, at a background
+/// priority so a long transcription does not slow what the listener is doing; it still finishes,
+/// only yielding when something else wants the processor.
+public enum WorkerPriority: Sendable, Equatable {
+    case low
+    case normal
+    /// Follows the Settings switch, which is on until the listener turns it off.
+    case userSetting
+
+    /// The `UserDefaults` key behind the Settings switch.
+    public static let userSettingKey = "wilted.processing.low-priority"
+    /// The nice value a low-priority worker runs at: well below the app, short of the idle-only 20.
+    public static let lowNiceValue: Int32 = 10
+
+    public func isLow(defaults: UserDefaults = .standard) -> Bool {
+        switch self {
+        case .low: true
+        case .normal: false
+        case .userSetting: defaults.object(forKey: Self.userSettingKey) as? Bool ?? true
+        }
     }
 }
