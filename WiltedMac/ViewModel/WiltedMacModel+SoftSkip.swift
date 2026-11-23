@@ -103,8 +103,7 @@ extension WiltedMacModel {
         guard let store, !isClosingTemporaryState else { return }
         let record = open.record
         do {
-            let close = try await store.finalizeSoftSkip(
-                record.retiredIDs, at: record.retiredAt, protecting: livePlaybackEpisodeIDs())
+            let close = try await finalizeSoftSkipUnderMediaLease(record, store: store)
             openSoftSkips.removeAll { $0 === open }
             guard !isClosingTemporaryState else { return }
             // A member the player keeps loaded still gives its slot up and stops waiting for preparation.
@@ -119,12 +118,31 @@ extension WiltedMacModel {
         }
     }
 
+    /// Closes a Skip while the audio it may delete is leased from the player, so no load can start
+    /// between the playing check and the deletion. A member the player has loaded is protected as before;
+    /// a load already under way (which the playing check cannot see) refuses the lease, and then every
+    /// member is protected, so nothing is deleted and the cleanup stays owed.
+    func finalizeSoftSkipUnderMediaLease(_ record: SoftSkipRecord, store: LocalLibraryStore) async throws -> SoftSkipClose {
+        let members = Set(try await store.logicalEpisodeIDs(record.retiredIDs))
+        var protected = livePlaybackEpisodeIDs()
+        let player = playback
+        var lease: MediaDeletionLease?
+        if let player {
+            if let granted = player.leaseMediaForDeletion(members.subtracting(protected)) {
+                lease = granted
+            } else {
+                protected.formUnion(members)
+            }
+        }
+        defer { if let lease { player?.release(lease) } }
+        return try await store.finalizeSoftSkip(record.retiredIDs, at: record.retiredAt, protecting: protected)
+    }
+
     /// Closes every Skip an earlier launch left open. No offer exists any more, so none can be taken
     /// back. A Skip whose offer is still open in this run is left to that offer.
     func closeAbandonedSoftSkips(in store: LocalLibraryStore) async {
         for record in pendingSoftSkips where !openSoftSkips.contains(where: { $0.record == record }) {
-            guard let close = try? await store.finalizeSoftSkip(
-                record.retiredIDs, at: record.retiredAt, protecting: livePlaybackEpisodeIDs()) else { continue }
+            guard let close = try? await finalizeSoftSkipUnderMediaLease(record, store: store) else { continue }
             let remaining = record.keeping(Set(close.held))
             // What the live close does for its members: no waiting preparation, and the slot goes to the
             // feed's next waiting episode once the library is read.

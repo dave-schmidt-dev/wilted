@@ -320,7 +320,7 @@ private struct RuleAdmissionMediaLeaseFixture {
 }
 
 @MainActor
-private final class RuleAdmissionMediaOpenGate {
+final class RuleAdmissionMediaOpenGate {
     private var isHeld = false
     private var isReleased = false
     private var loadContinuation: CheckedContinuation<Void, Never>?
@@ -359,7 +359,7 @@ private final class RuleAdmissionMediaOpenGate {
     }
 }
 
-private struct RuleAdmissionGateTimeout: Error {}
+struct RuleAdmissionGateTimeout: Error {}
 
 // MARK: - Fixture
 

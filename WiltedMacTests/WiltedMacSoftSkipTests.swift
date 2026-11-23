@@ -144,6 +144,42 @@ extension WiltedMacFeedDecisionTests {
         XCTAssertNil(reserved[fixture.feedID], "but the slot is given up all the same")
     }
 
+    func testClosingASkipWhileItsAudioIsStillLoadingKeepsTheAudioAndItsEntry() async throws {
+        let fixture = try await makeFixture(count: 1, queueIndexes: [])
+        addTeardownBlock { await fixture.model.close() }
+        let itemID = fixture.itemIDs[0]
+        let mediaURL = try await seedDownloadedEpisode(fixture)
+        fixture.model.skipFeedEpisode(fixture.episodes[0], offerUndo: true)
+        await drainDecisionWriters(fixture.model)
+        // A load that has started but not yet shown the episode as loaded: the playing check cannot see it.
+        let gate = RuleAdmissionMediaOpenGate()
+        let backend = WiltedMacScriptedBackend()
+        backend.beforeMediaOpenForTesting = { await gate.hold() }
+        let controller = PlaybackController(store: fixture.store, backend: backend, deviceID: "fixture")
+        fixture.model.playback = controller
+        let revision = try XCTUnwrap(try await fixture.store.revisions(for: itemID).first).revision
+        let loading = Task { try await controller.load(revision: revision, mediaURL: mediaURL) }
+        guard await gate.waitUntilHeld() else {
+            gate.release()
+            _ = await loading.result
+            throw RuleAdmissionGateTimeout()
+        }
+
+        fixture.model.undoToast.withdrawAll()
+        await drainDecisionWriters(fixture.model)
+        for _ in 0..<100 where fixture.model.openSoftSkips.isEmpty == false {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let kept = FileManager.default.fileExists(atPath: mediaURL.path)
+        let owed = fixture.model.pendingSoftSkips.first?.retiredIDs
+        gate.release()
+        _ = await loading.result
+
+        XCTAssertTrue(fixture.model.openSoftSkips.isEmpty, "the offer closed")
+        XCTAssertTrue(kept, "audio a load is opening is not deleted under it")
+        XCTAssertEqual(owed, [itemID], "its cleanup is still owed")
+    }
+
     func testUndoGivesTheEpisodeBackWithItsAudioHistoryAndNoNewKeep() async throws {
         let fixture = try await makeFixture(count: 1, queueIndexes: [])
         addTeardownBlock { await fixture.model.close() }
