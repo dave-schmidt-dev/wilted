@@ -200,10 +200,17 @@ def install_fake_wilted(parse_results=None, parse_error=None, transcriptions=Non
     transcribe.parse_srt = parser("srt")
     transcribe.parse_podcast_json = parser("podcast-json")
     transcribe.calls = calls
+    class SummaryOutputTruncated(ValueError):
+        pass
+
+    gguf_summary = types.ModuleType("wilted.gguf_summary")
+    gguf_summary.SummaryOutputTruncated = SummaryOutputTruncated
     package = types.ModuleType("wilted")
     package.transcribe = transcribe
+    package.gguf_summary = gguf_summary
     sys.modules["wilted"] = package
     sys.modules["wilted.transcribe"] = transcribe
+    sys.modules["wilted.gguf_summary"] = gguf_summary
     # A `wilted.llm` double left behind by another test must not be reused here.
     sys.modules.pop("wilted.llm", None)
     install_fake_speech_stack()

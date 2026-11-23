@@ -24,7 +24,8 @@ REDUCE_SYSTEM = (
 )
 MAP_PREFIX = "Transcript:\n"
 REDUCE_PREFIX = "Summaries:\n"
-PROMPT_VERSION = "transcript-summary-v1"
+PROMPT_VERSION = "transcript-summary-v2"
+MAX_MAP_TRUNCATION_RETRIES = 8
 
 
 def prompt_identity():
@@ -125,9 +126,13 @@ def _prepare(backend, system, content):
 
 
 def _generate(backend, prepared):
+    from wilted.gguf_summary import SummaryOutputTruncated
+
     try:
         text, tokens = _heartbeat(lambda: backend.generate_summary(prepared),
                                   "summary.generate", "Generating local transcript summary")
+    except SummaryOutputTruncated:
+        raise
     except Exception as error:
         raise WorkerError("summary-generation-failed", "The local model could not produce a complete summary.") from error
     if (not isinstance(text, str) or not text.strip() or type(tokens) is not int
@@ -137,6 +142,8 @@ def _generate(backend, prepared):
 
 
 def _map_pass(backend, text):
+    from wilted.gguf_summary import SummaryOutputTruncated
+
     summaries, ranges, token_total = [], [], 0
     start = 0
     while start < len(text):
@@ -153,7 +160,20 @@ def _map_pass(backend, text):
         if best is None:
             raise WorkerError("summary-context-unavailable", "The local model context cannot fit a transcript passage.")
         length, prepared = best
-        summary, tokens = _generate(backend, prepared)
+        retries = 0
+        while True:
+            try:
+                summary, tokens = _generate(backend, prepared)
+                break
+            except SummaryOutputTruncated as error:
+                if length <= 1 or retries >= MAX_MAP_TRUNCATION_RETRIES:
+                    raise WorkerError(
+                        "summary-generation-failed", "The local model could not produce a complete summary."
+                    ) from error
+                length = max(1, length // 2)
+                prepared = _prepare(backend, MAP_SYSTEM, MAP_PREFIX + text[start:start + length])
+                retries += 1
+                reporting.progress("summary.map.retry", "Reducing a passage after the model reached its output limit")
         summaries.append(summary)
         ranges.append([start, start + length])
         start += length
@@ -164,6 +184,8 @@ def _map_pass(backend, text):
 
 def _reduce_pass(backend, summaries):
     import json
+    from wilted.gguf_summary import SummaryOutputTruncated
+
     results, token_total, start = [], 0, 0
     while start < len(summaries):
         best = None
@@ -180,7 +202,22 @@ def _reduce_pass(backend, summaries):
         if end == start + 1:
             results.append(summaries[start])
         else:
-            summary, tokens = _generate(backend, prepared)
+            while True:
+                try:
+                    summary, tokens = _generate(backend, prepared)
+                    break
+                except SummaryOutputTruncated as error:
+                    batch_size = end - start
+                    if batch_size <= 2:
+                        raise WorkerError(
+                            "summary-generation-failed", "The local model could not combine passage summaries."
+                        ) from error
+                    end = start + max(2, batch_size // 2)
+                    content = REDUCE_PREFIX + json.dumps(summaries[start:end], ensure_ascii=False)
+                    prepared = _prepare(backend, REDUCE_SYSTEM, content)
+                    reporting.progress(
+                        "summary.reduce.retry", "Reducing fewer passages after the model reached its output limit"
+                    )
             results.append(summary)
             token_total += tokens
         start = end
