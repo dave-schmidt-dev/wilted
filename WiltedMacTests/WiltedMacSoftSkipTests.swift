@@ -1,6 +1,6 @@
 import XCTest
 import WiltedDomain
-import WiltedProducer
+@testable import WiltedProducer
 @testable import WiltedMac
 
 /// Skip from Feeds with Undo: the audio stays until the offer ends, Undo gives the episode back whole,

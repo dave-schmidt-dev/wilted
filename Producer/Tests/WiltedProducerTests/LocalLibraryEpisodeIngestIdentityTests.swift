@@ -9,7 +9,7 @@ final class LocalLibraryEpisodeIngestIdentityTests: XCTestCase {
     private let feedURL = URL(string: "https://podcasts.example.test/twit/feed.xml")!
 
     func makeStore(_ name: String = #function) throws -> LocalLibraryStore {
-        let directory = FileManager.default.temporaryDirectory
+        let directory = OwnedTestTemp.root
             .appendingPathComponent("wilted-episode-identity-\(name)-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
