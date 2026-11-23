@@ -20,15 +20,38 @@ wilted_mac_test_host_pattern() {
   printf '%s/.*/WiltedMac\\.app/Contents/MacOS/WiltedMac\n' "$cache_root"
 }
 
+## Matches only hosts this gate run built into its own unique temp root, so a
+## peer run's host (different temp root) can never match.
+wilted_gate_owned_mac_test_host_pattern() {
+  local gate_root="$1" canonical_root
+  [[ -n "$gate_root" && -d "$gate_root" && ! -L "$gate_root" ]] || return 1
+  canonical_root="$(cd -P "$gate_root" 2>/dev/null && pwd)" || return 1
+  canonical_root="$(printf '%s' "$canonical_root" | sed 's/[][\\.^$*+?(){}|]/\\&/g')"
+  printf '%s/legs/.*/WiltedMac\\.app/Contents/MacOS/WiltedMac\n' "$canonical_root"
+}
+
+## Quits every Mac test host still running from this gate run's temp root.
+## Call only after the run's legs finished; quiet when nothing is left.
+wilted_cleanup_gate_owned_mac_test_hosts() {
+  local pattern
+  pattern="$(wilted_gate_owned_mac_test_host_pattern "${1:-}")" || return 0
+  wilted_terminate_mac_test_hosts_matching "$pattern" gate-owned-mac-test-hosts quiet
+}
+
 ## Terminates only stale Mac test hosts whose command line names this checkout's
 ## canonical Xcode cache. A sibling worktree has a different literal prefix.
 wilted_cleanup_mac_test_hosts() {
-  local repo_root="$1" test_host_pattern test_host_pid killed=0
-  local -a alive_pids=()
-  test_host_pattern="$(wilted_mac_test_host_pattern "$repo_root")" || {
+  local test_host_pattern
+  test_host_pattern="$(wilted_mac_test_host_pattern "$1")" || {
     printf 'native.error cannot resolve current checkout for Mac test host cleanup\n' >&2
     return 1
   }
+  wilted_terminate_mac_test_hosts_matching "$test_host_pattern" mac-test-hosts
+}
+
+wilted_terminate_mac_test_hosts_matching() {
+  local test_host_pattern="$1" label="$2" quiet="${3:-}" test_host_pid killed=0
+  local -a alive_pids=()
   while IFS= read -r test_host_pid; do
     [[ "$test_host_pid" =~ ^[0-9]+$ ]] || continue
     if kill -0 "$test_host_pid" 2>/dev/null; then
@@ -36,7 +59,7 @@ wilted_cleanup_mac_test_hosts() {
     fi
   done < <(pgrep -f "$test_host_pattern" 2>/dev/null || true)
   [[ "${#alive_pids[@]}" -gt 0 ]] || {
-    printf 'native.cleanup mac-test-hosts-matched=0 killed=0\n' >&2
+    [[ -n "$quiet" ]] || printf 'native.cleanup %s-matched=0 killed=0\n' "$label" >&2
     return 0
   }
   kill "${alive_pids[@]}" 2>/dev/null || true
@@ -52,7 +75,8 @@ wilted_cleanup_mac_test_hosts() {
       killed=$((killed + 1))
     fi
   done
-  printf 'native.cleanup mac-test-hosts-matched=%s killed=%s\n' "${#alive_pids[@]}" "$killed" >&2
+  # Static contract anchor: native.cleanup mac-test-hosts-matched=
+  printf 'native.cleanup %s-matched=%s killed=%s\n' "$label" "${#alive_pids[@]}" "$killed" >&2
 }
 
 ## Uses controlled argv0 values for two sleep processes: one names this
@@ -81,7 +105,8 @@ PYFIXTURELOCK
 wilted_mac_test_host_cleanup_fixture() (
   set -Eeuo pipefail
   local scratch="$1" repo_root="$2" pattern owned_repo owned_host foreign_host protected_host
-  local owned_pid foreign_pid protected_pid owned_matches="" attempt
+  local owned_pid foreign_pid protected_pid owned_matches="" attempt gate_root gate_pid peer_gate_pid
+  local gate_host_tail="legs/macos-unit-tests/products/Debug/WiltedMac.app/Contents/MacOS/WiltedMac"
   mkdir -p "$scratch/mac-cleanup-owned-worktree"
   owned_repo="$(cd -P "$scratch/mac-cleanup-owned-worktree" && pwd)"
   pattern="$(wilted_mac_test_host_pattern "$owned_repo")"
@@ -94,8 +119,14 @@ wilted_mac_test_host_cleanup_fixture() (
   foreign_pid=$!
   /bin/bash -c 'exec -a "$1" /bin/sleep 60' _ "$protected_host" &
   protected_pid=$!
+  mkdir -p "$scratch/wilted-native-gate.selftest" "$scratch/wilted-native-gate.peer"
+  gate_root="$(cd -P "$scratch/wilted-native-gate.selftest" && pwd)"
+  /bin/bash -c 'exec -a "$1" /bin/sleep 60' _ "$gate_root/$gate_host_tail" &
+  gate_pid=$!
+  /bin/bash -c 'exec -a "$1" /bin/sleep 60' _ "$(cd -P "$scratch/wilted-native-gate.peer" && pwd)/$gate_host_tail" &
+  peer_gate_pid=$!
   # Bash 3.2 unwinds these locals before the subshell EXIT trap runs.
-  trap "kill $owned_pid $foreign_pid $protected_pid 2>/dev/null || true; wait $owned_pid 2>/dev/null || true; wait $foreign_pid 2>/dev/null || true; wait $protected_pid 2>/dev/null || true" EXIT
+  trap "kill $owned_pid $foreign_pid $protected_pid $gate_pid $peer_gate_pid 2>/dev/null || true; wait $owned_pid 2>/dev/null || true; wait $foreign_pid 2>/dev/null || true; wait $protected_pid 2>/dev/null || true; wait $gate_pid 2>/dev/null || true; wait $peer_gate_pid 2>/dev/null || true" EXIT
   for attempt in {1..50}; do
     owned_matches="$(pgrep -f "$pattern" 2>/dev/null || true)"
     if printf '%s\n' "$owned_matches" | grep -Fxq -- "$owned_pid"; then break; fi
@@ -106,7 +137,16 @@ wilted_mac_test_host_cleanup_fixture() (
   ! kill -0 "$owned_pid" 2>/dev/null
   kill -0 "$foreign_pid" 2>/dev/null
   kill -0 "$protected_pid" 2>/dev/null
-  printf 'native.cleanup.fixture owned-host-matched=1 foreign-peer-preserved=1 live-checkout-shaped-preserved=1\n'
+  for attempt in {1..50}; do
+    if pgrep -f "$(wilted_gate_owned_mac_test_host_pattern "$gate_root")" | grep -Fxq -- "$gate_pid"; then break; fi
+    sleep 0.1
+  done
+  wilted_cleanup_gate_owned_mac_test_hosts "$gate_root"
+  ! kill -0 "$gate_pid" 2>/dev/null
+  kill -0 "$peer_gate_pid" 2>/dev/null
+  kill -0 "$protected_pid" 2>/dev/null
+  wilted_cleanup_gate_owned_mac_test_hosts ""
+  printf 'native.cleanup.fixture owned-host-matched=1 foreign-peer-preserved=1 live-checkout-shaped-preserved=1 gate-owned-host-quit=1 peer-gate-host-preserved=1\n'
 )
 
 wilted_mac_test_scheme_configure() {
