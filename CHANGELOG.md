@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- Feed refresh now flags a possible repeat of an episode you already have, before anything is downloaded or prepared. A new feed entry that looks like another episode of the same show (same title, published within a minute, nearly the same length: a clearly different length is not flagged) is saved as its own row with a **Possible duplicate of …** badge in Feeds and the Larder, including rows that are downloading or preparing. One central check holds a flagged row out of every automatic download and preparation path: the download-everything and prepare-everything settings, per-feed switches, download after Keep, Keep rules and Apply Rules, preparation recovery, relaunch recovery of an interrupted download, pipeline invalidation, and download arrival. If the check cannot read the flags it blocks the work it cannot clear, and work waiting for an unrelated episode stays put until the flags can be read. A flag that cannot be read still shows the badge with its two answers. Apply Rules counts only what it can change. Skip rules never retire or delete a flagged row. Downloading or preparing it by hand works as for any episode. **Same episode** skips or removes the newcomer, and **Different** clears the flag and then catches up on the work that was held, including a download a manual Keep asked for; the catch-up is remembered and finished at the next launch if Wilted quits first. Nothing is linked, merged or shared between the two episodes, and a feed that re-lists episodes you already have changes nothing.
+- Mac Feeds now lists every episode link an earlier version made under **Linked episodes**, with an **Unlink** for each, even when the pair is finished or not waiting and so has no row elsewhere. The unlink review names two episodes with the same title apart.
+- A match rule's Skip, whether from Apply Rules or a refresh, now rechecks playback inside the store's own save and leaves an episode alone if it is the current one, has a saved position, or was finished, so its audio is never deleted under a race.
+- Apply Rules checks playback again right before it skips an episode, so audio is never deleted for something that started playing while the rules were being applied.
+- A rule Skip, from Apply Rules or a refresh, now also leaves alone an episode the player has loaded even before anything about it was saved (Play Now and playlists start audio first), and one whose listening record says it was finished.
+
+### Fixed
+- A landed download whose flag list could not be read stays on the retry list while the library reload after it is still running.
+- Answering "Different" on a possible duplicate no longer forgets the answer if the flag list cannot be read just before preparation would start; the note stays and the work finishes once the list reads.
+- A downloaded episode whose flag list could not be read at arrival is retried on the next tick instead of waiting for a relaunch.
+- Apply Rules no longer counts or offers Undo for a Keep that the library refused because you decided that episode in the meantime, and reports "Nothing needed to change" when everything was left alone.
+- Mac: choosing **Different** and then quitting before Wilted finishes no longer loses the answer. The next launch clears the flag and does the held work.
+- Mac: Apply Rules reports only the changes it wrote, and a download that a possible-duplicate flag held at recovery is no longer counted as downloaded.
+- Mac: a download that lands while the possible-duplicate list cannot be read no longer cancels its waiting preparation.
+
+### Removed
+- The older Review Possible Duplicate flow (a Larder context-menu item that compared an exact same-show pair and linked the two episodes) is gone, and nothing in the app links episodes any more. A possible duplicate is answered on the row itself. A link an earlier version made can still be undone: right-click the Larder row and choose **Unlink Episodes…**, which names what each episode keeps or loses before anything changes.
+
 ## [0.7.2] - 2026-11-22
 
 ### Changed

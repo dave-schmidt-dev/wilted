@@ -69,6 +69,10 @@ enum WiltedAutomationFault: Error, Equatable, WiltedAutomationNonRetryable {
     /// Without this the claim would count as downloaded rather than as a
     /// download automation never actually started.
     case downloadNotStarted(String)
+    /// A possible-duplicate flag (or an unreadable flag list) held the episode after its claim was
+    /// listed. Nothing was started and nothing failed: the claim stays for the owner's answer, so
+    /// the pass counts it as neither downloaded nor failed.
+    case downloadHeld(String)
 }
 
 /// Policy evaluation, scheduling metadata, serialised admission, retry, and
@@ -402,6 +406,8 @@ actor WiltedAutomationCoordinator {
                 completed += 1
             } catch is CancellationError {
                 return (completed, failed)
+            } catch WiltedAutomationFault.downloadHeld {
+                continue
             } catch {
                 // The claim stays. A later launch reconciles it rather than
                 // this pass blocking on one episode.

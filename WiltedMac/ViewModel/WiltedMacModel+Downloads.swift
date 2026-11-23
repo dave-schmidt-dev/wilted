@@ -22,17 +22,22 @@ extension WiltedMacModel {
     /// Starts one episode's download.
     ///
     /// `alreadyClaimed` is automation saying it holds the store claim already.
+    /// `automatic` marks work no one asked for just now (a setting, a feed
+    /// switch, recovery, a policy download after Keep): it leaves a
+    /// possible-duplicate flag alone, both here and at the store's claim.
     /// Every other caller takes the claim here, because the in-memory task table
     /// below only knows about this process: a claim an earlier launch made, or
     /// one automation took a moment ago, is invisible to it, and the download
     /// coordinator writes its queued record unconditionally. Without the claim
     /// the same episode transfers twice.
     func downloadEpisode(_ episode: WiltedMacEpisode, alreadyClaimed: Bool = false,
-                         ignoringExisting: Bool = false, automaticRecovery: Bool = false) {
+                         ignoringExisting: Bool = false, automaticRecovery: Bool = false,
+                         automatic: Bool = false) {
 #if canImport(WiltedProducer)
         guard !isClosingTemporaryState, podcastDownloadTasks[episode.id] == nil,
               let coordinator = podcastDownloadCoordinator,
               let itemID = try? ItemID(rawValue: episode.id) else { return }
+        if automatic, automaticWorkIsHeld(episode.id) { return }
         // The download is the request: its place in the preparation line is
         // taken now, so a later download that finishes first still queues
         // behind it.
@@ -97,7 +102,7 @@ extension WiltedMacModel {
                     ownedTicket = admitted
                 } else {
                     if !alreadyClaimed {
-                        let won = await self.claimDownload(itemID)
+                        let won = await self.claimDownload(itemID, automatic: automatic)
                         guard won else {
                             self.podcastOperationMessage = "\(episode.title) is already downloading."
                             self.updateEpisode(episode.id) { $0.downloadState = .notDownloaded }
@@ -188,23 +193,7 @@ extension WiltedMacModel {
                 // requested the row has no state to keep and nothing names it
                 // as pending. It reports what it will do straight away, so the
                 // reload below has something to preserve.
-                if await self.automaticPreparationSuppressed(for: episode) {
-                    // A feed-level Off is a hard stop, including for the global
-                    // prepare-everything override. Explicit Prepare never
-                    // passes through here.
-                    if self.preparationRequestSequences[episode.id] != nil {
-                        self.withdrawPreparationRequest(for: episode.id)
-                    }
-                } else if self.automationSettings.prepareEverythingDownloaded,
-                   self.podcastQueueIDs.contains(episode.id) {
-                    // The override prepares immediately, exactly as the group's
-                    // Prepare all does, and only for an episode waiting on the
-                    // Larder; with it off the processing policy's own plan
-                    // (including off-peak) still governs the arrival.
-                    self.prepareEpisode(episode)
-                } else {
-                    self.admitAutomaticPreparation(for: episode, at: Date())
-                }
+                await self.applyArrivalPreparationVerdict(for: episode)
                 // The file has landed and its preparation is under way, so a
                 // reload that fails from here leaves stale rows -- it does not
                 // mean the download failed, and the catch below would say so.
@@ -284,14 +273,76 @@ extension WiltedMacModel {
     /// is not started a second time. A settled record does not block: retrying
     /// a failure from the row is exactly what that path is for.
 #if canImport(WiltedProducer)
-    /// True when the episode's feed has Auto prepare set to Off. Only that
-    /// explicit per-feed choice suppresses automatic preparation; Use global
-    /// leaves the processing policy in charge, as it always has.
+    /// True when feed policy or a possible-duplicate flag suppresses automatic
+    /// preparation. Use global leaves processing policy in charge. Explicit
+    /// Download and Prepare actions never pass through here.
     func automaticPreparationSuppressed(for episode: WiltedMacEpisode) async -> Bool {
+        await automaticPreparationVerdict(for: episode) != .allowed
+    }
+
+    /// `suppressed` is a decision about this episode: a flag on it, or its feed's policy. `unknown`
+    /// is a flag list that could not be read, which is nothing to go on about this episode. It
+    /// blocks new automatic work like `suppressed`, but a caller that would give up waiting work
+    /// must leave it alone.
+    enum AutomaticPreparationVerdict { case allowed, suppressed, unknown }
+
+    func automaticPreparationVerdict(for episode: WiltedMacEpisode) async -> AutomaticPreparationVerdict {
+        if !fixtureMode {
+            guard let store else { return .unknown }
+            // The flag is read from the store each time.
+            guard let held = await refreshPossibleDuplicateHolds(from: store) else { return .unknown }
+            if held.contains(episode.id) { return .suppressed }
+        }
         guard let store, let rawFeedID = episode.feedID,
-              let feedID = try? ItemID(rawValue: rawFeedID),
-              let policy = try? await store.feedAutomationPolicy(for: feedID) else { return false }
-        return EpisodeAdmissionService.suppressesAutomaticPreparation(policy)
+              let feedID = try? ItemID(rawValue: rawFeedID) else { return .allowed }
+        guard let policy = try? await store.feedAutomationPolicy(for: feedID) else { return .allowed }
+        return EpisodeAdmissionService.suppressesAutomaticPreparation(policy) ? .suppressed : .allowed
+    }
+
+    /// Decides what a landed download's preparation does, from the flag list and the feed's policy.
+    /// An unreadable flag list says nothing about this episode, so its waiting request is left in
+    /// place, nothing new is admitted, and the episode is remembered so the ticker asks again.
+    func applyArrivalPreparationVerdict(for episode: WiltedMacEpisode) async {
+        let verdict = await automaticPreparationVerdict(for: episode)
+        if verdict == .unknown {
+            arrivalPreparationsAwaitingFlagList.insert(episode.id)
+            return
+        }
+        arrivalPreparationsAwaitingFlagList.remove(episode.id)
+        if verdict == .suppressed {
+            // A feed-level Off is a hard stop, including for the global
+            // prepare-everything override. Explicit Prepare never
+            // passes through here.
+            if preparationRequestSequences[episode.id] != nil {
+                withdrawPreparationRequest(for: episode.id)
+            }
+        } else if automationSettings.prepareEverythingDownloaded,
+                  podcastQueueIDs.contains(episode.id) {
+            // The override prepares immediately, exactly as the group's
+            // Prepare all does, and only for an episode waiting on the
+            // Larder; with it off the processing policy's own plan
+            // (including off-peak) still governs the arrival.
+            prepareEpisode(episode, automatic: true)
+        } else {
+            admitAutomaticPreparation(for: episode, at: Date())
+        }
+    }
+
+    /// Asks again for each landed download whose flag list could not be read. Called every tick.
+    func retryArrivalPreparationsAwaitingFlagList() async {
+        for id in arrivalPreparationsAwaitingFlagList.sorted() {
+            guard !isClosingTemporaryState else { return }
+            // Only a settled episode leaves the list: gone, removed, prepared or already preparing.
+            guard let episode = episodes.first(where: { $0.id == id }), episode.removalKind == nil,
+                  !episode.preparationState.isPrepared, podcastPreparationTasks[id] == nil else {
+                arrivalPreparationsAwaitingFlagList.remove(id)
+                continue
+            }
+            // The row may not show the landed download yet (the reload after arrival is still
+            // running). That is not a reason to forget the episode: wait for the next tick.
+            guard episode.downloadState == .completed else { continue }
+            await applyArrivalPreparationVerdict(for: episode)
+        }
     }
 
     /// Writes the pending preparation ticket for a number reserved by
@@ -310,9 +361,11 @@ extension WiltedMacModel {
         )
     }
 
-    private func claimDownload(_ episodeID: ItemID) async -> Bool {
+    private func claimDownload(_ episodeID: ItemID, automatic: Bool) async -> Bool {
         guard let store else { return false }
-        return (try? await store.claimPodcastDownload(episodeID: episodeID, scope: .notInFlight)) ?? false
+        return (try? await store.claimPodcastDownload(
+            episodeID: episodeID, scope: automatic ? .automaticNotInFlight : .notInFlight
+        )) ?? false
     }
 #endif
 
@@ -368,13 +421,17 @@ extension WiltedMacModel {
     /// Starts, defers, or skips preparation for an automatically downloaded
     /// episode. Manual preparation deliberately does not pass through here.
     func admitAutomaticPreparation(for episode: WiltedMacEpisode, at date: Date) {
+        guard !automaticWorkIsHeld(episode.id) else {
+            abandonAutomaticPreparation(for: episode.id)
+            return
+        }
         let settings = automationSettings
         let snapshot = Self.preparationPolicySnapshot(from: settings, feedID: episode.feedID, preferences: preferences)
         switch WiltedAutomationCoordinator.preparationPlan(
             processingPolicy: settings.processingPolicy, at: date
         ) {
         case .prepareNow:
-            prepareEpisode(episode, policySnapshot: snapshot)
+            prepareEpisode(episode, policySnapshot: snapshot, automatic: true)
         case .skip:
             break
         case .deferUntilOffPeak:
@@ -436,6 +493,10 @@ extension WiltedMacModel {
     /// Re-evaluates admitted jobs against their saved deadline and window.
     /// Later Settings edits do not affect the stored admission policy.
     func startEligibleAutomaticPreparations(at date: Date = Date()) {
+        // An unreadable flag list leaves waiting work in place; try to read it again.
+        if possibleDuplicateHeldIDs == nil, !fixtureMode, let store {
+            Task { [weak self] in _ = await self?.refreshPossibleDuplicateHolds(from: store) }
+        }
         let eligible = deferredAutomaticPreparations.filter { deferred in
             (deferred.notBefore.map { date >= $0 } ?? true) && WiltedAutomationCoordinator.preparationPlan(
                 processingPolicy: deferred.processingPolicy, at: date
@@ -446,8 +507,12 @@ extension WiltedMacModel {
                 removeDeferredAutomaticPreparation(deferred.episodeID)
                 continue
             }
+            if automaticWorkIsHeld(deferred.episodeID) {
+                abandonAutomaticPreparation(for: deferred.episodeID)
+                continue
+            }
             preparationQueue.leave(deferred.episodeID)
-            if prepareEpisode(episode, policySnapshot: deferred.policySnapshot) {
+            if prepareEpisode(episode, policySnapshot: deferred.policySnapshot, automatic: true) {
                 removeDeferredAutomaticPreparation(deferred.episodeID, leaveQueue: false)
             } else {
                 preparationQueue.enter(WiltedMacWaitingPreparation(

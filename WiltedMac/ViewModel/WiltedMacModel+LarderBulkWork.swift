@@ -17,20 +17,25 @@ extension WiltedMacModel {
 
     /// The Larder's Available bulk action: the row's Download applied to the
     /// whole group, so acting on a group is one click rather than N.
-    func downloadAllAvailableLarderEpisodes() {
+    ///
+    /// `automatic` is true when a Settings switch applies it instead of a click;
+    /// that leaves possible-duplicate flags alone.
+    func downloadAllAvailableLarderEpisodes(automatic: Bool = false) {
         for episode in larderDownloadableEpisodes {
-            downloadEpisode(episode)
+            downloadEpisode(episode, automatic: automatic)
         }
     }
 
     /// The Larder's Downloaded bulk action: the row's own step applied to the
     /// group. Preparing stays in Downloaded with progress on each row.
-    func prepareAllDownloadedLarderEpisodes() {
+    func prepareAllDownloadedLarderEpisodes(automatic: Bool = false) {
         for episode in larderPreparableEpisodes {
-            if isDeferredForOffPeak(episode.id) {
+            if automatic, automaticWorkIsHeld(episode.id) {
+                abandonAutomaticPreparation(for: episode.id)
+            } else if isDeferredForOffPeak(episode.id) {
                 _ = prepareDeferredEpisodeNow(episode)
             } else {
-                prepareEpisode(episode)
+                prepareEpisode(episode, automatic: automatic)
             }
         }
     }
@@ -58,7 +63,7 @@ extension WiltedMacModel {
     /// yet downloaded or downloading gets the row's own Download.
     func downloadKeptEpisodes(inFeed feedID: String) {
         for episode in larderDownloadableEpisodes where episode.feedID == feedID {
-            downloadEpisode(episode)
+            downloadEpisode(episode, automatic: true)
         }
     }
 
@@ -69,7 +74,7 @@ extension WiltedMacModel {
     func prepareKeptDownloadedEpisodes(inFeed feedID: String, at date: Date = Date()) {
         for episode in larderPreparableEpisodes where episode.feedID == feedID && !isDeferredForOffPeak(episode.id) {
             if automationSettings.prepareEverythingDownloaded {
-                prepareEpisode(episode)
+                prepareEpisode(episode, automatic: true)
             } else {
                 admitAutomaticPreparation(for: episode, at: date)
             }

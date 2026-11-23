@@ -48,7 +48,16 @@ extension WiltedMacModel {
     /// durable, so nothing is lost by taking them one at a time, and a listener
     /// on a domestic connection would rather have one episode finish than six
     /// crawl.
-    func startClaimedDownload(_ episodeID: String) async throws {
+    ///
+    /// `automatic` marks recovery of a claim an earlier launch left behind: it is not the owner's
+    /// request just now, so a possible-duplicate flag on the episode holds it. The claim stays
+    /// where it is, and "Different" starts it.
+    func startClaimedDownload(_ episodeID: String, automatic: Bool = false) async throws {
+        // Not a quiet return: the coordinator would count it as downloaded and publish it. The held
+        // fault tells it nothing was started and nothing failed.
+        if automatic, await automaticWorkIsHeldFresh(episodeID) {
+            throw WiltedAutomationFault.downloadHeld(episodeID)
+        }
         // Throwing, never returning. Automation only runs once the library has
         // loaded, so a claim with no episode behind it is a genuine fault. A
         // silent return would count it as downloaded and clear a claim that no
@@ -56,7 +65,7 @@ extension WiltedMacModel {
         guard let episode = episodes.first(where: { $0.id == episodeID }) else {
             throw WiltedAutomationFault.claimedEpisodeMissing(episodeID)
         }
-        downloadEpisode(episode, alreadyClaimed: true)
+        downloadEpisode(episode, alreadyClaimed: true, automatic: automatic)
         // `downloadEpisode` guard-returns without inserting a task when the
         // coordinator is nil or the episode ID fails to parse. `nil?.value`
         // would turn that into a silent success; a claim with no task behind

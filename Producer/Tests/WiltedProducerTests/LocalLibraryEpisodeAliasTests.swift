@@ -301,7 +301,9 @@ extension LocalLibraryStoreTests {
         let admitted = try await store.admitPodcastEpisodes([freshFirst, freshSecond],
             admission: .incremental, claimingNewest: 2)
         XCTAssertEqual(Set(admitted.admission.newlyAdmitted), [first.itemID, second.itemID])
-        XCTAssertEqual(Set(admitted.claimed), [first.itemID, second.itemID])
+        // The two share title, time and length, so the second is flagged as a possible duplicate
+        // and left out of the automatic claim; the first is claimed as usual.
+        XCTAssertEqual(Set(admitted.claimed), [first.itemID])
         let freshState = try await store.podcastEpisodeLogicalState(for: first.itemID)
         XCTAssertEqual(freshState?.memberIDs, [first.itemID])
         XCTAssertFalse(try XCTUnwrap(freshState).isTerminal)

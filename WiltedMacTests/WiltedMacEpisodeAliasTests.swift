@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 import WiltedDomain
 import WiltedLibrary
-import WiltedProducer
+@testable import WiltedProducer
 @testable import WiltedMac
 
 @MainActor

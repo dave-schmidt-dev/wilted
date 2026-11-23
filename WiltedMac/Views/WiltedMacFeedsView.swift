@@ -126,6 +126,7 @@ struct WiltedMacFeedsView: View {
             .id("feeds-refresh")
             inbox.id("feeds-inbox")
             feedManagement.id("feeds-subscriptions")
+            WiltedMacLinkedEpisodesSection(model: model).id("feeds-linked-episodes")
             restorableEpisodes.id("feeds-off-list")
         }
         .sheet(item: $presentedSheet) { sheet in

@@ -33,8 +33,8 @@ struct WiltedMacLarderView: View {
     }
     @Environment(\.colorScheme) var colorScheme
     @State var dropTargetID: String?
-    /// The row whose possible duplicate review sheet is open.
-    @State var reviewTarget: WiltedMacEpisodeIdentityReviewRequest?
+    /// The reviewed unlink waiting for the owner's confirmation.
+    @State var unlinkReview: WiltedMacLinkedEpisodeUnlink?
     @State private var presentedShowSettings: LarderShowSettingsPresentation?
     @State private var feedPolicyBoard: WiltedMacFeedPolicyBoard
     @State private var searchFocusAction: (() -> Void)?
@@ -58,8 +58,15 @@ struct WiltedMacLarderView: View {
             }
         }
         .focusedSceneValue(\.wiltedLarderSearchFocus, searchFocusAction)
-        .sheet(item: $reviewTarget) { request in
-            WiltedMacEpisodeIdentityReview(model: model, anchorID: request.anchorID)
+        .alert(
+            "Unlink these episodes?",
+            isPresented: Binding(get: { unlinkReview != nil }, set: { if !$0 { unlinkReview = nil } }),
+            presenting: unlinkReview
+        ) { review in
+            Button("Unlink", role: .destructive) { Task { await model.unlinkEpisodes(review) } }
+            Button("Cancel", role: .cancel) {}
+        } message: { review in
+            Text(review.summary)
         }
         .sheet(item: $presentedShowSettings) { target in
             VStack(spacing: 0) {

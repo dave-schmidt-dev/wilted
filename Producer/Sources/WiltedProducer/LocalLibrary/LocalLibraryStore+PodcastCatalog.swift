@@ -60,11 +60,14 @@ extension LocalLibraryStore {
                                   createdAt: Timestamp(record.createdAt))
     }
 
-    public func podcastEpisodes(for feedID: ItemID? = nil) throws -> [PodcastEpisode] {
+    public func podcastEpisodes(for feedID: ItemID? = nil, includeRemoved: Bool = true) throws -> [PodcastEpisode] {
         let context = ModelContext(container)
         let links = try episodeLinks(in: context)
         return try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
-            .filter { feedID == nil || $0.feedID == feedID!.rawValue }
+            .filter { record in
+                let matchesFeed = feedID.map { $0.rawValue == record.feedID } ?? true
+                return matchesFeed && (includeRemoved || (record.retiredAt == nil && record.removalKind == nil))
+            }
             .sorted { ($0.publishedTime ?? $0.createdAt) > ($1.publishedTime ?? $1.createdAt) }
             .compactMap { Self.decodePodcastEpisode($0, link: links[$0.id]) }
     }

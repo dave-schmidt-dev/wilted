@@ -20,9 +20,13 @@ struct AssociationMemberState: Codable {
 }
 
 extension LocalLibraryStore {
-    /// Builds an exact preview from an explicitly confirmed owner pair. Shared
-    /// URLs, dates, titles, durations and hashes are not accepted as proof.
-    public func previewEpisodeAssociation(
+    /// Builds an exact preview from an explicitly confirmed owner pair.
+    ///
+    /// Creating a link is not offered outside the package: a possible duplicate is answered on
+    /// its own row and nothing links two episodes. Only links stored by an earlier version
+    /// remain, and `previewEpisodeAssociationReversal` below is how they are undone. This and
+    /// `applyEpisodeAssociation` stay for the package's own tests of what a link does.
+    func previewEpisodeAssociation(
         confirming confirmation: PodcastEpisodePairConfirmation,
         representativeID: ItemID
     ) throws -> PodcastEpisodeAssociationPreview {
@@ -46,7 +50,7 @@ extension LocalLibraryStore {
     /// Applies only an unchanged store-produced preview. The sole save inserts
     /// association history; raw identities, lifecycle, queue and media survive.
     @discardableResult
-    public func applyEpisodeAssociation(
+    func applyEpisodeAssociation(
         _ preview: PodcastEpisodeAssociationPreview, at: Timestamp = Timestamp(Date())
     ) throws -> PodcastEpisodeAssociation {
         let context = ModelContext(container)
@@ -63,10 +67,20 @@ extension LocalLibraryStore {
             associationID: UUID(), feedID: preview.confirmation.feedID.rawValue,
             representativeID: preview.representativeID.rawValue,
             members: try Self.associationEncoder().encode(ids),
-            evidence: try Self.associationEncoder().encode(preview.confirmation), createdAt: at.date,
+            evidence: try EpisodeAssociationEvidence.ownerConfirmed(preview.confirmation).encode(), createdAt: at.date,
             capturedMemberState: preview.capturedMembers
         )
         context.insert(record)
+        for pending in records {
+            guard !pending.isActive, pending.reversedAt == nil,
+                  pending.feedID == preview.confirmation.feedID.rawValue,
+                  ids.contains(where: { $0.rawValue == pending.representativeID }),
+                  let heldMembers = try? JSONDecoder().decode([ItemID].self, from: pending.members),
+                  ids.contains(where: { $0.rawValue != pending.representativeID && heldMembers.contains($0) }) else {
+                continue
+            }
+            context.delete(pending)
+        }
         try context.save()
         return try Self.decodeAssociation(record)
     }
@@ -125,6 +139,10 @@ extension LocalLibraryStore {
         guard includingReversed else { return lookup.associations }
         let reversed = try context.fetch(FetchDescriptor<AssociationRecord>()).filter { !$0.isActive }
             .compactMap { record -> PodcastEpisodeAssociation? in
+                if let evidence = try? Self.decodeEpisodeAssociationEvidence(record.evidence),
+                   evidence.isPossibleDuplicateFlag {
+                    return nil
+                }
                 do { return try Self.decodeAssociation(record) }
                 catch { EpisodeAssociationReadLookup.reportInvalid(record.associationID); return nil }
             }
@@ -140,7 +158,7 @@ extension LocalLibraryStore {
     /// refuses same-ID, unavailable, or cross-feed pairs. Other metadata
     /// candidates and existing associations are reported as ambiguity for the
     /// owner to read; they never decide anything on their own.
-    public func podcastEpisodeAssociationComparison(
+    func podcastEpisodeAssociationComparison(
         first firstID: ItemID, second secondID: ItemID
     ) throws -> PodcastEpisodeAssociationComparison {
         guard firstID != secondID else { throw PodcastEpisodeAssociationError.invalidPair }
@@ -285,8 +303,7 @@ extension LocalLibraryStore {
     }
 
     /// The pair matches only when title, publication date and duration all
-    /// agree -- the audit's own discovery rule. Similar metadata is a hint for
-    /// the owner, never proof of identity.
+    /// agree -- the audit's own discovery rule. This read reports exact agreement for a pair already selected for review.
     static func comparisonMetadataMatches(_ left: PodcastEpisode, _ right: PodcastEpisode) -> Bool {
         left.title == right.title
             && left.publishedTime != nil && left.publishedTime == right.publishedTime
@@ -396,54 +413,4 @@ extension LocalLibraryStore {
         )
     }
 
-    private static func validateAssociationPair(
-        _ confirmation: PodcastEpisodePairConfirmation, representativeID: ItemID
-    ) throws -> [ItemID] {
-        guard confirmation.first != confirmation.second,
-              representativeID == confirmation.first || representativeID == confirmation.second else {
-            throw PodcastEpisodeAssociationError.invalidPair
-        }
-        return [confirmation.first, confirmation.second].sorted { $0.rawValue < $1.rawValue }
-    }
-
-    private static func refuseAssociationOverlap(
-        _ ids: [ItemID], confirmationID: UUID, records: [AssociationRecord]
-    ) throws {
-        for record in records {
-            let association = try decodeAssociation(record)
-            guard association.confirmation.confirmationID != confirmationID else {
-                throw PodcastEpisodeAssociationError.confirmationAlreadyUsed
-            }
-            if association.isActive, !Set(association.memberIDs).isDisjoint(with: ids) {
-                throw PodcastEpisodeAssociationError.overlappingAssociation
-            }
-        }
-    }
-
-    private static func associationEncoder() -> JSONEncoder {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        return encoder
-    }
-
-    private static func encodeAssociationState(_ records: [AssociationRecord]) throws -> Data {
-        try associationEncoder().encode(records.map(decodeAssociation)
-            .sorted { $0.associationID.uuidString < $1.associationID.uuidString })
-    }
-
-    static func decodeAssociation(_ record: LocalLibrarySchemaV20Models.EpisodeAssociationRecord) throws -> PodcastEpisodeAssociation {
-        let members = try JSONDecoder().decode([ItemID].self, from: record.members)
-        let confirmation = try JSONDecoder().decode(PodcastEpisodePairConfirmation.self, from: record.evidence)
-        guard let feedID = try? ItemID(rawValue: record.feedID),
-              let representative = try? ItemID(rawValue: record.representativeID), record.version > 0,
-              feedID == confirmation.feedID,
-              members == (try validateAssociationPair(confirmation, representativeID: representative)) else {
-            throw PodcastEpisodeAssociationError.corruptAssociation
-        }
-        return PodcastEpisodeAssociation(
-            associationID: record.associationID, feedID: feedID, representativeID: representative,
-            memberIDs: members, confirmation: confirmation, version: record.version, isActive: record.isActive,
-            createdAt: Timestamp(record.createdAt), reversedAt: record.reversedAt.map(Timestamp.init)
-        )
-    }
 }

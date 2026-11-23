@@ -536,8 +536,10 @@ extension LocalLibraryStoreTests {
     }
 
     /// Two feed items with different GUIDs stay two episodes even when title,
-    /// publication date, and duration all match. Only a repeated canonical ID
-    /// collapses; metadata similarity is never association proof.
+    /// publication date, and duration all match; only a repeated canonical ID
+    /// collapses. Deliberate rule change from the base test: the second twin
+    /// is now flagged as a possible duplicate, so both are saved but only the
+    /// first is claimed for automatic download.
     func testDistinctGUIDTwinsRemainSeparateWithoutAssociationProof() async throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let origin = Date(timeIntervalSince1970: 1_700_000_000)
@@ -563,9 +565,11 @@ extension LocalLibraryStoreTests {
 
         let result = try await store.admitPodcastEpisodes([first, second], admission: .incremental, claimingNewest: 5)
         XCTAssertEqual(Set(result.admission.saved), Set([first.itemID, second.itemID]))
-        XCTAssertEqual(Set(result.claimed), Set([first.itemID, second.itemID]))
+        XCTAssertEqual(result.claimed, [first.itemID])
         let storedTwins = try await store.podcastEpisodes(for: feedID)
         XCTAssertEqual(storedTwins.count, 2)
+        let held = try await store.pendingPodcastEpisodeIdentityReviews(in: feedID)
+        XCTAssertEqual(Set(held.map(\.incomingID)), Set([second.itemID]))
     }
 
 }

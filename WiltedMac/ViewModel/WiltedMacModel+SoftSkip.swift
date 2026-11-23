@@ -104,14 +104,6 @@ extension WiltedMacModel {
         }
     }
 
-    /// The episodes the player has loaded or the model names as playing, with their linked members.
-    /// Audio starts before any of it is saved, so a cleanup that deletes audio reads this at the last
-    /// moment and passes it to the store, which cannot see the live player.
-    func livePlaybackEpisodeIDs() -> Set<ItemID> {
-        let named = [playback?.itemID?.rawValue, currentPodcastEpisodeID].compactMap { $0 }
-        return Set(named.flatMap { logicalMemberIDs($0) }.compactMap { try? ItemID(rawValue: $0) })
-    }
-
     /// Closes every Skip an earlier launch left open. No offer exists any more, so none can be taken
     /// back. A Skip whose offer is still open in this run is left to that offer.
     func closeAbandonedSoftSkips(in store: LocalLibraryStore) async {

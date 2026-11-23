@@ -218,7 +218,13 @@ extension WiltedMacModel {
         let manual = Dictionary(uniqueKeysWithValues: decisions.filter { $0.source == .manual }.map {
             ($0.episodeID.rawValue, $0.decision == .keep ? FeedManualDecision.keep : .skip)
         })
-        let live = feedEpisodes.filter { $0.removalKind == nil && $0.feedID == feedID.rawValue }
+        // A flagged lookalike is the owner's to decide: no rule or policy keeps, skips or
+        // downloads it, and it does not take a kept slot from a real episode. A failed read
+        // throws, so nothing is admitted on a guess.
+        let held = Set(try await store.podcastEpisodeIdentityReviewHeldIDs(in: feedID).map(\.rawValue))
+        let live = feedEpisodes.filter {
+            $0.removalKind == nil && $0.feedID == feedID.rawValue && !held.contains($0.id)
+        }
         let queued = Set(try await store.podcastQueueState().episodeIDs.map(\.rawValue))
         let keptDecisions = Set(decisions.filter { $0.decision == .keep }.map(\.episodeID.rawValue))
         let keptRaw = queued.union(keptDecisions).intersection(live.map(\.id))
@@ -244,7 +250,8 @@ extension WiltedMacModel {
                 // left undecided. The store also refuses any episode with a
                 // manual decision.
                 guard let ruleID = admission.ruleID, newlySaved.contains(admission.episodeID),
-                      try await store.retireEpisodeBySkipRule(id, ruleID: ruleID, at: Timestamp(Date())) else { continue }
+                      try await store.retireEpisodeBySkipRule(
+                          id, ruleID: ruleID, at: Timestamp(Date()), protecting: livePlaybackEpisodeIDs()) else { continue }
                 // Withdrawing writes a cancelled ticket even when none existed,
                 // so only an episode actually waiting in the line is withdrawn.
                 if preparationRequestSequences[admission.episodeID] != nil {
@@ -295,24 +302,39 @@ extension WiltedMacModel {
         return result
     }
 
+    /// What one committed admission did: whether the store wrote it, and whether this call took
+    /// the download claim. A refusal (a flag, the kept limit) writes nothing and claims nothing.
+    struct AdmissionOutcome: Equatable {
+        let written: Bool
+        let claimed: Bool
+    }
+
     /// Commits one admission: decision, queue entry and tickets in one write,
     /// then adopts the preparation request and takes the download claim.
     /// Returns true when this call took the download claim.
     func commitAdmission(
         _ admission: EpisodeAdmissionService.Admission, as id: ItemID, decidedAt: Timestamp, store: LocalLibraryStore
     ) async throws -> Bool {
+        try await commitAdmissionOutcome(admission, as: id, decidedAt: decidedAt, store: store).claimed
+    }
+
+    /// `commitAdmission` that also says whether the store refused the write.
+    func commitAdmissionOutcome(
+        _ admission: EpisodeAdmissionService.Admission, as id: ItemID, decidedAt: Timestamp, store: LocalLibraryStore
+    ) async throws -> AdmissionOutcome {
         let tickets: [WorkTicket]
         do { tickets = try await store.admitEpisode(.init(
             episodeID: id, decision: admission.decision, source: admission.source,
             ruleID: admission.ruleID, decidedAt: decidedAt
         ), enqueue: admission.decision == .keep, workTicketKinds: admission.workTicketKinds,
             requestedAt: Timestamp(manualCompletionNow()), automaticKeptLimit: admission.automaticKeptLimit)
-        } catch is AutomaticEpisodeAdmissionError { return false }
+        } catch is AutomaticEpisodeAdmissionError { return AdmissionOutcome(written: false, claimed: false) }
         for ticket in tickets where ticket.kind == .podcastPreparation {
             adoptAdmittedPreparation(sequence: ticket.requestSequence, for: admission.episodeID)
         }
-        return admission.workTicketKinds.contains(.podcastDownload)
+        let claimed = admission.workTicketKinds.contains(.podcastDownload)
             ? try await store.claimPodcastDownload(episodeID: id) : false
+        return AdmissionOutcome(written: true, claimed: claimed)
     }
 
     /// Starts the transfers whose claims `commitAdmission` took.
@@ -365,6 +387,9 @@ extension WiltedMacModel {
     /// the global override) asks for the download and the episode needs one.
     func commitManualKeep(_ captured: [WiltedMacEpisode], store: LocalLibraryStore, at: Timestamp = Timestamp(Date())) async throws -> ManualKeepOutcome {
         var outcome = ManualKeepOutcome()
+        // The owner's Keep always applies. A flagged lookalike is not downloaded for them
+        // until they have answered the flag; a failed read counts every episode as flagged.
+        let held = try? await store.podcastEpisodeIdentityReviewHeldIDs()
         for episode in captured {
             guard episode.removalKind == nil, let id = try? ItemID(rawValue: episode.id),
                   try await store.podcastEpisode(for: id) != nil else {
@@ -377,6 +402,7 @@ extension WiltedMacModel {
                 feedPolicy = try await store.feedAutomationPolicy(for: feedID)
             }
             let download = !wasKept && Self.larderGroup(for: episode) == .available
+                && !(held?.contains(id) ?? true)
                 && EpisodeAdmissionService.shouldDownloadAfterManualKeep(
                     feedPolicy: feedPolicy, globalDownloadEverything: automationSettings.downloadEverythingOnLarder
                 )

@@ -393,9 +393,8 @@ final class WiltedMacModel {
     @ObservationIgnored var importedPositionLibraryReloadTask: Task<Void, Never>?
     @ObservationIgnored var importedPositionLibraryReloadTargetEpoch: UInt64 = 0
     @ObservationIgnored var importedPositionLibraryReloadPending = false
-    /// Exact Feed rows whose durable decision has started. This is separate
-    /// from Larder admission retry state because a decision failure stays
-    /// selected and retryable instead of becoming an automatic arrival.
+    /// Exact Feed rows whose durable decision has started. Separate from Larder admission retry state:
+    /// a decision failure stays selected and retryable instead of becoming an automatic arrival.
     var pendingFeedDecisionIDs: Set<String> = []
     /// Soft Skips whose Undo offer is still open in this run, so a launch-time cleanup leaves them alone.
     @ObservationIgnored var openSoftSkips: [OpenSoftSkip] = []
@@ -405,8 +404,7 @@ final class WiltedMacModel {
     var offeredArticles: [WiltedMacOfferedArticle] = []
     /// Article feeds marked News: headline sources only. Their posts are never offered or kept.
     var newsFeedIDs: Set<String> = []
-    /// The final Feed writer in admission order. Feed decisions await this
-    /// chain, while unrelated subscription work remains independently live.
+    /// The last Feed writer in admission order: Feed decisions await it; other subscription work stays live.
     var feedDecisionWriteTailToken: UUID?
     /// Nil in production. Regression tests use these deterministic seams to
     /// observe the pre-write and committed-but-not-published boundaries.
@@ -528,9 +526,15 @@ final class WiltedMacModel {
     /// The snapshot belongs to the job rather than Settings, so changing a
     /// preference cannot rewrite work already waiting for its window.
     var deferredAutomaticPreparations: [DeferredAutomaticPreparation] = []
-    /// One preparation runs at a time; the rest queue. See
-    /// `WiltedPreparationGate` for why concurrent runs cost work rather
-    /// than saving time.
+    /// Episodes flagged as possible duplicates, as of the last library read.
+    /// nil means the read failed or has not run, and automation then waits.
+    var possibleDuplicateHeldIDs: Set<String>?
+    /// Landed downloads whose automatic preparation waits for an unreadable flag list to read again.
+    var arrivalPreparationsAwaitingFlagList: Set<String> = []
+    /// Tests only: returns true to make a read of the flag list fail.
+    var possibleDuplicateHoldReadFailsForTesting: (@MainActor () -> Bool)?
+    /// One preparation runs at a time; the rest queue. See `WiltedPreparationGate`
+    /// for why concurrent runs cost work rather than saving time.
     let preparationGate = WiltedPreparationGate()
     var podcastRestoreTasks: [String: Task<Void, Never>] = [:]
     /// Removing advertisements is why preparation exists. Read once, when the

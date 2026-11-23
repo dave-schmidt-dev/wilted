@@ -153,10 +153,19 @@ extension WiltedMacModel {
     /// attempt failed. Every stage is reported as it happens: the speech and
     /// classification passes take minutes, and a silent window is
     /// indistinguishable from a hung one.
-    func prepareEpisode(_ episode: WiltedMacEpisode) {
+    ///
+    /// `automatic` is set by every caller that is not the owner pressing a
+    /// button; such work leaves a possible-duplicate flag alone.
+    func prepareEpisode(_ episode: WiltedMacEpisode, automatic: Bool = false) {
 #if canImport(WiltedProducer)
+        if automatic, automaticWorkIsHeld(episode.id) {
+            abandonAutomaticPreparation(for: episode.id)
+            return
+        }
         removeDeferredAutomaticPreparation(episode.id)
-        _ = prepareEpisode(episode, policySnapshot: preparationPolicySnapshot(for: episode))
+        _ = prepareEpisode(
+            episode, policySnapshot: preparationPolicySnapshot(for: episode), automatic: automatic
+        )
 #endif
     }
 
@@ -164,10 +173,13 @@ extension WiltedMacModel {
     func prepareEpisode(
         _ episode: WiltedMacEpisode,
         policySnapshot: PodcastPreparationPolicySnapshot,
-        again: PodcastPrepareAgainCandidate? = nil
+        again: PodcastPrepareAgainCandidate? = nil,
+        automatic: Bool = false
     ) -> Bool {
 #if canImport(WiltedProducer)
         guard podcastPreparationTasks[episode.id] == nil else { return false }
+        // Every automatic start passes this one check; the owner's own Prepare never does.
+        if automatic, automaticWorkIsHeld(episode.id) { return false }
         if fixtureMode {
             // No worker in fixture mode; the row still has to leave the state
             // it was in, so a UI test can tell a live control from a drawn one.

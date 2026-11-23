@@ -161,6 +161,26 @@ struct FeedRulesCounts: Sendable, Equatable {
     /// Changes to episodes that hold an automatic decision.
     var automaticChanges: Int { keepToSkip + skipToKeep }
     var totalChanges: Int { undecidedChanges + automaticChanges }
+
+    /// These counts with the four change kinds replaced by what was written. Apply drops a
+    /// change the listener or a possible-duplicate flag got to first, and the store can refuse
+    /// a skip, so the preview's own change counts can run ahead of what happened.
+    func replacingChanges(withApplied admissions: [FeedRulesAdmission]) -> FeedRulesCounts {
+        var counts = self
+        counts.keeps = 0
+        counts.skips = 0
+        counts.keepToSkip = 0
+        counts.skipToKeep = 0
+        for admission in admissions {
+            switch (admission.decision, admission.expected?.decision) {
+            case (.skip, .keep): counts.keepToSkip += 1
+            case (.skip, _): counts.skips += 1
+            case (.keep, .skip): counts.skipToKeep += 1
+            case (.keep, _): counts.keeps += 1
+            }
+        }
+        return counts
+    }
 }
 
 struct FeedRulesPlan: Sendable, Equatable {

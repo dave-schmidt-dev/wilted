@@ -49,6 +49,145 @@ extension WiltedMacFeedRulesTests {
         )
     }
 
+    /// A change the listener got to between the preview and Apply is left alone, and the report counts
+    /// what was written, not what the preview planned.
+    func testApplyReportsOnlyTheChangesItWrote() async throws {
+        let fixture = try await makeFixture(mixed)
+        fixture.editor.preview()
+        await fixture.editor.task?.value
+        let planned = try XCTUnwrap(fixture.editor.plan?.counts.totalChanges)
+        XCTAssertEqual(planned, 5)
+        try await fixture.store.save(episodeDecision: EpisodeDecisionRecord(
+            episodeID: try ItemID(rawValue: fixture.id("b")), decision: .keep, source: .manual,
+            decidedAt: Timestamp(Date())
+        ))
+        fixture.editor.apply()
+        await fixture.editor.task?.value
+        XCTAssertEqual(fixture.editor.message, "Applied 4 changes.")
+        let after = try await fixture.decisions()
+        XCTAssertEqual(after[fixture.id("b")]?.source, .manual, "the newer choice stands")
+    }
+
+    /// The owner decides an episode after Apply has read the decisions but before it writes. The store
+    /// refuses that Keep, so Apply neither counts it nor offers to undo it. "a" is planned as a rule Keep.
+    func testApplyDoesNotCountOrUndoAKeepTheStoreRefusedAtCommit() async throws {
+        let fixture = try await makeFixture(mixed)
+        let a = try ItemID(rawValue: fixture.id("a"))
+        let result = try await fixture.model.applyFeedRules(
+            feedID: fixture.feedID.rawValue, rules: fixture.editor.rules, progress: { _, _ in },
+            beforeWriteForTesting: {
+                try? await fixture.store.save(episodeDecision: EpisodeDecisionRecord(
+                    episodeID: a, decision: .skip, source: .manual, decidedAt: Timestamp(Date())
+                ))
+            }
+        )
+        XCTAssertEqual(result.counts.totalChanges, 4, "five were planned and one Keep was refused")
+        XCTAssertEqual(result.counts.keeps, 1, "the refused Keep is not in the Keep count; only \"c\" is a plain Keep (\"e\" counts as a Skip-to-Keep)")
+        let undo = try XCTUnwrap(result.undo)
+        XCTAssertNil(undo.applied[a], "the refused Keep is not offered an Undo")
+        XCTAssertNil(undo.prior[a])
+        let after = try await fixture.decisions()
+        XCTAssertEqual(after[fixture.id("a")]?.decision, .skip)
+        XCTAssertEqual(after[fixture.id("a")]?.source, .manual, "the owner's decision stands")
+    }
+
+    /// The owner Keeps an episode after Apply has read the decisions but before it writes. The store
+    /// refuses the rule Skip, so Apply neither counts it nor offers to undo it, and the owner's choice
+    /// stands. "b" is planned as a rule Skip.
+    func testApplyDoesNotCountOrUndoASkipTheStoreRefusedAtCommit() async throws {
+        let fixture = try await makeFixture(mixed)
+        let b = try ItemID(rawValue: fixture.id("b"))
+        let result = try await fixture.model.applyFeedRules(
+            feedID: fixture.feedID.rawValue, rules: fixture.editor.rules, progress: { _, _ in },
+            beforeWriteForTesting: {
+                try? await fixture.store.save(episodeDecision: EpisodeDecisionRecord(
+                    episodeID: b, decision: .keep, source: .manual, decidedAt: Timestamp(Date())
+                ))
+            }
+        )
+        XCTAssertEqual(result.counts.totalChanges, 4, "five were planned and one Skip was refused")
+        let undo = try XCTUnwrap(result.undo)
+        XCTAssertNil(undo.applied[b], "the refused Skip is not offered an Undo")
+        XCTAssertNil(undo.prior[b])
+        let after = try await fixture.decisions()
+        XCTAssertEqual(after[fixture.id("b")]?.decision, .keep)
+        XCTAssertEqual(after[fixture.id("b")]?.source, .manual, "the owner's decision stands")
+        let row = try XCTUnwrap(fixture.model.episodes.first { $0.id == b.rawValue })
+        XCTAssertNil(row.removalKind, "it was not retired")
+    }
+
+    /// Playback begins after Apply's last check and before its write. A skip would delete the audio,
+    /// so the episode is left as it was. "b" is planned as a rule Skip.
+    func testApplyDoesNotSkipAnEpisodeThatStartedPlayingDuringTheCommit() async throws {
+        let fixture = try await makeFixture(mixed)
+        let b = try ItemID(rawValue: fixture.id("b"))
+        let before = try await fixture.decisions()
+        let result = try await fixture.model.applyFeedRules(
+            feedID: fixture.feedID.rawValue, rules: fixture.editor.rules, progress: { _, _ in },
+            beforeWriteForTesting: { fixture.model.currentPodcastEpisodeID = b.rawValue }
+        )
+        XCTAssertEqual(result.counts.totalChanges, 4, "the skip that was left alone is not counted")
+        let undo = try XCTUnwrap(result.undo)
+        XCTAssertNil(undo.applied[b])
+        let after = try await fixture.decisions()
+        XCTAssertEqual(after[fixture.id("b")], before[fixture.id("b")], "its decision is unchanged")
+        let row = try XCTUnwrap(fixture.model.episodes.first { $0.id == b.rawValue })
+        XCTAssertNil(row.removalKind, "it was not retired")
+    }
+
+    /// Play Now and a playlist load the audio before saving anything: no queue marker, position or
+    /// finished record exists yet. The player holds "b", so Apply must still leave it alone.
+    func testApplyDoesNotSkipAnEpisodeTheLivePlayerHasLoadedBeforeAnythingWasSaved() async throws {
+        let fixture = try await makeFixture(mixed)
+        let b = try ItemID(rawValue: fixture.id("b"))
+        let controller = PlaybackController(store: fixture.store, backend: WiltedFixturePlaybackBackend(), deviceID: "fixture")
+        let revision = try AudioRevision(
+            itemID: b, revisionID: RevisionID(rawValue: "live-player"), durationSeconds: 60, byteCount: 1,
+            contentHash: "sha256:\(String(repeating: "b", count: 64))", mediaType: "audio/mp4",
+            createdAt: Timestamp(Date()), schemaVersion: 1)
+        let result = try await fixture.model.applyFeedRules(
+            feedID: fixture.feedID.rawValue, rules: fixture.editor.rules, progress: { _, _ in },
+            beforeWriteForTesting: {
+                fixture.model.playback = controller
+                try? await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/live-player.m4a"))
+            }
+        )
+        XCTAssertNil(try XCTUnwrap(result.undo).applied[b], "the skip that was left alone is not offered an Undo")
+        let row = try XCTUnwrap(fixture.model.episodes.first { $0.id == b.rawValue })
+        XCTAssertNil(row.removalKind, "it was not retired")
+        await fixture.model.close()
+    }
+
+    func testReplacingChangesCountsEachWrittenAdmissionByKind() throws {
+        var planned = FeedRulesCounts()
+        planned.keeps = 3
+        planned.skips = 2
+        planned.keepToSkip = 1
+        planned.protectedManual = 4
+        let rule = UUID()
+        func admission(_ decision: EpisodeDecision, was prior: EpisodeDecision?) throws -> FeedRulesAdmission {
+            let id = try ItemID.derivePodcastEpisode(
+                feedURL: URL(string: "https://x.example.test/f.xml")!, rssGUID: UUID().uuidString,
+                enclosureURL: URL(string: "https://media.example.test/\(UUID().uuidString).mp3")!
+            )
+            return FeedRulesAdmission(
+                episodeID: id.rawValue, decision: decision, source: .rule, ruleID: rule,
+                expected: try prior.map {
+                    EpisodeDecisionRecord(episodeID: id, decision: $0, source: .rule, ruleID: rule, decidedAt: Timestamp(Date()))
+                }
+            )
+        }
+        let counts = planned.replacingChanges(withApplied: [
+            try admission(.keep, was: nil), try admission(.skip, was: .keep), try admission(.keep, was: .skip),
+        ])
+        XCTAssertEqual(counts.keeps, 1)
+        XCTAssertEqual(counts.skips, 0)
+        XCTAssertEqual(counts.keepToSkip, 1)
+        XCTAssertEqual(counts.skipToKeep, 1)
+        XCTAssertEqual(counts.protectedManual, 4, "what is left alone is carried over")
+        XCTAssertEqual(counts.totalChanges, 3)
+    }
+
     // MARK: Apply's Keeps are automatic Keeps (4.2b)
 
     private var downloadAndPrepare: FeedAutomationPolicy {

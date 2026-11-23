@@ -45,8 +45,13 @@ extension WiltedMacModel {
         let records = try await store.decisions(forFeed: feedID)
         let queue = try await store.podcastQueueState()
         let stored = episodes.filter { $0.feedID == rawFeedID && $0.removalKind != .dismissed }
+        // A flagged lookalike is left as it is until the owner answers, so it is history here too:
+        // the preview counts only what Apply can change. A failed read throws.
+        let held = Set(try await store.podcastEpisodeIdentityReviewHeldIDs(in: feedID).map(\.rawValue))
         // Finished episodes are not candidates for refresh, so they are history here too.
-        let isHistory = { (episode: WiltedMacEpisode) in episode.removalKind != nil || episode.isPlayed }
+        let isHistory = { (episode: WiltedMacEpisode) in
+            episode.removalKind != nil || episode.isPlayed || held.contains(episode.id)
+        }
         let live = stored.filter { !isHistory($0) }
         let playing = Set([currentPodcastEpisodeID, queue.currentEpisodeID?.rawValue].compactMap { $0 })
         return FeedRulesInput(
@@ -95,14 +100,17 @@ extension WiltedMacModel {
     /// is the cancellable part; once it finishes, the commit runs to the end.
     func applyFeedRules(
         feedID: String, rules: EpisodeMatchRules, progress: @escaping FeedRulesProgress,
-        stepHook: (@Sendable (Int) async -> Void)? = nil
+        stepHook: (@Sendable (Int) async -> Void)? = nil,
+        beforeWriteForTesting: (() async -> Void)? = nil
     ) async throws -> FeedRulesApplyResult {
         let plan = try await previewFeedRules(feedID: feedID, rules: rules, progress: progress, stepHook: stepHook)
         try Task.checkCancellation()
-        return try await commitFeedRules(plan, feedID: feedID)
+        return try await commitFeedRules(plan, feedID: feedID, beforeWrite: beforeWriteForTesting)
     }
 
-    private func commitFeedRules(_ plan: FeedRulesPlan, feedID rawFeedID: String) async throws -> FeedRulesApplyResult {
+    private func commitFeedRules(
+        _ plan: FeedRulesPlan, feedID rawFeedID: String, beforeWrite: (() async -> Void)? = nil
+    ) async throws -> FeedRulesApplyResult {
         guard let store, !isClosingTemporaryState, let feedID = try? ItemID(rawValue: rawFeedID) else {
             throw CancellationError()
         }
@@ -113,10 +121,18 @@ extension WiltedMacModel {
             uniquingKeysWith: { first, _ in first }
         )
         let startedNow = Set(episodes.filter { hasStartedEpisode($0) }.map(\.id))
+        // A flagged lookalike is left as it is, so Apply cannot keep, skip or fetch it before
+        // the owner answers. A failed read throws and applies nothing.
+        let held = Set(try await store.podcastEpisodeIdentityReviewHeldIDs(in: feedID).map(\.rawValue))
         let admissions = plan.admissions.filter {
             current[$0.episodeID] == $0.expected && !startedNow.contains($0.episodeID)
+                && !held.contains($0.episodeID)
         }
-        guard !admissions.isEmpty else { return FeedRulesApplyResult(counts: plan.counts, undo: nil) }
+        guard !admissions.isEmpty else {
+            return FeedRulesApplyResult(counts: plan.counts.replacingChanges(withApplied: []), undo: nil)
+        }
+        // The window between the last read and the first write, where the listener can still decide.
+        await beforeWrite?()
 
         let priorQueue = try await store.podcastQueueState()
         let decidedAt = Timestamp(Date())
@@ -138,6 +154,10 @@ extension WiltedMacModel {
         do {
             for admission in admissions {
                 let id = try ItemID(rawValue: admission.episodeID)
+                // A skip deletes the episode's audio, so playback is checked again right here, after
+                // every read and write before this one: something that began playing since the
+                // reads above is left alone, and so is anything whose state cannot be read.
+                if admission.decision == .skip, await hasStartedSincePreview(id, store: store) { continue }
                 prior[id] = admission.expected
                 let record = EpisodeDecisionRecord(
                     episodeID: id, decision: admission.decision, source: admission.source,
@@ -148,7 +168,8 @@ extension WiltedMacModel {
                     // skips only by rule; false means it was removed or decided
                     // by the listener since the read above, so it is left alone.
                     guard let ruleID = admission.ruleID,
-                          try await store.retireEpisodeBySkipRule(id, ruleID: ruleID, at: decidedAt) else {
+                          try await store.retireEpisodeBySkipRule(
+                              id, ruleID: ruleID, at: decidedAt, protecting: livePlaybackEpisodeIDs()) else {
                         prior.removeValue(forKey: id)
                         continue
                     }
@@ -158,7 +179,14 @@ extension WiltedMacModel {
                         episodeID: admission.episodeID, decision: admission.decision, source: admission.source,
                         ruleID: admission.ruleID, workTicketKinds: kinds
                     )
-                    if try await commitAdmission(request, as: id, decidedAt: decidedAt, store: store) { claimed.append(admission.episodeID) }
+                    let outcome = try await commitAdmissionOutcome(request, as: id, decidedAt: decidedAt, store: store)
+                    // The store refused it (a flag set since the read above): nothing was written,
+                    // so it is neither counted nor offered an Undo.
+                    guard outcome.written else {
+                        prior.removeValue(forKey: id)
+                        continue
+                    }
+                    if outcome.claimed { claimed.append(admission.episodeID) }
                     if !kinds.isEmpty { issued.insert(id) }
                 }
                 applied[id] = record
@@ -191,13 +219,36 @@ extension WiltedMacModel {
             withdrawPreparationRequest(for: id.rawValue)
         }
         startClaimedDownloads(claimed)
+        // Counted from what was written, not from the preview. With nothing written there is
+        // nothing to undo, and the editor says nothing needed to change.
+        let counts = plan.counts.replacingChanges(
+            withApplied: admissions.filter { (try? ItemID(rawValue: $0.episodeID)).flatMap { applied[$0] } != nil }
+        )
         return FeedRulesApplyResult(
-            counts: plan.counts,
-            undo: FeedRulesUndo(
+            counts: counts,
+            undo: applied.isEmpty ? nil : FeedRulesUndo(
                 feedID: rawFeedID, prior: prior, applied: applied, priorQueue: priorQueue, postQueue: postQueue,
                 issued: issued, withdrawn: withdrawn, retired: retired
             )
         )
+    }
+
+    /// Whether the episode is playing, was played or is the queue's current one right now.
+    /// An unreadable queue counts as started.
+    private func hasStartedSincePreview(_ id: ItemID, store: LocalLibraryStore) async -> Bool {
+        if livePlaybackEpisodeIDs().contains(id) { return true }
+        if let row = episodes.first(where: { $0.id == id.rawValue }), hasStartedEpisode(row) { return true }
+        if currentPodcastEpisodeID == id.rawValue { return true }
+        guard let queue = try? await store.podcastQueueState() else { return true }
+        return queue.currentEpisodeID == id
+    }
+
+    /// The episodes the player has loaded or the model names as playing, with their linked members.
+    /// Audio starts before any of it is saved, so a Skip or cleanup that deletes audio reads this at the last
+    /// moment and passes it to the store, which cannot see the live player.
+    func livePlaybackEpisodeIDs() -> Set<ItemID> {
+        let named = [playback?.itemID?.rawValue, currentPodcastEpisodeID].compactMap { $0 }
+        return Set(named.flatMap { logicalMemberIDs($0) }.compactMap { try? ItemID(rawValue: $0) })
     }
 
     // MARK: Undo

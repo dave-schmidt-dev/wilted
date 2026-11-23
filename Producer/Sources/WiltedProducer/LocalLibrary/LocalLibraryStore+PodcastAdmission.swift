@@ -89,7 +89,8 @@ extension LocalLibraryStore {
     /// separate claim row is one more thing that can disagree with it.
     ///
     /// Repeated canonical IDs are admitted and claimed once, at their first
-    /// publisher position; distinct IDs are never merged on metadata.
+    /// publisher position. Distinct IDs are checked against retained episodes
+    /// and same-feed peers using the feed identity rule before work is claimed.
     ///
     /// A `limit` of zero admits and claims nothing, which is what a manual
     /// download policy asks for, and `.backfill` claims nothing whatever the
@@ -113,17 +114,33 @@ extension LocalLibraryStore {
             )
         }
         let context = ModelContext(container)
-        let existing = Set(
-            try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>()).map(\.id)
-        )
+        context.autosaveEnabled = false
+        defer { if context.hasChanges { context.rollback() } }
+        let existingRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+        let existing = Set(existingRecords.map(\.id))
+        let feedIDs = Set(uniqueEpisodes.map { $0.feedID.rawValue })
+        let storedEpisodes = existingRecords
+            .filter { feedIDs.contains($0.feedID) }
+            .compactMap { Self.decodePodcastEpisode($0) }
         let admitted = try admittedPodcastEpisodes(
             uniqueEpisodes,
             admission: admission,
             initialMetadataLimit: initialMetadataLimit,
             in: context
         )
+        // Only an episode this refresh actually saves is checked and flagged, so a
+        // lookalike outside the horizon leaves neither a row nor an orphan flag.
+        let holds = Self.possibleDuplicateHolds(
+            incoming: admitted, existing: storedEpisodes, existingIDs: existing
+        )
         try upsertPodcastEpisodes(admitted, in: context)
         let newlyAdmitted = admitted.filter { !existing.contains($0.itemID.rawValue) }
+        for hold in holds {
+            try Self.stagePossibleDuplicateHold(
+                incoming: hold.incoming, candidateIDs: hold.candidateIDs,
+                reasons: hold.reasons, at: claimedAt, in: context
+            )
+        }
         var claimed: [ItemID] = []
         // Backfill never claims, whatever the caller asks for. Subscribing is
         // not a request to download a back catalogue, and refusing here means a
@@ -133,9 +150,13 @@ extension LocalLibraryStore {
                 try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
                     .map(\.episodeID)
             )
+            let identityHeldIDs = try Self.pendingPossibleDuplicateHeldIDs(in: context)
             // Newest first, so a capped policy takes the episodes a listener
             // would reach for rather than whichever order the feed parsed in.
-            let eligible = Self.newestFirst(newlyAdmitted.filter { !tracked.contains($0.itemID.rawValue) })
+            let eligible = Self.newestFirst(newlyAdmitted.filter {
+                !tracked.contains($0.itemID.rawValue)
+                    && !identityHeldIDs.contains($0.itemID.rawValue)
+            })
             for episode in eligible.prefix(limit) {
                 let claim = try PodcastDownload(episodeID: episode.itemID, status: .queued, updatedAt: claimedAt)
                 context.insert(LocalLibrarySchemaV10Models.PodcastDownloadRecord(claim))
@@ -163,7 +184,7 @@ extension LocalLibraryStore {
     /// actor makes the check and the insert one step.
     ///
     /// How much existing state blocks a new claim.
-    public enum PodcastDownloadClaimScope: Sendable {
+    public enum PodcastDownloadClaimScope: Sendable, Equatable {
         /// Automation: any download record at all means the episode is spoken
         /// for. A completed, failed, or cancelled transfer is a decision
         /// already made, and re-running it is the listener's call.
@@ -171,6 +192,9 @@ extension LocalLibraryStore {
         /// A deliberate request: only a transfer in flight blocks it, so
         /// retrying a failure from the row still works.
         case notInFlight
+        /// Automation repeating or recovering earlier work: like `notInFlight`,
+        /// but a possible-duplicate flag still refuses it.
+        case automaticNotInFlight
     }
 
     /// Claims one episode for download, or reports that something already holds it.
@@ -192,11 +216,15 @@ extension LocalLibraryStore {
         let existing = records.first(where: { $0.episodeID == episodeID.rawValue })
         switch scope {
         case .untouched:
+            guard try !Self.hasPendingPossibleDuplicateHold(for: episodeID, in: context) else { return false }
             let lookup = try EpisodeAssociationReadLookup(in: context)
             let state = lookup.state(for: episodeID)
             guard (state?.memberIDs.count ?? 0) <= 1 || state?.isTerminal != true else { return false }
             guard existing == nil else { return false }
-        case .notInFlight:
+        case .notInFlight, .automaticNotInFlight:
+            if scope == .automaticNotInFlight {
+                guard try !Self.hasPendingPossibleDuplicateHold(for: episodeID, in: context) else { return false }
+            }
             let inFlight = existing.flatMap { PodcastDownloadStatus(rawValue: $0.status) }
                 .map { $0 == .queued || $0 == .downloading } ?? false
             guard !inFlight else { return false }

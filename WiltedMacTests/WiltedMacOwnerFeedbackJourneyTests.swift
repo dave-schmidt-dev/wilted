@@ -59,8 +59,8 @@ final class WiltedMacOwnerFeedbackJourneyTests: XCTestCase {
         XCTAssertGreaterThan(WiltedMacHeadless.distinctColorCount(in: bitmap), 8, "Feeds rendered blank")
 
         let feeds = try WiltedMacHeadless.viewSource("WiltedMacFeedsView.swift")
-        XCTAssertNotNil(feeds.range(of: "inbox.id(\"feeds-inbox\")\n            feedManagement.id(\"feeds-subscriptions\")\n            restorableEpisodes.id(\"feeds-off-list\")"),
-                        "Off the list remains after the feed-management card")
+        XCTAssertNotNil(feeds.range(of: "inbox.id(\"feeds-inbox\")\n            feedManagement.id(\"feeds-subscriptions\")\n            WiltedMacLinkedEpisodesSection(model: model).id(\"feeds-linked-episodes\")\n            restorableEpisodes.id(\"feeds-off-list\")"),
+                        "Off the list remains after the feed-management card and the linked-episodes section")
         for identifier in ["wilted-feeds-metadata-", "wilted-feeds-keep-", "wilted-feeds-skip-"] {
             let sources = try ["WiltedMacFeedsComponents.swift", "WiltedMacFeedsView.swift"]
                 .map { try WiltedMacHeadless.viewSource($0) }.joined()
