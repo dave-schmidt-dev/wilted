@@ -63,7 +63,8 @@ private struct CompletionMember: Codable {
 extension LocalLibraryStore {
     /// One actor turn captures raw library state and its logical metadata without reentrant writes.
     public func podcastLibraryIdentitySnapshot(profile: PodcastLibrarySnapshotProfile = .full) throws -> (
-        library: PodcastLibrarySnapshot, associations: [PodcastEpisodeAssociation], states: [ItemID: PodcastEpisodeLogicalState]
+        library: PodcastLibrarySnapshot, associations: [PodcastEpisodeAssociation], states: [ItemID: PodcastEpisodeLogicalState],
+        heldDuplicateIDs: Set<ItemID>, duplicateWorkBlockedIDs: Set<ItemID>
     ) {
         let library = try podcastLibrarySnapshot(profile: profile)
         let lookup = try EpisodeAssociationReadLookup(in: ModelContext(container))
@@ -72,7 +73,7 @@ extension LocalLibraryStore {
         for association in associations {
             states[association.representativeID] = lookup.state(for: association.representativeID)
         }
-        return (library, associations, states)
+        return (library, associations, states, lookup.heldEpisodeIDs, lookup.duplicateWorkBlockedIDs)
     }
 
     /// Retains every raw member while exposing one logical capacity identity.

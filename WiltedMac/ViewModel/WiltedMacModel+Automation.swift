@@ -462,7 +462,7 @@ extension WiltedMacModel {
         // (resumable) are disjoint statuses, but a `Set` costs nothing and
         // means a future status change here can't silently double-claim.
         let resumable = try await store.resumablePodcastDownloads().map(\.episodeID.rawValue)
-        return Self.keptDownloadClaims(Set(unfinished + resumable), queueIDs: podcastQueueIDs)
+        return Self.keptDownloadClaims(Set(unfinished + resumable).subtracting(duplicateWorkBlockedIDs), queueIDs: podcastQueueIDs)
     }
 
     /// Only Keep grants authority to resume a durable download claim. This

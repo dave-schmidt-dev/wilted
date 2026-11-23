@@ -30,12 +30,14 @@ final class WiltedMacEpisodeIdentityReviewModel {
     enum Activity: Equatable {
         case comparingPair
         case preparingPreview
+        case savingSeparateDecision
         case applyingAssociation
         case preparingReversal
         case reversingAssociation
 
         var statusText: String {
             switch self {
+            case .savingSeparateDecision: return "Saving your decision…"
             case .comparingPair: return "Comparing the two episodes\u{2026}"
             case .preparingPreview: return "Preparing the pair preview\u{2026}"
             case .applyingAssociation: return "Applying the association\u{2026}"
@@ -51,6 +53,8 @@ final class WiltedMacEpisodeIdentityReviewModel {
         let rssGUID: String?
         let publishedAt: Date?
         let durationSeconds: TimeInterval?
+        var reason = ""
+        var representativeID: String?
     }
 
     /// The pair the owner explicitly compared: anchor first, candidate second.
@@ -61,7 +65,7 @@ final class WiltedMacEpisodeIdentityReviewModel {
     }
 
     static let confirmationRequiredMessage =
-        "Choose the exact pair and representative, compare them, then confirm the pair before applying."
+        "Review this pair and choose Same episode before applying."
     static let reversalRequiredMessage =
         "Review the reversal and its per-member warnings before reversing."
     static let staleReviewMessage =
@@ -86,6 +90,7 @@ final class WiltedMacEpisodeIdentityReviewModel {
     private(set) var approvalPreview: PodcastEpisodeAssociationPreview?
     private(set) var reversalPreview: PodcastEpisodeAssociationReversalPreview?
     private(set) var message: String?
+    private(set) var separateDecisionID: UUID?
     private(set) var errorMessage: String?
     private(set) var activity: Activity?
 
@@ -155,7 +160,7 @@ final class WiltedMacEpisodeIdentityReviewModel {
     func setVisibleCandidate(_ id: String?) {
         guard id != visibleCandidateID else { return }
         visibleCandidateID = id
-        visibleRepresentativeID = anchorID
+        visibleRepresentativeID = candidates.first { $0.id == id }?.representativeID ?? anchorID
         invalidateSelectionReview()
     }
 
@@ -207,6 +212,7 @@ final class WiltedMacEpisodeIdentityReviewModel {
             }
             let episodes = try await store.podcastEpisodes(for: anchor.feedID)
             let associations = try await store.episodeAssociations()
+            let dispositions = try await store.episodeReviewPairs(for: anchorItemID)
             try Task.checkCancellation()
             guard generation == readGeneration else { return }
             anchorTitle = anchor.title
@@ -214,29 +220,21 @@ final class WiltedMacEpisodeIdentityReviewModel {
                 id: anchor.itemID.rawValue, title: anchor.title, rssGUID: anchor.rssGUID,
                 publishedAt: anchor.publishedTime?.date, durationSeconds: anchor.durationSeconds
             )
-            candidates = episodes
-                .filter { $0.itemID.rawValue != anchorID }
-                .map { Candidate(
-                    id: $0.itemID.rawValue, title: $0.title, rssGUID: $0.rssGUID,
-                    publishedAt: $0.publishedTime?.date, durationSeconds: $0.durationSeconds
-                ) }
-                .sorted { left, right in
-                    let leftDate = left.publishedAt ?? .distantPast
-                    let rightDate = right.publishedAt ?? .distantPast
-                    return leftDate == rightDate ? left.title < right.title : leftDate > rightDate
-                }
+            activeAssociation = associations.first { $0.memberIDs.contains(anchorItemID) }
+            separateDecisionID = dispositions.lastSeparateDecision
+            candidates = Self.rankedCandidates(anchor: anchor, episodes: episodes, heldPairs: dispositions.held, excluded: dispositions.excluded,
+                                               activeAssociation: activeAssociation)
             titles = Self.memberLabels(for: [anchorCandidate] + candidates)
-            activeAssociation = associations.first { association in
-                association.memberIDs.contains { $0.rawValue == anchorID }
-            }
-            visibleCandidateID = nil
-            visibleRepresentativeID = anchorID
+            let preferred = candidates.first { $0.id == visibleCandidateID } ?? candidates.first
+            visibleCandidateID = preferred?.id
+            visibleRepresentativeID = preferred?.representativeID ?? anchorID
             selection = nil
             comparison = nil
             approvalPreview = nil
             reversalPreview = nil
             errorMessage = nil
             stage = .ready
+            if activeAssociation == nil { await compareVisiblePair() }
         } catch is CancellationError {
             guard generation == readGeneration else { return }
             // A cancelled read publishes nothing: a sheet that already had
@@ -254,6 +252,48 @@ final class WiltedMacEpisodeIdentityReviewModel {
     func pickerLabel(for id: String) -> String { titles[id] ?? id }
 
     // MARK: - Explicit pair selection and captured preview
+
+    func compareVisiblePair() async {
+        guard let pair = visiblePair else { return }
+        await selectPair(first: pair.first, second: pair.second, representative: pair.representative)
+    }
+
+    func keepSeparate() async {
+        guard let selection, selection == visiblePair, let comparison, let store = model.store,
+              let token = beginOperation(.savingSeparateDecision) else { return }
+        let generation = readGeneration
+        defer { endOperation(token) }
+        do {
+            try Task.checkCancellation()
+            separateDecisionID = try await store.keepEpisodesSeparate(comparison, at: Timestamp(now()))
+            await refreshParentLibraryProjection()
+            guard isCurrent(generation, token) else { return }
+            await load()
+            message = "Kept as different episodes."
+        } catch {
+            guard isCurrent(generation, token) else { return }
+            if Self.isStale(error) { await load() }
+            errorMessage = Self.message(for: error)
+        }
+    }
+
+    func undoSeparate() async {
+        guard let id = separateDecisionID, let store = model.store,
+              let token = beginOperation(.savingSeparateDecision) else { return }
+        let generation = readGeneration
+        defer { endOperation(token) }
+        do {
+            try await store.undoSeparateEpisodes(id, at: Timestamp(now()))
+            separateDecisionID = nil
+            await refreshParentLibraryProjection()
+            guard isCurrent(generation, token) else { return }
+            await load()
+            message = "Decision undone."
+        } catch {
+            guard isCurrent(generation, token) else { return }
+            errorMessage = Self.message(for: error)
+        }
+    }
 
     /// The owner's explicit pair and representative choice. Loads only
     /// side-effect-free comparison evidence; no confirmation exists yet.
@@ -325,19 +365,20 @@ final class WiltedMacEpisodeIdentityReviewModel {
         errorMessage = nil
         let confirmation = PodcastEpisodePairConfirmation(
             confirmationID: UUID(), feedID: comparison.feedID,
-            first: firstID, second: secondID, confirmedAt: Timestamp(now())
+            first: firstID, second: secondID, confirmedAt: Timestamp(now()), fromDuplicateReview: true
         )
         do {
             if let hook = readHookForTesting { await hook() }
             try Task.checkCancellation()
             let preview = try await store.previewEpisodeAssociation(
-                confirming: confirmation, representativeID: representative
+                confirming: confirmation, representativeID: representative, comparing: comparison
             )
             guard isCurrent(generation, token) else { return }
             approvalPreview = preview
         } catch is CancellationError {
         } catch {
             guard isCurrent(generation, token) else { return }
+            if Self.isStale(error) { await load() }
             errorMessage = Self.message(for: error)
         }
     }

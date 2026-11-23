@@ -60,6 +60,7 @@ struct WiltedMacFeedsView: View {
         get { model.navigationState.selectedFeedEpisodeIDs }
         nonmutating set { model.navigationState.selectedFeedEpisodeIDs = newValue }
     }
+    @State private var duplicateReview: WiltedMacEpisodeIdentityReviewRequest?
     @State private var feedRemoval = WiltedMacRemovalFlow()
     @State private var feedRenameInteraction = WiltedMacFeedRenameInteraction()
     @FocusState private var focusedFeedID: String?
@@ -128,6 +129,9 @@ struct WiltedMacFeedsView: View {
             feedManagement.id("feeds-subscriptions")
             restorableEpisodes.id("feeds-off-list")
         }
+        .sheet(item: $duplicateReview) { request in
+            WiltedMacEpisodeIdentityReview(model: model, anchorID: request.anchorID)
+        }
         .sheet(item: $presentedSheet) { sheet in
             VStack(spacing: 0) {
                 HStack {
@@ -190,13 +194,14 @@ struct WiltedMacFeedsView: View {
         let selected = visible.filter { selectedFeedEpisodeIDs.contains($0.id) }
         let waitingIDs = policyBoard.waitingEpisodeIDs.intersection(visibleIDs)
         let articles = model.feedsOfferedArticles
+        let held = model.episodes.filter { model.heldDuplicateIDs.contains($0.id) && $0.removalKind == nil }
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             HStack {
                 Text("New episodes")
                     .wiltedFont(.title)
                     .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
                 Spacer()
-                Text("\(visible.count + articles.count)")
+                Text("\(visible.count + articles.count + held.count)")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-feeds-count")
@@ -205,7 +210,19 @@ struct WiltedMacFeedsView: View {
                 label: "Feeds", identifierPrefix: "wilted-feeds",
                 sort: inboxSort, direction: inboxDirection
             )
-            if visible.isEmpty && articles.isEmpty {
+            ForEach(held) { episode in
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text(episode.title)
+                        Text(episode.feedTitle).wiltedFont(.caption)
+                    }
+                    Spacer()
+                    Button("Review possible duplicate") {
+                        duplicateReview = .init(anchorID: episode.id)
+                    }
+                }
+            }
+            if visible.isEmpty && articles.isEmpty && held.isEmpty {
                 Text("No new episodes.")
                     .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))

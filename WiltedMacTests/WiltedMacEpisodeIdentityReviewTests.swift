@@ -25,13 +25,13 @@ final class WiltedMacEpisodeIdentityReviewTests: XCTestCase {
         let third: ItemID
     }
 
-    func episode(guid: String, title: String) throws -> PodcastEpisode {
+    func episode(guid: String, title: String, offset: TimeInterval = 0, length: Double? = 3_600) throws -> PodcastEpisode {
         let enclosure = URL(string: "https://media.example.test/review-\(guid).mp3")!
         return try PodcastEpisode(
             itemID: ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: guid, enclosureURL: enclosure),
             feedID: ItemID.derivePodcastFeed(from: feedURL), feedURL: feedURL, rssGUID: guid,
-            title: title, publishedTime: Timestamp(created), enclosureURL: enclosure,
-            enclosureMediaType: "audio/mpeg", durationSeconds: 3_600, createdAt: Timestamp(created)
+            title: title, publishedTime: Timestamp(created.addingTimeInterval(offset)), enclosureURL: enclosure,
+            enclosureMediaType: "audio/mpeg", durationSeconds: length, createdAt: Timestamp(created)
         )
     }
 
@@ -50,8 +50,8 @@ final class WiltedMacEpisodeIdentityReviewTests: XCTestCase {
         addTeardownBlock { await model.close() }
         let store = try XCTUnwrap(model.store)
         let first = try episode(guid: "review-first", title: "Review First")
-        let second = try episode(guid: "review-second", title: sameTitle ? "Review First" : "Review Second")
-        let third = try episode(guid: "review-third", title: "Review Third")
+        let second = try episode(guid: "review-second", title: "Review First", offset: sameTitle ? 0 : 2)
+        let third = try episode(guid: "review-third", title: "Review First", offset: 50)
         for value in [first, second, third] { try await store.save(episode: value) }
         try await store.save(subscription: PodcastSubscription(
             feedID: first.feedID, subscribedAt: Timestamp(created)
@@ -141,11 +141,14 @@ final class WiltedMacEpisodeIdentityReviewTests: XCTestCase {
         )
         XCTAssertEqual(review.visibleRepresentativeID, fixture.first.rawValue,
                        "loading resets the representative to this episode")
+        XCTAssertEqual(review.visibleCandidateID, fixture.second.rawValue)
+        XCTAssertEqual(review.comparison?.second.episodeID, fixture.second)
+        XCTAssertTrue(try XCTUnwrap(review.candidates.first).reason.contains("2 s"))
         let published = review.candidates.count
 
         // State changes after the superseded read started; releasing it must
         // publish nothing.
-        try await fixture.store.save(episode: try episode(guid: "review-fourth", title: "Review Fourth"))
+        try await fixture.store.save(episode: try episode(guid: "review-fourth", title: "Review First", offset: 8))
         await gate.release()
         await superseded.value
         XCTAssertEqual(review.candidates.count, published, "a superseded read never publishes")
@@ -155,6 +158,45 @@ final class WiltedMacEpisodeIdentityReviewTests: XCTestCase {
         cancelled.cancel()
         await cancelled.value
         XCTAssertEqual(review.candidates.count, published)
+    }
+
+    func testSameEpisodeLinksUntouchedCopiesAndPreviewsExistingListeningState() async throws {
+        let untouched = try await makeFixture("untouched")
+        let review = makeReview(untouched)
+        await review.load()
+        await review.chooseSameEpisode()
+        XCTAssertEqual(review.activeAssociation?.representativeID, untouched.first)
+        let claim = try await untouched.store.claimPodcastDownload(episodeID: untouched.second)
+        XCTAssertFalse(claim)
+
+        let heard = try await makeFixture("heard")
+        try await seedKeptAndCompleted(heard)
+        let heardReview = makeReview(heard)
+        await heardReview.load()
+        await heardReview.chooseSameEpisode()
+        XCTAssertNotNil(heardReview.approvalPreview)
+        XCTAssertNil(heardReview.activeAssociation)
+    }
+
+    func testPickerOmitsUnrelatedEpisodesAndRemembersDifferentUntilUndone() async throws {
+        let fixture = try await makeFixture("different")
+        try await fixture.store.save(episode: try episode(guid: "other", title: "Other title"))
+        try await fixture.store.save(episode: try episode(guid: "later", title: "Review First", offset: 61))
+        let review = makeReview(fixture)
+        await review.load()
+        XCTAssertEqual(review.candidates.map(\.id), [fixture.second.rawValue, fixture.third.rawValue])
+        XCTAssertNil(review.approvalPreview)
+        await review.keepSeparate()
+        XCTAssertNil(review.errorMessage)
+        let reopened = makeReview(fixture)
+        await reopened.load()
+        XCTAssertEqual(reopened.candidates.map(\.id), [fixture.third.rawValue])
+        let associations = try await fixture.store.episodeAssociations()
+        XCTAssertTrue(associations.isEmpty)
+        XCTAssertNotNil(reopened.separateDecisionID)
+        await reopened.undoSeparate()
+        await reopened.load()
+        XCTAssertTrue(reopened.candidates.contains { $0.id == fixture.second.rawValue })
     }
 
     func testLoadFailureOffersRetryAndSucceedsOnceTheStoreOpens() async throws {

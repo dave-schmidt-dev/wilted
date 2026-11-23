@@ -201,7 +201,12 @@ extension LocalLibraryStore {
                     feedMoveCandidates.insert(left.itemID)
                     feedMoveCandidates.insert(right.itemID)
                 }
-                if left.title == right.title,
+                if left.feedID == right.feedID {
+                    if comparisonMetadataMatches(left, right) {
+                        metadataLookalikes.insert(left.itemID)
+                        metadataLookalikes.insert(right.itemID)
+                    }
+                } else if left.title == right.title,
                    let leftDate = left.publishedTime, let rightDate = right.publishedTime, leftDate == rightDate,
                    let leftDuration = left.durationSeconds, let rightDuration = right.durationSeconds,
                    leftDuration == rightDuration {

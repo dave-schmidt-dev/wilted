@@ -267,7 +267,7 @@ extension LocalLibraryStoreTests {
         assertAliasRawStateEqual(before, after)
     }
 
-    func testUnsubscribeClearsOnlyFeedAssociationsAndNewGenerationsStayUnassociated() async throws {
+    func testUnsubscribeClearsOnlyFeedAssociationsAndFreshMatchesGetANewAssociation() async throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let store = try LocalLibraryStore(url: url)
         let first = try aliasEpisode("unsubscribe-a"), second = try aliasEpisode("unsubscribe-b")
@@ -300,10 +300,12 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(freshSecond.itemID, second.itemID)
         let admitted = try await store.admitPodcastEpisodes([freshFirst, freshSecond],
             admission: .incremental, claimingNewest: 2)
-        XCTAssertEqual(Set(admitted.admission.newlyAdmitted), [first.itemID, second.itemID])
-        XCTAssertEqual(Set(admitted.claimed), [first.itemID, second.itemID])
+        XCTAssertEqual(admitted.admission.newlyAdmitted, [first.itemID])
+        XCTAssertEqual(admitted.claimed, [first.itemID])
         let freshState = try await store.podcastEpisodeLogicalState(for: first.itemID)
-        XCTAssertEqual(freshState?.memberIDs, [first.itemID])
+        XCTAssertEqual(Set(try XCTUnwrap(freshState).memberIDs), [first.itemID, second.itemID])
+        let freshGroups = try await store.episodeAssociations()
+        XCTAssertFalse(freshGroups.contains { $0.associationID == association.associationID })
         XCTAssertFalse(try XCTUnwrap(freshState).isTerminal)
         let otherState = try await store.podcastEpisodeLogicalState(for: otherSecond.itemID)
         XCTAssertEqual(Set(try XCTUnwrap(otherState).memberIDs), [otherFirst.itemID, otherSecond.itemID])

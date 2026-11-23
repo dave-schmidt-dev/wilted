@@ -18,6 +18,8 @@ extension LocalLibraryStore {
         /// IDs inserted by this exact admission, excluding rows refreshed in place.
         public let newlyAdmitted: [ItemID]
         public let skipped: Int
+        /// Existing undecided rows released by duplicate review on this feed.
+        public internal(set) var releasedFromReview: [ItemID] = []
     }
 
     /// Persists only the episodes a subscribed feed should surface.
@@ -89,7 +91,7 @@ extension LocalLibraryStore {
     /// separate claim row is one more thing that can disagree with it.
     ///
     /// Repeated canonical IDs are admitted and claimed once, at their first
-    /// publisher position; distinct IDs are never merged on metadata.
+    /// publisher position. Reissued episodes retain separate raw identities.
     ///
     /// A `limit` of zero admits and claims nothing, which is what a manual
     /// download policy asks for, and `.backfill` claims nothing whatever the
@@ -113,17 +115,35 @@ extension LocalLibraryStore {
             )
         }
         let context = ModelContext(container)
-        let existing = Set(
-            try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>()).map(\.id)
-        )
-        let admitted = try admittedPodcastEpisodes(
+        context.autosaveEnabled = false
+        defer { if context.hasChanges { context.rollback() } }
+        let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
+        let existing = Set(records.map(\.id))
+        var admitted = try admittedPodcastEpisodes(
             uniqueEpisodes,
             admission: admission,
             initialMetadataLimit: initialMetadataLimit,
             in: context
         )
+        // An old reissue can fall outside the new-episode horizon, including
+        // when RSS omits its date. Keep its evidence for review or reversal.
+        let accepted = Set(admitted.map(\.itemID))
+        let outside = uniqueEpisodes.filter { !accepted.contains($0.itemID) && !existing.contains($0.itemID.rawValue) }
+        if admission == .incremental, !outside.isEmpty {
+            let titles = Set(outside.map(\.title))
+            let known = Dictionary(grouping: records.filter { titles.contains($0.title) }.compactMap {
+                Self.decodePodcastEpisode($0)
+            }, by: \.title)
+            admitted += outside.filter { episode in
+                known[episode.title, default: []].contains { PodcastDuplicateMatch(episode, $0) != nil }
+            }
+        }
         try upsertPodcastEpisodes(admitted, in: context)
-        let newlyAdmitted = admitted.filter { !existing.contains($0.itemID.rawValue) }
+        let review = try reconcileFeedDuplicates(
+            feedIDs: Set(uniqueEpisodes.map(\.feedID)), admitted: admitted, existing: existing, at: claimedAt, in: context
+        )
+        let newlyAdmitted = admitted.filter { !existing.contains($0.itemID.rawValue) && !review.blocked.contains($0.itemID) }
+        let released = admitted.filter { review.released.contains($0.itemID) }
         var claimed: [ItemID] = []
         // Backfill never claims, whatever the caller asks for. Subscribing is
         // not a request to download a back catalogue, and refusing here means a
@@ -135,7 +155,7 @@ extension LocalLibraryStore {
             )
             // Newest first, so a capped policy takes the episodes a listener
             // would reach for rather than whichever order the feed parsed in.
-            let eligible = Self.newestFirst(newlyAdmitted.filter { !tracked.contains($0.itemID.rawValue) })
+            let eligible = Self.newestFirst((newlyAdmitted + released).filter { !tracked.contains($0.itemID.rawValue) })
             for episode in eligible.prefix(limit) {
                 let claim = try PodcastDownload(episodeID: episode.itemID, status: .queued, updatedAt: claimedAt)
                 context.insert(LocalLibrarySchemaV10Models.PodcastDownloadRecord(claim))
@@ -147,7 +167,7 @@ extension LocalLibraryStore {
             admission: PodcastEpisodeAdmissionResult(
                 saved: admitted.map(\.itemID),
                 newlyAdmitted: newlyAdmitted.map(\.itemID),
-                skipped: uniqueEpisodes.count - admitted.count
+                skipped: uniqueEpisodes.count - admitted.count, releasedFromReview: released.map(\.itemID)
             ),
             claimed: claimed
         )
@@ -190,9 +210,10 @@ extension LocalLibraryStore {
         let context = ModelContext(container)
         let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV10Models.PodcastDownloadRecord>())
         let existing = records.first(where: { $0.episodeID == episodeID.rawValue })
+        let lookup = try EpisodeAssociationReadLookup(in: context)
+        guard !lookup.duplicateWorkBlockedIDs.contains(episodeID) else { return false }
         switch scope {
         case .untouched:
-            let lookup = try EpisodeAssociationReadLookup(in: context)
             let state = lookup.state(for: episodeID)
             guard (state?.memberIDs.count ?? 0) <= 1 || state?.isTerminal != true else { return false }
             guard existing == nil else { return false }
@@ -315,7 +336,11 @@ extension LocalLibraryStore {
         var byID = Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for episode in episodes {
             if let record = byID[episode.itemID.rawValue] {
+                // RSS parsing stamps each fetch. A refresh preserves the source
+                // generation captured by associations and completion receipts.
+                let createdAt = record.createdAt
                 try Self.apply(episode, to: record)
+                record.createdAt = createdAt
             } else {
                 let record = try LocalLibrarySchemaV13Models.PodcastEpisodeRecord(episode)
                 context.insert(record)

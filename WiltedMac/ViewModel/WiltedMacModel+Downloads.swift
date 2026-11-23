@@ -30,7 +30,7 @@ extension WiltedMacModel {
     func downloadEpisode(_ episode: WiltedMacEpisode, alreadyClaimed: Bool = false,
                          ignoringExisting: Bool = false, automaticRecovery: Bool = false) {
 #if canImport(WiltedProducer)
-        guard !isClosingTemporaryState, podcastDownloadTasks[episode.id] == nil,
+        guard !isClosingTemporaryState, !duplicateWorkBlockedIDs.contains(episode.id), podcastDownloadTasks[episode.id] == nil,
               let coordinator = podcastDownloadCoordinator,
               let itemID = try? ItemID(rawValue: episode.id) else { return }
         // The download is the request: its place in the preparation line is

@@ -20,11 +20,10 @@ extension WiltedMacEpisodeIdentityReviewTests {
         await review.load()
         XCTAssertEqual(review.stage, .ready)
 
-        // No pair, no confirmation, no apply.
+        // The closest pair is shown, but discovery cannot approve it.
         await review.applyAssociation()
         XCTAssertEqual(review.errorMessage, WiltedMacEpisodeIdentityReviewModel.confirmationRequiredMessage)
-        await review.reviewPair()
-        XCTAssertEqual(review.errorMessage, WiltedMacEpisodeIdentityReviewModel.confirmationRequiredMessage)
+        XCTAssertNil(review.approvalPreview)
         var associations = try await fixture.store.episodeAssociations()
         XCTAssertTrue(associations.isEmpty)
 
@@ -34,7 +33,7 @@ extension WiltedMacEpisodeIdentityReviewTests {
             representative: fixture.first.rawValue
         )
         XCTAssertNotNil(review.comparison)
-        XCTAssertEqual(review.comparison?.ambiguities.contains(.metadataDiffers), true)
+        XCTAssertEqual(review.comparison?.ambiguities.contains(.metadataDiffers), false)
         XCTAssertEqual(review.comparison?.ambiguities.contains(.otherMetadataCandidates), true)
         XCTAssertEqual(review.comparison?.otherCandidateIDs, [fixture.third])
         XCTAssertNil(review.approvalPreview)
@@ -73,7 +72,7 @@ extension WiltedMacEpisodeIdentityReviewTests {
         XCTAssertTrue(summary.contains("newest manual choice is Keep"), summary)
         XCTAssertTrue(summary.contains("holds queue slot 1 and is current"), summary)
         XCTAssertTrue(summary.contains("the duplicate-group rule refuses a new automatic download"), summary)
-        XCTAssertTrue(summary.contains("Review Second"), summary)
+        XCTAssertTrue(summary.contains(review.pickerLabel(for: fixture.second.rawValue)), summary)
         XCTAssertTrue(summary.contains("stored copy kept, has a download record"), summary)
         XCTAssertFalse(summary.contains("untouched"), "implementation jargon stays out of the listener text")
 
@@ -360,7 +359,7 @@ extension WiltedMacEpisodeIdentityReviewTests {
         let controller = try XCTUnwrap(model.librarySyncController)
 
         let first = try episode(guid: "sync-first", title: "Sync First")
-        let second = try episode(guid: "sync-second", title: "Sync Second")
+        let second = try episode(guid: "sync-second", title: "Sync First")
         for value in [first, second] { try await store.save(episode: value) }
         try await store.save(subscription: PodcastSubscription(
             feedID: first.feedID, subscribedAt: Timestamp(created)

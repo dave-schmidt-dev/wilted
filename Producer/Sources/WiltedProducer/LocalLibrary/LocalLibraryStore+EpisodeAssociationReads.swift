@@ -14,6 +14,13 @@ struct EpisodeAssociationReadLookup {
     let listening: [String: LocalLibrarySchemaV10Models.PodcastListeningRecord]
     private let recordsByMember: [ItemID: Association]
     let associations: [PodcastEpisodeAssociation]
+    let heldPairs: [PodcastEpisodeAssociation]
+    let recordedHoldPairs: Set<Set<ItemID>>
+    let differentEpisodes: [PodcastEpisodeAssociation]
+    let heldEpisodeIDs: Set<ItemID>
+    let separatedPairs: Set<Set<ItemID>>
+    let duplicateWorkBlockedIDs: Set<ItemID>
+    let previouslyHeldIDs: Set<ItemID>
     private let groupsByMember: [ItemID: PodcastEpisodeAssociation]
 
     init(in context: ModelContext) throws {
@@ -23,11 +30,12 @@ struct EpisodeAssociationReadLookup {
         self.episodes = episodes
         self.decisions = decisions
         self.listening = listening
-        let records = try context.fetch(FetchDescriptor<Association>()).filter(\.isActive)
+        let records = try context.fetch(FetchDescriptor<Association>())
         #if DEBUG
         LocalLibraryStore.associationReadObserver?(4, records.count)
         #endif
         var valid: [(Association, PodcastEpisodeAssociation)] = []
+        var inactive: [PodcastEpisodeAssociation] = []
         let decoder = JSONDecoder()
         for record in records {
             do {
@@ -42,7 +50,8 @@ struct EpisodeAssociationReadLookup {
                               && episode.feedID == association.feedID.rawValue
                               && Self.sameRecordedCreationInstant(episode.createdAt, member.episode.createdAt.date)
                       }) else { throw PodcastEpisodeAssociationError.episodeUnavailable }
-                valid.append((record, association))
+                if record.isActive { valid.append((record, association)) }
+                else { inactive.append(association) }
             } catch {
                 Self.reportInvalid(record.associationID)
             }
@@ -59,6 +68,30 @@ struct EpisodeAssociationReadLookup {
             return true
         }
         associations = valid.map { $0.1 }.sorted { $0.associationID.uuidString < $1.associationID.uuidString }
+        let holds = inactive.filter { $0.confirmation.source == .heldForReview }
+        recordedHoldPairs = Set(holds.map { Set($0.memberIDs) })
+        differentEpisodes = inactive.filter { $0.confirmation.source == .differentEpisodes && $0.reversedAt == nil }
+        let separated = Set(inactive.filter {
+            $0.confirmation.source == .differentEpisodes ? $0.reversedAt == nil : $0.reversedAt != nil
+        }.map { Set($0.memberIDs) })
+        separatedPairs = separated
+        let grouped = Set(associations.flatMap(\.memberIDs))
+        let pending = holds.filter {
+            !separated.contains(Set($0.memberIDs))
+                && ($0.confirmation.holdsBoth == true ? !Set($0.memberIDs).isSubset(of: grouped) : !grouped.contains($0.confirmation.second))
+        }
+        heldPairs = pending
+        let heldIDs = Set(pending.flatMap { $0.confirmation.holdsBoth == true ? $0.memberIDs : [$0.confirmation.second] })
+            .subtracting(grouped)
+        heldEpisodeIDs = heldIDs
+        let previouslyHeld = Set(holds
+            .flatMap { $0.confirmation.holdsBoth == true ? $0.memberIDs : [$0.confirmation.second] })
+        previouslyHeldIDs = previouslyHeld
+        duplicateWorkBlockedIDs = heldIDs.union(associations.flatMap { group -> [ItemID] in
+            guard group.confirmation.source == .feedMatch || group.confirmation.source == .reviewedMatch
+                || !previouslyHeld.isDisjoint(with: group.memberIDs) else { return [] }
+            return group.memberIDs.filter { $0 != group.representativeID }
+        })
         recordsByMember = Dictionary(uniqueKeysWithValues: valid.flatMap { record, association in
             association.memberIDs.map { ($0, record) }
         })

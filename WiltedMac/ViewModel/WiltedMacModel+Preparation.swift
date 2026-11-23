@@ -167,7 +167,7 @@ extension WiltedMacModel {
         again: PodcastPrepareAgainCandidate? = nil
     ) -> Bool {
 #if canImport(WiltedProducer)
-        guard podcastPreparationTasks[episode.id] == nil else { return false }
+        guard !duplicateWorkBlockedIDs.contains(episode.id), podcastPreparationTasks[episode.id] == nil else { return false }
         if fixtureMode {
             // No worker in fixture mode; the row still has to leave the state
             // it was in, so a UI test can tell a live control from a drawn one.

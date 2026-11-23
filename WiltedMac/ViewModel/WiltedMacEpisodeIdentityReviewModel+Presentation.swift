@@ -4,19 +4,68 @@ import WiltedProducer
 
 /// Captured consequence wording and curated errors for the review sheet.
 extension WiltedMacEpisodeIdentityReviewModel {
-    /// Item identity, rather than GUID, distinguishes raw copies. If bounded
-    /// suffixes collide, show their complete IDs so every label stays unique.
+    /// A pair with no listening, decisions, media or queue slots can be linked
+    /// in one click. Otherwise show what the captured preview would change.
+    func chooseSameEpisode() async {
+        guard let chosen = visiblePair, comparison != nil, !isBusy else { return }
+        await reviewPair()
+        guard visiblePair == chosen, let preview = approvalPreview, !preview.hasExistingEpisodeState else { return }
+        await applyAssociation()
+    }
+
+    static func rankedCandidates(
+        anchor: PodcastEpisode, episodes: [PodcastEpisode],
+        heldPairs: [PodcastEpisodeAssociation], excluded: Set<ItemID>, activeAssociation: PodcastEpisodeAssociation?
+    ) -> [Candidate] {
+        let anchorItemID = anchor.itemID
+        let held = Dictionary(heldPairs.compactMap { pair -> (ItemID, ItemID)? in
+            guard let other = pair.memberIDs.first(where: { $0 != anchorItemID }) else { return nil }
+            return (other, pair.representativeID)
+        }, uniquingKeysWith: { first, _ in first })
+        let ranked = episodes.compactMap { episode -> (Candidate, PodcastDuplicateMatch?)? in
+            guard episode.itemID != anchorItemID, !excluded.contains(episode.itemID) else { return nil }
+            let match = PodcastDuplicateMatch(anchor, episode)
+            guard match != nil || held[episode.itemID] != nil || activeAssociation?.memberIDs.contains(episode.itemID) == true
+            else { return nil }
+            let representative = held[episode.itemID] ?? (episode.createdAt < anchor.createdAt ? episode.itemID : anchorItemID)
+            return (Candidate(
+                id: episode.itemID.rawValue, title: episode.title, rssGUID: episode.rssGUID,
+                publishedAt: episode.publishedTime?.date, durationSeconds: episode.durationSeconds,
+                reason: Self.matchReason(match), representativeID: representative.rawValue
+            ), match)
+        }.sorted { left, right in
+            if let a = left.1, let b = right.1 {
+                if a.isCloser(than: b) { return true }
+                if b.isCloser(than: a) { return false }
+            } else if (left.1 == nil) != (right.1 == nil) { return left.1 != nil }
+            return left.0.id < right.0.id
+        }
+        return ranked.map { $0.0 }
+    }
+
+    static func matchReason(_ match: PodcastDuplicateMatch?) -> String {
+        guard let match else { return "The feed details changed after this pair was found." }
+        func difference(_ value: Double?, same: String, missing: String, subject: String) -> String {
+            guard let value else { return missing }
+            if value == 0 { return same }
+            let seconds = value.formatted(.number.precision(.fractionLength(0...2)))
+            return "\(subject) differ by \(seconds) s."
+        }
+        return ["Same show and title.",
+                difference(match.publicationDifference, same: "Same publication time.",
+                           missing: "Publication time missing.", subject: "Publication times"),
+                difference(match.durationDifference, same: "Same length.",
+                           missing: "Length missing.", subject: "Lengths")].joined(separator: " ")
+    }
+
     static func memberLabels(for members: [Candidate]) -> [String: String] {
-        let suffixCounts = Dictionary(grouping: members, by: { String($0.id.suffix(6)) })
+        var counts: [String: Int] = [:]
         return Dictionary(uniqueKeysWithValues: members.map { member in
-            let suffix = String(member.id.suffix(6))
-            let identity = suffixCounts[suffix, default: []].count > 1 ? member.id : suffix
-            var parts = [member.title]
-            if let date = member.publishedAt {
-                parts.append(date.formatted(date: .abbreviated, time: .shortened))
-            }
-            parts.append("#\(identity)")
-            return (member.id, parts.joined(separator: " \u{00b7} "))
+            var label = member.title
+            if let date = member.publishedAt { label += " · " + date.formatted(date: .abbreviated, time: .standard) }
+            counts[label, default: 0] += 1
+            let index = counts[label, default: 1]
+            return (member.id, index == 1 ? label : "\(label) · copy \(index)")
         })
     }
 

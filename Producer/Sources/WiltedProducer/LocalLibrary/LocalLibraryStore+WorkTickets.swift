@@ -147,6 +147,7 @@ extension LocalLibraryStore {
     @discardableResult
     public func upsertWorkTicket(_ ticket: WorkTicket) throws -> WorkTicket {
         let context = ModelContext(container)
+        if !ticket.state.isTerminal { try Self.requireDuplicateWorkEligibility(ticket.kind, subjectID: ticket.subjectID, in: context) }
         if let existing = try workTicketRecord(id: ticket.id, in: context) {
             existing.apply(ticket)
         } else {
@@ -182,6 +183,7 @@ extension LocalLibraryStore {
             }
             return decoded
         }
+        try Self.requireDuplicateWorkEligibility(kind, subjectID: subjectID, in: context)
         let nextSequence: Int
         if let requestSequence {
             nextSequence = requestSequence
@@ -313,6 +315,7 @@ extension LocalLibraryStore {
         claimingDownload: Bool = false, at now: Timestamp
     ) throws -> WorkTicket? {
         let context = ModelContext(container)
+        try Self.requireDuplicateWorkEligibility(.podcastDownload, subjectID: subjectID, in: context)
         let id = "\(WorkTicketKind.podcastDownload.rawValue)|\(subjectID)"
         guard let record = try workTicketRecord(id: id, in: context),
               record.requestSequence == requestSequence, record.attemptCount == attemptCount,
@@ -349,6 +352,7 @@ extension LocalLibraryStore {
         subjectID: String, requestSequence: Int, attemptCount: Int, at now: Timestamp
     ) throws -> WorkTicket? {
         let context = ModelContext(container)
+        try Self.requireDuplicateWorkEligibility(.podcastDownload, subjectID: subjectID, in: context)
         let id = "\(WorkTicketKind.podcastDownload.rawValue)|\(subjectID)"
         guard let record = try workTicketRecord(id: id, in: context),
               var ticket = Self.decodeWorkTicket(record),
@@ -401,6 +405,9 @@ extension LocalLibraryStore {
         let id = "\(kind.rawValue)|\(subjectID)"
         let existingRecord = try workTicketRecord(id: id, in: context)
 
+        if !state.isTerminal {
+            try Self.requireDuplicateWorkEligibility(kind, subjectID: subjectID, in: context)
+        }
         var ticket: WorkTicket
         if let existingRecord {
             guard let decoded = Self.decodeWorkTicket(existingRecord) else {
@@ -495,6 +502,7 @@ extension LocalLibraryStore {
         progress: (@Sendable (WorkTicketReconciliationProgress) -> Void)? = nil
     ) throws -> WorkTicketReconciliation {
         let context = ModelContext(container)
+        let blocked = try Set(EpisodeAssociationReadLookup(in: context).duplicateWorkBlockedIDs.map(\.rawValue))
         var errors: [WorkTicketReconciliationError] = []
 
         func report(_ step: WorkTicketReconciliationStep, _ done: Int, _ total: Int) {
@@ -517,6 +525,7 @@ extension LocalLibraryStore {
         for (index, deferral) in importedDeferrals.enumerated() {
             try Task.checkCancellation()
             defer { report(.importingDeferrals, index + 1, importedDeferrals.count) }
+            guard !blocked.contains(deferral.subjectID) else { continue }
             do {
                 #if DEBUG
                 try Self.injectWorkTicketReconciliationFailure(for: .importingDeferrals, subjectID: deferral.subjectID)
@@ -545,7 +554,7 @@ extension LocalLibraryStore {
         var adoptedCount = 0
         var seenSubjects: Set<String> = []
         let orphanedDownloads = try (unfinishedPodcastDownloads() + resumablePodcastDownloads()).filter {
-            seenSubjects.insert($0.episodeID.rawValue).inserted
+            !blocked.contains($0.episodeID.rawValue) && seenSubjects.insert($0.episodeID.rawValue).inserted
         }
         report(.adoptingDownloads, 0, orphanedDownloads.count)
         for (index, download) in orphanedDownloads.enumerated() {

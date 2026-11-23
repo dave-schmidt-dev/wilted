@@ -32,10 +32,16 @@ public enum LocalLibrarySchemaVersion: Int, Codable, Sendable {
     public static let current: LocalLibrarySchemaVersion = .v22
 }
 
-/// Positive equivalence requires the owner's confirmation of these exact two
-/// source IDs in this feed. This is a provenance assertion by an authorized
-/// caller, never a constructor for guessed publisher/title/hash evidence.
+/// Evidence for an exact same-feed pair. Older records have no source and
+/// represent an explicit owner confirmation.
 public struct PodcastEpisodePairConfirmation: Codable, Equatable, Sendable {
+    public enum Source: String, Codable, Sendable {
+        case feedMatch, reviewedMatch, heldForReview, differentEpisodes
+    }
+
+    public internal(set) var source: Source?
+    /// With no incumbent, every uncertain new identity waits for a decision.
+    var holdsBoth: Bool?
     public let confirmationID: UUID
     public let feedID: ItemID
     public let first: ItemID
@@ -43,7 +49,8 @@ public struct PodcastEpisodePairConfirmation: Codable, Equatable, Sendable {
     public let confirmedAt: Timestamp
 
     public init(confirmationID: UUID, feedID: ItemID, first: ItemID, second: ItemID,
-                confirmedAt: Timestamp) {
+                confirmedAt: Timestamp, fromDuplicateReview: Bool = false) {
+        self.source = fromDuplicateReview ? .reviewedMatch : nil
         self.confirmationID = confirmationID
         self.feedID = feedID
         self.first = first
@@ -236,6 +243,7 @@ public struct PodcastEpisodeAssociationPreview: Sendable {
     /// Derived from the same captured member state `applyEpisodeAssociation`
     /// validates, so the reviewed consequences cannot drift from what applies.
     public let approvalConsequences: PodcastEpisodeAssociationApprovalConsequences
+    public let hasExistingEpisodeState: Bool
     let capturedMembers: Data
     let capturedAssociations: Data
 }
