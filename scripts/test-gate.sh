@@ -773,7 +773,7 @@ leg_fns=(leg_xcodegen_reproducible leg_wiltedkit_tests leg_cloudsync_tests leg_p
   leg_macos_unit_tests leg_ios_unit_tests leg_macos_ui_tests leg_ios_ui_tests)
 if [[ "$native_self_test" != 1 ]]; then cleanup_mac_test_hosts; fi
 wilted_gate_run_legs
-
+wilted_cleanup_gate_owned_mac_test_hosts "$tmp_root" || true
 wilted_temp_remove_owned_child "$tmp_root" "$inherited_tmp" wilted-native-gate. || fail 'native temp root ownership changed before cleanup'
 tmp_root=""
 wilted_temp_snapshot "$inherited_tmp" "$native_audit_root/parent-after.json"

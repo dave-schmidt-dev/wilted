@@ -76,6 +76,8 @@ wilted_mac_test_parent_selftest "$tmp_dir" "$gate"
 cleanup_proof="$(wilted_mac_test_host_cleanup_selftest "$tmp_dir" "$repo_root")"
 assert_block_contains 'owned-host-matched=1' "$cleanup_proof"
 assert_block_contains 'foreign-peer-preserved=1' "$cleanup_proof"
+assert_block_contains 'gate-owned-host-quit=1' "$cleanup_proof"
+assert_block_contains 'peer-gate-host-preserved=1' "$cleanup_proof"
 
 assert_wiltedkit_sync_contract() {
   assert_contains 'assert_test_sources wiltedkit-tests' "$gate"
@@ -405,7 +407,11 @@ sweep = 'if [[ "$native_self_test" != 1 ]]; then cleanup_mac_test_hosts; fi'
 assert source.count(sweep) == 1
 assert source.index(sweep) < source.index('\nwilted_gate_run_legs\n')
 assert 'cleanup_mac_test_hosts' not in Path(sys.argv[2]).read_text()
+# The run's own test hosts quit after the legs, before its temp root is removed.
+quit = '\nwilted_gate_run_legs\nwilted_cleanup_gate_owned_mac_test_hosts "$tmp_root" || true\nwilted_temp_remove_owned_child "$tmp_root"'
+assert source.count(quit) == 1
 PYORDER
+  assert_contains 'wilted_cleanup_gate_owned_mac_test_hosts "$root" || true' "$repo_root/scripts/lib/test-temp-state.sh"
 }
 
 assert_stray_host_cleanup_contract

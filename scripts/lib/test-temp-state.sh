@@ -62,6 +62,7 @@ wilted_temp_cleanup_native_gate() {
   wilted_finish_logger || true
   if declare -F wilted_gate_stop_parallel >/dev/null; then wilted_gate_stop_parallel; fi
   cleanup_mac_test_hosts
+  wilted_cleanup_gate_owned_mac_test_hosts "$root" || true
   wilted_temp_remove_owned_child "$root" "$parent" wilted-native-gate. || true
   wilted_temp_finish_audit "$parent" "$audit" "$audit/parent-before.json" native-parent "$audit_parent" native-temp-audit. || true
   wilted_temp_close_output_streams
