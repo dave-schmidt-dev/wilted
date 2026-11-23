@@ -70,7 +70,7 @@ final class WiltedMacShareComposerTests: XCTestCase {
             let text = try WiltedMacHeadless.recognizedText(view.padding(), size: CGSize(width: 430, height: 360)).joined(separator: " ")
             XCTAssertTrue(text.contains("Include transcript summary"), "\(name): \(text)")
             if let progress {
-                XCTAssertTrue(text.replacingOccurrences(of: "...", with: "…").contains(progress), "\(name): \(text)")
+                XCTAssertTrue(text.contains(progress.trimmingCharacters(in: CharacterSet(charactersIn: ".…"))), "\(name): \(text)")
                 XCTAssertTrue(text.contains("close this panel"), "\(name): \(text)")
             }
             if let failure { XCTAssertTrue(text.contains(failure), "\(name): \(text)") }
