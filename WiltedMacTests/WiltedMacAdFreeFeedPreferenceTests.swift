@@ -125,7 +125,7 @@ final class WiltedMacAdFreeFeedPreferenceTests: XCTestCase {
     func testTitleAppearsOnceForAPodcastFeedAndNeverForAnArticleFeed() throws {
         let podcastText = try showSettingsText(isArticleFeed: false, suffix: "ad-free-podcast", adFree: true)
         XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Remove ads", in: podcastText), 1, podcastText)
-        XCTAssertTrue(podcastText.contains("Off (Custom)"), podcastText)
+        XCTAssertTrue(podcastText.contains("This show is already ad-free"), podcastText)
         XCTAssertFalse(podcastText.contains("This show has no ads"), podcastText)
 
         let articleText = try showSettingsText(isArticleFeed: true, suffix: "ad-free-article")

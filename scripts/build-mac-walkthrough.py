@@ -351,15 +351,10 @@ def build(captures, commit, date_iso, date_human, previous):
         "settings-conflict": figure(
             "fig-settings-transcript-conflict", "7.2-settings-transcript-conflict",
             "Podcast automation showing the transcript source set to No local speech-to-text with Remove ads on, "
-            "and the notice that explains why nothing will prepare",
-            "<strong>7.2 Settings, the one automation pair that refuses work.</strong> Ad removal is timed from a "
-            "local pass aligned to this audio and never from a publisher's cues, so choosing "
-            "<em>No local speech-to-text</em> while <em>Remove ads</em> is on makes the worker refuse every "
-            "preparation before it spends any model time. Neither control is disabled and neither is silently "
-            "rewritten: a configuration saved before removal required the aligned pass is a legitimate file, and "
-            "turning removal off on the owner's behalf would quietly stop cutting advertisements. "
-            "<code>wilted-automation-transcript-conflict</code> appears under the toggle for that pair only, "
-            "naming the effect first and then both ways out.",
+            "and an explanation of which episodes need a local transcript",
+            "<strong>7.2 Settings, transcript source.</strong> Episodes that need an ad check use local "
+            "speech-to-text timed to the recording. With <em>No local speech-to-text</em> selected, "
+            "episodes that skip the ad check can still prepare, including shows marked already ad-free.",
             captures),
         "recovery-download": figure(
             "fig-recovery-download", "8.1-recovery-download-retry",

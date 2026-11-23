@@ -115,7 +115,7 @@ struct LabellerRetryPolicyTests {
         #expect(!sentence(.dailyCap).isEmpty)
         #expect(LabellerStopReason.providerPaused(since: since).kind == "provider-paused")
         #expect(sentence(.providerPaused(since: since))
-            == "The provider has not answered since 9:41 AM. Check the model name in Settings.")
+            == "The provider has not answered since 9:41 AM. Choose Retry in Ad finding settings to check it again.")
     }
 
     @Test func providerPauseStartsAtTheThirdWaitLimitStopAndClearsTogether() {

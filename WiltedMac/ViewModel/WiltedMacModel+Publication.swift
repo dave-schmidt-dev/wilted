@@ -284,25 +284,101 @@ extension WiltedMacModel {
     /// run had finished.
     nonisolated static let legacyPreparedDetail = "Prepared."
 
-    /// What a finished run recorded it did, so "Synced transcript" alone never
-    /// stands in for "were the advertisements removed?" after a relaunch.
-    ///
-    /// Current builds journal the outcome summary as the terminal row. Older
-    /// ones wrote "Prepared.", but their `pipeline.complete` row still counted
-    /// the advertisements, and zero there is the honest answer for an episode
-    /// the build that never loaded the detector marked prepared.
-    nonisolated static func recordedSummary(of run: PreparationRunSummary?) -> String? {
+    /// Rebuilds the saved result from worker evidence when the terminal row
+    /// predates the four ad-check labels.
+    nonisolated static func recordedSummary(
+        of run: PreparationRunSummary?, timing: TranscriptTiming? = nil, hasText: Bool? = nil
+    ) -> String? {
         guard let run, run.isTerminal, run.outcome == .succeeded else { return nil }
-        if run.detail != legacyPreparedDetail, !run.detail.isEmpty { return run.detail }
+        if let worker = run.entries.reversed().compactMap({ entry -> [String: String]? in
+            guard let evidence = entry.status.evidence, evidence.kind == "worker-result" else { return nil }
+            return evidence.fields
+        }).first, let recordedOutcome = worker["adRemovalOutcome"] {
+            // Older builds used "uncertain" even when the provider was never asked.
+            let skipped = recordedOutcome == "uncertain" && worker["adsMayRemain"] == nil
+                && run.entries.contains { entry in
+                    guard let evidence = entry.status.evidence else { return false }
+                    return evidence.kind.hasPrefix("not-sent-") || (evidence.kind == "labeller-stop"
+                        && ["daily-cap", "command-line-tool-unavailable"].contains(evidence.fields["kind"] ?? ""))
+                }
+            let outcome = skipped ? "disabled" : recordedOutcome
+            let leftIn = run.entries.contains {
+                $0.status.evidence?.kind == "advertisement-left-in"
+            }
+            let adsMayRemain = worker["adsMayRemain"].map { $0 == "true" }
+                ?? (outcome == "uncertain" || leftIn)
+            let label = PodcastPreparationResult.adCheckLabel(outcome: outcome, adsMayRemain: adsMayRemain)
+            var parts = [PodcastPreparationResult.readyLabel, label]
+            if let warning = worker["warning"], outcome == "disabled" || outcome == "uncertain" {
+                let prefix = ["Some ads may remain:", "original audio includes ads:"].first(where: warning.hasPrefix)
+                let reason = warning.dropFirst(prefix?.count ?? 0).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !reason.isEmpty { parts.append(reason) }
+            }
+            let removedCount = Int(worker["advertisements"] ?? "") ?? 0
+            if removedCount > 0, outcome == "cut" {
+                if label == "Some ads may remain" { parts.append("Ads removed") }
+                if let kinds = removalKindSummary(of: run) {
+                    parts.append(kinds.hasSuffix(" removed") ? String(kinds.dropLast(" removed".count)) : kinds)
+                } else {
+                    let seconds = Double(worker["removedSeconds"] ?? "") ?? 0
+                    parts.append(PodcastPreparationResult.removedSummary(advertisements: removedCount, secondsRemoved: seconds))
+                }
+            }
+            let sourceTiming = worker["timing"].flatMap(TranscriptTiming.init(rawValue:))
+            parts.append(PodcastPreparationResult.transcriptStep(
+                timing ?? .none, hasText: hasText, sourceTiming: sourceTiming))
+            return parts.joined(separator: " · ")
+        }
+        if let kinds = removalKindSummary(of: run) {
+            let leftIn = run.entries.contains {
+                $0.status.evidence?.kind == "advertisement-left-in"
+            }
+            var parts = [PodcastPreparationResult.readyLabel,
+                         leftIn ? "Some ads may remain" : "Ads removed"]
+            if leftIn { parts.append("Ads removed") }
+            parts.append(kinds.hasSuffix(" removed") ? String(kinds.dropLast(" removed".count)) : kinds)
+            parts.append(PodcastPreparationResult.transcriptStep(timing ?? .none, hasText: hasText))
+            return parts.joined(separator: " · ")
+        }
+        if run.detail != legacyPreparedDetail, !run.detail.isEmpty {
+            return normalizedRecordedSummary(run.detail, timing: timing, hasText: hasText)
+        }
         let completion = run.entries.last { $0.id.hasSuffix("|pipeline.complete") }?.status.detail ?? ""
         guard let match = completion.firstMatch(of: #/^(\d+) advertisements?/#),
               let count = Int(match.1) else { return nil }
-        let ads = switch count {
-        case 0: "no ads found"
-        case 1: "1 ad removed"
-        default: "\(count) ads removed"
+        let label = count > 0 ? "Ads removed" : "Ad check skipped"
+        let detail = count > 0 ? " · \(PodcastPreparationResult.removedSummary(advertisements: count, secondsRemoved: 0))" : ""
+        return "\(PodcastPreparationResult.readyLabel) · \(label)\(detail) · \(PodcastPreparationResult.transcriptStep(timing ?? .none, hasText: hasText))"
+    }
+
+    private nonisolated static func normalizedRecordedSummary(
+        _ detail: String, timing: TranscriptTiming?, hasText: Bool?
+    ) -> String {
+        var parts = detail.components(separatedBy: " · ")
+        for index in parts.indices {
+            if parts[index] == "Prepared" || parts[index] == "Prepared." {
+                parts[index] = PodcastPreparationResult.readyLabel
+            } else if parts[index].hasPrefix("original audio includes ads:") {
+                let reason = parts[index].dropFirst("original audio includes ads:".count)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                parts[index] = reason.isEmpty ? "Some ads may remain" : "Some ads may remain: \(reason)"
+            } else if parts[index] == "no ads found" || parts[index] == "ad removal disabled" {
+                parts[index] = "Ad check skipped"
+            } else if parts[index].contains(" ads removed") || parts[index].contains(" ad removed") {
+                let values = parts[index].split(separator: " ")
+                if values.count >= 3, Int(values[0]) != nil,
+                   values[1].hasPrefix("ad"), values[2] == "removed" {
+                    let count = values[0]
+                    let duration = values.dropFirst(3).joined(separator: " ")
+                    let unit = count == "1" ? "ad" : "ads"
+                    let detail = duration.isEmpty ? "\(count) \(unit)" : "\(count) \(unit) \(duration)"
+                    parts[index] = "Ads removed · \(detail)"
+                }
+            } else if parts[index].hasPrefix("transcript ") {
+                parts[index] = PodcastPreparationResult.transcriptStep(timing ?? .none, hasText: hasText)
+            }
         }
-        return "\(PodcastPreparationResult.readyLabel) · \(ads) · \(PodcastPreparationResult.transcriptStep(.aligned))"
+        return parts.joined(separator: " · ")
     }
 
     /// What a finished preparation removed, counted per kind.
@@ -344,13 +420,10 @@ extension WiltedMacModel {
     /// The prepared-row summary: a per-kind removal breakdown when the run
     /// journalled one, and the previous wording when it did not.
     nonisolated static func preparedSummary(
-        of run: PreparationRunSummary?, timing: TranscriptTiming
+        of run: PreparationRunSummary?, timing: TranscriptTiming, hasText: Bool? = nil
     ) -> String {
-        let step = PodcastPreparationResult.transcriptStep(timing)
-        if let kinds = removalKindSummary(of: run) {
-            return "\(PodcastPreparationResult.readyLabel) · \(kinds) · \(step)"
-        }
-        return recordedSummary(of: run) ?? "\(PodcastPreparationResult.readyLabel) · \(step)"
+        recordedSummary(of: run, timing: timing, hasText: hasText)
+            ?? "\(PodcastPreparationResult.readyLabel) · Ad check skipped · \(PodcastPreparationResult.transcriptStep(timing, hasText: hasText))"
     }
 
     /// Where a cut lands in the prepared audio: the end of the last kept

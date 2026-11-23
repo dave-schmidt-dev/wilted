@@ -208,7 +208,7 @@ final class WiltedMacRestoreCutEpisodesTests: XCTestCase {
         XCTAssertEqual(
             WiltedMacModel.prepareAgainConfirmationMessage,
             "Wilted downloads the original audio where needed and prepares each episode with the current engine. "
-                + "Shows with Remove ads set to Off (Custom) get their full episodes back. Your place in each is kept."
+                + "Shows marked as already ad-free get their full episodes back. Your place in each is kept."
         )
     }
 

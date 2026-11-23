@@ -62,7 +62,7 @@ struct WiltedMacAdFindingSettingsView: View {
                     presentedDestination = .allShows
                 } label: {
                     VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
-                        Text("\(allowedPodcastShowCount) of \(podcastSubscriptions.count) shows allowed for ad finding")
+                        Text("\(allowedPodcastShowCount) of \(podcastSubscriptions.count) podcasts selected for ad finding")
                             .wiltedFont(.utility)
                             .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                             .lineLimit(nil)
@@ -80,14 +80,33 @@ struct WiltedMacAdFindingSettingsView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("\(allowedPodcastShowCount) of \(podcastSubscriptions.count) shows allowed for ad finding. All shows")
+                .accessibilityLabel("\(allowedPodcastShowCount) of \(podcastSubscriptions.count) podcasts selected for ad finding. All shows")
                 .accessibilityIdentifier("wilted-ad-finding-consent-summary")
                 if let paused = model.providerPausedSentence {
-                    WiltedSettingsRow(
-                        "Provider",
-                        value: paused,
-                        identifier: "wilted-ad-finding-provider-paused"
-                    )
+                    VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("Provider")
+                                .wiltedFont(.body)
+                                .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                            Spacer(minLength: WiltedTheme.Spacing.small)
+                            Button("Retry") {
+                                let selectedProvider = appModel.providers.provider
+                                Task {
+                                    await model.retryProviderPause {
+                                        let succeeded = await appModel.providers.check(selectedProvider)
+                                        return succeeded && appModel.providers.provider == selectedProvider
+                                    }
+                                }
+                            }
+                            .disabled(appModel.providers.isChecking(appModel.providers.provider))
+                            .accessibilityIdentifier("wilted-ad-finding-provider-retry")
+                        }
+                        Text(paused)
+                            .wiltedFont(.utility)
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("wilted-ad-finding-provider-paused")
+                    }
                 }
                 Divider()
                 WiltedSettingsRow(
@@ -188,8 +207,7 @@ struct WiltedMacAdFindingSettingsView: View {
 
     private var help: WiltedMacHelpContent {
         WiltedMacHelpContent(title: "Ad finding", text:
-            "Only shows allowed on their Show settings pages are sent: their transcripts go to the online labeller to find ads. "
-            + "Shows added later are not sent until turned on in Show settings.")
+            "Choose a service to check episodes for ads. Choose which podcasts to check in Show settings.")
     }
 }
 
@@ -219,15 +237,12 @@ struct WiltedMacAdFindingConfirmSheet: View {
             Text("Turn on online ad finding?")
                 .wiltedFont(.title)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-            Text("The online labeller receives transcripts from these shows to find ads.")
-                .wiltedFont(.body)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             ScrollView {
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-                    group("Transcripts will be sent", shows: model.sheetSentShows)
+                    group("Selected for ad finding", shows: model.sheetSentShows)
                     Divider()
-                    group("Not sent", shows: model.sheetNotSentShows)
-                    Text("Shows you add later are not sent until you turn them on in Show settings.")
+                    group("Other shows", shows: model.sheetNotSentShows, detail: model.confirmationNotSentMessage)
+                    Text("For shows you add later, turn on ad finding in Show settings.")
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .fixedSize(horizontal: false, vertical: true)
@@ -253,7 +268,10 @@ struct WiltedMacAdFindingConfirmSheet: View {
     }
 
     /// A read-only preview of the show's route and owner choices.
-    private func group(_ title: String, shows: [WiltedMacAdFindingSettings.Show]) -> some View {
+    private func group(
+        _ title: String, shows: [WiltedMacAdFindingSettings.Show],
+        detail: ((WiltedMacAdFindingSettings.Show) -> String)? = nil
+    ) -> some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
             Text(title)
                 .wiltedFont(.utility)
@@ -264,8 +282,8 @@ struct WiltedMacAdFindingConfirmSheet: View {
                         Text(show.title)
                             .wiltedFont(.body)
                             .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
-                        if title == "Not sent" {
-                            Text(model.confirmationNotSentMessage(for: show))
+                        if let detail {
+                            Text(detail(show))
                                 .wiltedFont(.utility)
                                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                                 .fixedSize(horizontal: false, vertical: true)

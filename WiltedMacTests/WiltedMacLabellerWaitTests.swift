@@ -13,16 +13,17 @@ final class WiltedMacLabellerWaitTests: XCTestCase {
         String(repeating: "x", count: 80) + " AM"
     }
 
-    private let providerReasons: [WorkTicketDeferralReason] = [
-        .providerRateLimited, .providerUnavailable, .providerUsageLimit
+    private let providerReasons: [(WorkTicketDeferralReason, String)] = [
+        (.providerRateLimited, "Too many requests"), (.providerUnavailable, "Service unavailable"),
+        (.providerUsageLimit, "Provider usage limit")
     ]
 
     func testProviderWaitsCarryTimeAndCountInPublishedDetailAndStamp() {
-        for reason in providerReasons {
+        for (reason, label) in providerReasons {
             for count in [0, 1, 4] {
                 let detail = WiltedMacLabellerWait.publishedDetail(
                     reason: reason, retryAt: retry, waitCount: count, formatTime: formatTime)
-                XCTAssertTrue(detail.hasPrefix("Ad removal is waiting on the provider. Retrying at 9:41 AM."),
+                XCTAssertTrue(detail.hasPrefix("\(label). Retrying at 9:41 AM."),
                               "\(reason) count \(count): \(detail)")
                 switch count {
                 case 0: XCTAssertFalse(detail.contains("Tried"))
@@ -55,7 +56,7 @@ final class WiltedMacLabellerWaitTests: XCTestCase {
                 reason: .dailyRequestCap, retryAt: retry, waitCount: count, formatTime: formatTime)
             XCTAssertEqual(
                 detail,
-                "Ad removal reached today's limit for online labelling. Retrying at 9:41 AM."
+                "Daily ad-check limit reached. Retrying at 9:41 AM."
             )
             XCTAssertFalse(detail.contains("Tried"))
         }
@@ -65,19 +66,20 @@ final class WiltedMacLabellerWaitTests: XCTestCase {
         let detail = WiltedMacLabellerWait.publishedDetail(
             reason: .providerUnavailable, retryAt: retry, waitCount: 12, formatTime: longTime)
         XCTAssertLessThanOrEqual(detail.utf8.count, LibraryPreparationStatus.maximumDetailBytes)
-        XCTAssertTrue(detail.contains("Ad removal is waiting on the provider."))
+        XCTAssertTrue(detail.contains("Service unavailable."))
     }
 
     func testRowLabelsStayShortAndDistinctByReason() {
-        XCTAssertEqual(
-            WiltedMacLabellerWait.rowLabel(
-                reason: .providerRateLimited, retryAt: retry, formatTime: formatTime),
-            "Waiting on the provider · retrying 9:41 AM"
-        )
+        for (reason, label) in providerReasons {
+            XCTAssertEqual(WiltedMacLabellerWait.rowLabel(
+                reason: reason, retryAt: retry, formatTime: formatTime), "\(label) · retrying 9:41 AM")
+            XCTAssertEqual(WiltedMacModel.preparationLabel(for: .init(
+                stage: "ads.label.wait", detail: label)), label)
+        }
         XCTAssertEqual(
             WiltedMacLabellerWait.rowLabel(
                 reason: .dailyRequestCap, retryAt: retry, formatTime: formatTime),
-            "Reached today's labelling limit · retrying 9:41 AM"
+            "Daily ad-check limit reached · retrying 9:41 AM"
         )
     }
 
@@ -97,7 +99,7 @@ final class WiltedMacLabellerWaitTests: XCTestCase {
         XCTAssertEqual(waiting.attemptID, "generation-4-2")
         XCTAssertEqual(
             waiting.detail,
-            "Ad removal is waiting on the provider. Retrying at 9:41 AM. Tried once so far."
+            "Provider usage limit. Retrying at 9:41 AM. Tried once so far."
         )
         XCTAssertFalse(waiting.detail.contains(WiltedMacLabellerWait.phoneNote))
 

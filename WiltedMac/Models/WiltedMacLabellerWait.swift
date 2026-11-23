@@ -21,7 +21,7 @@ enum WiltedMacLabellerWait {
         waitCount: Int,
         formatTime: (Date) -> String = defaultFormatTime
     ) -> String {
-        boundedDetail(sentence(reason: reason, retryAt: retryAt, formatTime: formatTime)
+        boundedDetail("\(reason.waitLabel). Retrying at \(formatTime(retryAt))."
             + countSuffix(reason: reason, waitCount: waitCount))
     }
 
@@ -41,13 +41,7 @@ enum WiltedMacLabellerWait {
         retryAt: Date,
         formatTime: (Date) -> String = defaultFormatTime
     ) -> String {
-        let time = formatTime(retryAt)
-        switch reason {
-        case .providerRateLimited, .providerUnavailable, .providerUsageLimit:
-            return "Waiting on the provider · retrying \(time)"
-        case .dailyRequestCap:
-            return "Reached today's labelling limit · retrying \(time)"
-        }
+        "\(reason.waitLabel) · retrying \(formatTime(retryAt))"
     }
 
     static func rowLabel(
@@ -55,20 +49,6 @@ enum WiltedMacLabellerWait {
         formatTime: (Date) -> String = defaultFormatTime
     ) -> String {
         rowLabel(reason: wait.reason, retryAt: wait.retryAt.date, formatTime: formatTime)
-    }
-
-    private static func sentence(
-        reason: WorkTicketDeferralReason,
-        retryAt: Date,
-        formatTime: (Date) -> String
-    ) -> String {
-        let time = formatTime(retryAt)
-        switch reason {
-        case .providerRateLimited, .providerUnavailable, .providerUsageLimit:
-            return "Ad removal is waiting on the provider. Retrying at \(time)."
-        case .dailyRequestCap:
-            return "Ad removal reached today's limit for online labelling. Retrying at \(time)."
-        }
     }
 
     /// Provider waits carry a count; a daily-cap wait never does.

@@ -273,10 +273,10 @@ def run(request: dict) -> dict:
         or bool(ad_audit.get("unresolvedIds"))
     ):
         outcome = "uncertain"
-        uncertain_warning = ad_audit.get("warning") or (
-            f"original audio includes ads: {ad_audit['incompleteError']}" if ad_audit.get("incompleteError")
-            else f"original audio includes ads: unresolved global IDs: {ad_audit.get('unresolvedIds')}"
-        )
+        reason = ad_audit.get("incompleteError")
+        if not reason and ad_audit.get("unresolvedIds"):
+            reason = "unresolved spans"
+        uncertain_warning = ad_audit.get("warning") or f"Some ads may remain: {reason}"
         output_path = audio_path
         ad_spans = []
         keeps = []

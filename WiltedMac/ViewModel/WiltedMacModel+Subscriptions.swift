@@ -84,10 +84,14 @@ extension WiltedMacModel {
         case "transcript.remap": "Resynchronising the transcript…"
         case "ads.detect.complete",
              "ads.label.start", "ads.label.complete": "Finding advertisements…"
-        case "ads.label.wait": "Ad removal is waiting on the provider…"
-        case "ads.label.stop", "ads.cut.refused", "ads.cut.empty": "Advertisements left in place."
+        case "ads.label.wait":
+            WorkTicketDeferralReason.allCases.first { $0.waitLabel == progress.detail }?.waitLabel
+                ?? "Waiting to retry the ad check"
+        case "ads.label.stop": "Ad check stopped"
+        case "ads.not-sent", "ads.skipped": "Ad check skipped"
+        case "ads.cut.refused", "ads.uncertain": "Some ads may remain"
+        case "ads.cut.empty": "Keeping the original audio"
         case "ads.cut.start", "ads.cut.complete": "Removing advertisements…"
-        case "ads.not-sent": "Leaving ads in"
         case "audio.publish": "Storing the prepared audio…"
         case "pipeline.complete": "Prepared."
         default: "Preparing…"
@@ -454,8 +458,7 @@ extension WiltedMacModel {
     func startPodcastRefresh(
         urls: [URL], subscribing: Bool,
         initialMetadataLimit: Int? = nil,
-        requestID: UUID? = nil,
-        asksAboutAdFree: Bool = false
+        requestID: UUID? = nil
     ) {
         guard !isClosingTemporaryState, podcastRefreshTask == nil else { return }
         isRefreshingPodcasts = true
@@ -483,7 +486,7 @@ extension WiltedMacModel {
             do {
                 let result = try await self.refreshPodcastURLs(
                     urls, subscribing: subscribing, initialMetadataLimit: initialMetadataLimit,
-                    requestID: requestID, asksAboutAdFree: asksAboutAdFree
+                    requestID: requestID
                 )
                 guard self.podcastRefreshOperationID == operationID,
                       requestID == nil || self.podcastSubscriptionRequestID == requestID else { return }

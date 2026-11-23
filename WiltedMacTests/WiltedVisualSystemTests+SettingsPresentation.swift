@@ -42,10 +42,8 @@ extension WiltedVisualSystemTests {
         XCTAssertTrue(card.contains("wilted-automation-processing-policy"))
         XCTAssertTrue(card.contains("wilted-automation-transcript-policy"))
         XCTAssertTrue(card.contains("wilted-automation-remove-ads"))
-        // The notice is conditional, so the pane only says the pair is
-        // unworkable while it is actually selected.
-        XCTAssertTrue(card.contains("wilted-automation-transcript-conflict"))
-        XCTAssertTrue(card.contains("if model.automationSettings.transcriptPolicyBlocksAdRemoval"))
+        XCTAssertTrue(card.contains("wilted-automation-transcript-explanation"))
+        XCTAssertTrue(card.contains("model.automationSettings.transcriptPolicyExplanation"))
         XCTAssertTrue(card.contains("wilted-automation-off-peak-start"))
         XCTAssertTrue(card.contains("wilted-automation-off-peak-end"))
         XCTAssertTrue(card.contains("Uses local time. The window may continue overnight."))

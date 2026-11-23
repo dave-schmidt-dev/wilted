@@ -255,7 +255,7 @@ def serialize_labelled_audit(decision: LabelledDecision, request: dict) -> dict:
         "nearEmpty": None,
     }
     if decision.keep_whole_reason is not None:
-        warning = f"original audio includes ads: {decision.keep_whole_reason}"
+        warning = f"Some ads may remain: {decision.keep_whole_reason}"
         audit["incompleteError"] = decision.keep_whole_reason
         audit["warning"] = warning
         audit["breaksCut"] = 0
@@ -336,7 +336,7 @@ def cut_from_labelled_breaks(
     except WorkerError as error:
         if error.code == "cut-unsafe":
             reason = f"ad cut unsafe: {error}"
-            warning = f"original audio includes ads: {reason}"
+            warning = f"Some ads may remain: {reason}"
             _worker_reporting.progress("ads.uncertain", warning)
             audit["incompleteError"] = reason
             audit["warning"] = warning
@@ -346,7 +346,7 @@ def cut_from_labelled_breaks(
 
     if not keeps:
         reason = "every span was classified as an advertisement; refusing unsafe cut"
-        warning = f"original audio includes ads: {reason}"
+        warning = f"Some ads may remain: {reason}"
         _worker_reporting.progress("ads.uncertain", warning)
         audit["incompleteError"] = reason
         audit["warning"] = warning

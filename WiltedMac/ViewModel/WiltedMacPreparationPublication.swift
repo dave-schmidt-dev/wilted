@@ -94,15 +94,14 @@ enum WiltedMacPreparationPublication {
             }
         }
         if state == .active, !awaitingProof, let status = value.status, let step = reportedStep {
-            detail = WiltedMacModel.preparationLabel(for: PodcastPreparationProgress(stage: step))
+            detail = WiltedMacModel.preparationLabel(for: PodcastPreparationProgress(stage: step, detail: status.detail))
             if step == "transcript.glossary.progress",
                status.detail.range(of: #"^[0-9]{1,6} of [0-9]{1,6} cues\z"#, options: .regularExpression) != nil {
                 detail += " " + status.detail + "."
-            } else if status.evidence?.kind == "worker-result",
-                      let ads = status.evidence?.fields["advertisements"].flatMap(Int.init),
-                      let cues = status.evidence?.fields["cues"].flatMap(Int.init),
-                      (0...999_999).contains(ads), (0...999_999).contains(cues) {
-                detail = "Found \(ads) advertisements and \(cues) transcript cues."
+            } else if let evidence = status.evidence, evidence.kind == "worker-result",
+                      let outcome = evidence.fields["adRemovalOutcome"] {
+                detail = PodcastPreparationResult.adCheckLabel(
+                    outcome: outcome, adsMayRemain: evidence.fields["adsMayRemain"] == "true")
             }
         }
         if awaitingProof { detail = "Prepared output is not yet confirmed." }

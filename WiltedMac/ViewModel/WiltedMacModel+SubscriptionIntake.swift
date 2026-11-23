@@ -14,9 +14,8 @@ extension WiltedMacModel {
 
     /// Starts one bounded subscription request. The stored setting controls
     /// only the first metadata window; it never requests audio or queue work.
-    /// `asksAboutAdFree` is false for an add nobody is at the Mac to answer for.
     func startPodcastSubscriptionIntake(
-        _ url: URL, initialMetadataCount: Int? = nil, asksAboutAdFree: Bool = true
+        _ url: URL, initialMetadataCount: Int? = nil
     ) {
         guard url.scheme?.lowercased() == "https", url.host != nil else {
             podcastFeedDraftStatus = "Enter a complete HTTPS podcast feed URL."
@@ -46,8 +45,7 @@ extension WiltedMacModel {
         podcastFeedDraftStatus = "Adding podcast feed…"
         pendingPodcastSubscriptionInitialMetadataCount = nil
         startPodcastRefresh(
-            urls: [url], subscribing: true, initialMetadataLimit: limit, requestID: requestID,
-            asksAboutAdFree: asksAboutAdFree
+            urls: [url], subscribing: true, initialMetadataLimit: limit, requestID: requestID
         )
     }
 #endif

@@ -37,7 +37,7 @@ public enum LabellerStopReason: Equatable, Sendable {
         case .waitLimit: return "The provider did not answer in time."
         case .dailyCap: return "The daily limit for online labelling was reached."
         case .providerPaused(let since):
-            return "The provider has not answered since \(formatTime(since)). Check the model name in Settings."
+            return "The provider has not answered since \(formatTime(since)). Choose Retry in Ad finding settings to check it again."
         }
     }
 }

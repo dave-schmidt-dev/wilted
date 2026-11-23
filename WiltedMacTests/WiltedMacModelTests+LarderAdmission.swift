@@ -416,7 +416,45 @@ extension WiltedMacModelTests {
         XCTAssertNil(WiltedMacModel.removalKindSummary(of: run))
         XCTAssertEqual(WiltedMacModel.preparedSummary(of: run, timing: .aligned),
                        WiltedMacModel.recordedSummary(of: run)
-                       ?? "Ready · \(PodcastPreparationResult.transcriptStep(.aligned))")
+                       ?? "Ready · Ad check skipped · \(PodcastPreparationResult.transcriptStep(.aligned))")
+    }
+
+    func testPreparedSummaryRestoresFourAdCheckOutcomesFromWorkerEvidence() throws {
+        let skipped = try preparationRun(withRemovalKinds: [], workerOutcome: "disabled",
+                                         workerWarning: "Online ad finding is off.")
+        XCTAssertEqual(WiltedMacModel.preparedSummary(of: skipped, timing: .none),
+                       "Ready · Ad check skipped · Online ad finding is off. · transcript unavailable")
+
+        let noAds = try preparationRun(withRemovalKinds: [], workerOutcome: "noAds")
+        XCTAssertEqual(WiltedMacModel.preparedSummary(of: noAds, timing: .aligned, hasText: true),
+                       "Ready · No ads found · transcript from audio")
+
+        let removed = try preparationRun(withRemovalKinds: ["paid advertising"], workerOutcome: "cut")
+        XCTAssertEqual(WiltedMacModel.preparedSummary(of: removed, timing: .aligned, hasText: true),
+                       "Ready · Ads removed · 1 paid advertising · transcript from audio")
+
+        let partial = try preparationRun(withRemovalKinds: ["paid advertising"], workerOutcome: "cut",
+                                         adsMayRemain: true, leftIn: true,
+                                         timing: .published)
+        XCTAssertEqual(WiltedMacModel.preparedSummary(of: partial, timing: .none, hasText: true),
+                       "Ready · Some ads may remain · Ads removed · 1 paid advertising · untimed transcript from the feed")
+
+        let uncertain = try preparationRun(withRemovalKinds: [], workerOutcome: "uncertain",
+                                           workerWarning: "Some ads may remain: The provider did not answer.")
+        XCTAssertEqual(WiltedMacModel.preparedSummary(of: uncertain, timing: .none),
+                       "Ready · Some ads may remain · The provider did not answer. · transcript unavailable")
+    }
+
+    func testLegacyPreparedSummariesDoNotClaimUnverifiedAdsOrOldWarningCopy() throws {
+        let warning = try preparationRun(
+            withRemovalKinds: [], detail: "Ready · original audio includes ads: provider unavailable · transcript synced")
+        let warningSummary = WiltedMacModel.preparedSummary(of: warning, timing: .published, hasText: true)
+        XCTAssertTrue(warningSummary.contains("Some ads may remain: provider unavailable"), warningSummary)
+        XCTAssertFalse(warningSummary.contains("original audio includes ads"), warningSummary)
+
+        let noResult = try preparationRun(withRemovalKinds: [], detail: "Ready · no ads found · transcript synced")
+        XCTAssertEqual(WiltedMacModel.preparedSummary(of: noResult, timing: .published, hasText: true),
+                       "Ready · Ad check skipped · transcript from the feed")
     }
 
     /// A run retried inside one request journals its spans twice. The summary
@@ -431,7 +469,10 @@ extension WiltedMacModelTests {
     /// Builds a succeeded run whose entries journal one `advertisement`
     /// evidence per removal, the shape `adProgress` writes.
     private func preparationRun(
-        withRemovalKinds kinds: [String], attempts: Int = 1
+        withRemovalKinds kinds: [String], attempts: Int = 1,
+        workerOutcome: String? = nil, adsMayRemain: Bool = false, leftIn: Bool = false,
+        workerWarning: String? = nil, timing: TranscriptTiming = .aligned,
+        detail: String = "Prepared."
     ) throws -> PreparationRunSummary {
         let itemID = try ItemID(rawValue: "kind-summary-episode")
         let requestID = "podcast-prepare|kind-summary-episode"
@@ -457,8 +498,43 @@ extension WiltedMacModelTests {
                 emitted += 1
             }
         }
+        if let workerOutcome {
+            var fields = [
+                "adRemovalOutcome": workerOutcome,
+                "adsMayRemain": adsMayRemain ? "true" : "false",
+                "audioChanged": kinds.isEmpty ? "false" : "true",
+                "advertisements": String(kinds.count),
+                "removedSeconds": kinds.isEmpty ? "0.000" : "30.000",
+                "timing": timing.rawValue,
+            ]
+            if let workerWarning { fields["warning"] = workerWarning }
+            entries.append(PreparationJournalEntry(
+                id: "\(requestID)|pipeline.result#\(attempts)",
+                itemID: itemID, requestID: requestID,
+                status: try PreparationStatus(
+                    stage: .assembling, detail: "worker result", fraction: 0.8, cancellable: true,
+                    emittedAt: Timestamp(origin.addingTimeInterval(Double(emitted))),
+                    evidence: try PreparationEvidence(kind: "worker-result", fields: fields)
+                )
+            ))
+            emitted += 1
+        }
+        if leftIn {
+            entries.append(PreparationJournalEntry(
+                id: "\(requestID)|ads.left-in.1#\(attempts)",
+                itemID: itemID, requestID: requestID,
+                status: try PreparationStatus(
+                    stage: .assembling, detail: "0:10–0:20 · left in · acceptable-cut", fraction: 0.8,
+                    cancellable: true, emittedAt: Timestamp(origin.addingTimeInterval(Double(emitted))),
+                    evidence: try PreparationEvidence(kind: "advertisement-left-in", fields: [
+                        "ordinal": "1", "reason": "acceptable-cut"
+                    ])
+                )
+            ))
+            emitted += 1
+        }
         let terminal = try PreparationStatus(
-            stage: .completed, detail: "Prepared.", fraction: 1, cancellable: false,
+            stage: .completed, detail: detail, fraction: 1, cancellable: false,
             terminalResult: try PreparationTerminalResult(
                 outcome: .succeeded, revisionID: RevisionID(rawValue: "rev-kind-summary")
             ),
@@ -470,7 +546,7 @@ extension WiltedMacModelTests {
         return PreparationRunSummary(
             requestID: requestID, itemID: itemID,
             startedAt: Timestamp(origin), updatedAt: terminal.emittedAt,
-            stage: .completed, detail: "Prepared.", fraction: 1, isTerminal: true,
+            stage: .completed, detail: detail, fraction: 1, isTerminal: true,
             outcome: .succeeded, failure: nil, entries: entries
         )
     }

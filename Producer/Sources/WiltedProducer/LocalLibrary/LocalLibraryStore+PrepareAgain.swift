@@ -33,6 +33,14 @@ public struct PodcastPrepareAgainCandidate: Equatable, Sendable {
     }
 }
 
+extension PreparationRunSummary {
+    /// The revision this run actually prepared. A refused retry can name older ready audio.
+    public var producedRevisionID: RevisionID? {
+        guard isTerminal, outcome == .succeeded else { return nil }
+        return LocalLibraryStore.JournalAttempt(entries: entries).producedRevisionID
+    }
+}
+
 extension LocalLibraryStore {
     /// The evidence kind the pipeline attaches to the worker's own report.
     static let workerResultEvidenceKind = "worker-result"
@@ -204,10 +212,12 @@ extension LocalLibraryStore {
             entries.lazy.compactMap(\.status.evidence)
                 .first(where: { $0.kind == LocalLibraryStore.workerResultEvidenceKind })?.fields["adRemovalOutcome"]
         }
-        /// A run that ended by keeping the audio it found, so its success names
-        /// the ready revision without having produced it.
-        var keptExistingAudio: Bool {
-            entries.contains { $0.status.evidence?.kind == LocalLibraryStore.keptExistingAudioEvidenceKind }
+        /// A run that kept existing audio names the revision but did not produce it.
+        var producedRevisionID: RevisionID? {
+            guard let result = terminal?.terminalResult, result.outcome == .succeeded,
+                  !entries.contains(where: { $0.status.evidence?.kind == LocalLibraryStore.keptExistingAudioEvidenceKind })
+            else { return nil }
+            return result.revisionID
         }
     }
 
@@ -249,11 +259,7 @@ extension LocalLibraryStore {
     /// or refused run is not the one that produced the audio, so only this
     /// attempt can say what was cut and where.
     private static func attemptProducing(_ revisionID: RevisionID, in attempts: [JournalAttempt]) -> JournalAttempt? {
-        attempts.last {
-            $0.terminal?.terminalResult?.outcome == .succeeded
-                && $0.terminal?.terminalResult?.revisionID == revisionID
-                && !$0.keptExistingAudio
-        }
+        attempts.last { $0.producedRevisionID == revisionID }
     }
 
     /// Which of two journalled attempts is the newer one.

@@ -17,9 +17,13 @@ extension WiltedMacModelTests {
             ("ads.detect.complete", "Finding advertisements…"),
             ("ads.label.start", "Finding advertisements…"),
             ("ads.label.complete", "Finding advertisements…"),
-            ("ads.label.wait", "Ad removal is waiting on the provider…"),
-            ("ads.label.stop", "Advertisements left in place."),
-            ("ads.cut.refused", "Advertisements left in place."),
+            ("ads.label.wait", "Waiting to retry the ad check"),
+            ("ads.label.stop", "Ad check stopped"),
+            ("ads.not-sent", "Ad check skipped"),
+            ("ads.skipped", "Ad check skipped"),
+            ("ads.uncertain", "Some ads may remain"),
+            ("ads.cut.refused", "Some ads may remain"),
+            ("ads.cut.empty", "Keeping the original audio"),
             ("audio.publish", "Storing the prepared audio…"),
             ("pipeline.complete", "Prepared."),
         ]
@@ -89,7 +93,22 @@ extension WiltedMacModelTests {
         XCTAssertEqual(
             WiltedMacModel.preparationState(outcome: outcome, run: failed, readyRevisionID: revisionID,
                                             transcript: try transcript(.aligned)),
-            .prepared(summary: "\(PodcastPreparationResult.readyLabel) · \(PodcastPreparationResult.transcriptStep(.aligned))")
+            .prepared(summary: "Ready · Ad check skipped · transcript from audio")
+        )
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(outcome: outcome, run: failed, readyRevisionID: revisionID,
+                                            transcript: try transcript(.published)),
+            .prepared(summary: "Ready · Ad check skipped · transcript from the feed")
+        )
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(outcome: outcome, run: failed, readyRevisionID: revisionID,
+                                            transcript: try transcript(.none)),
+            .prepared(summary: "Ready · Ad check skipped · untimed transcript")
+        )
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(outcome: outcome, run: failed, readyRevisionID: revisionID,
+                                            transcript: try transcript(.none, .absent)),
+            .prepared(summary: "Ready · Ad check skipped · transcript unavailable")
         )
         // A legacy-invalidated outcome is not proof, even for the ready revision.
         let invalidated = PodcastPreparationOutcome(episodeID: itemID, revisionID: revisionID, policyDigest: "d",
@@ -105,7 +124,7 @@ extension WiltedMacModelTests {
     func testEpisodePreparationStateLarderLabelsShowOnlyProvenCompletedSummary() {
         XCTAssertNil(WiltedMacEpisodePreparationState.notPrepared.larderLabel)
 
-        let summary = "Ready · 5 ads removed (7:22) · transcript synced"
+        let summary = "Ready · Ads removed · 5 ads (7:22) · transcript from audio"
         let prepared = WiltedMacEpisodePreparationState.prepared(summary: summary)
         XCTAssertEqual(prepared.label, summary)
         XCTAssertEqual(prepared.larderLabel, summary)
@@ -126,7 +145,7 @@ extension WiltedMacModelTests {
             expected: String,
             failure: Bool
         )] = [
-            (.notDownloaded, .prepared(summary: "Ready \u{00B7} transcript synced"), "Not downloaded", false),
+            (.notDownloaded, .prepared(summary: "Ready \u{00B7} Ad check skipped \u{00B7} transcript from audio"), "Not downloaded", false),
             (.queued, .failed("old failure"), "Download queued", false),
             (.downloading(received: 2, expected: 10), .prepared(summary: "Ready"), "Downloading 20%", false),
             (.downloading(received: 1, expected: nil), .notPrepared, "Downloading 1 byte", false),
@@ -136,8 +155,8 @@ extension WiltedMacModelTests {
             (.completed, .notPrepared, "Downloaded \u{00B7} Ready to prepare", false),
             (.completed, .preparing(stage: "Queued"), "Preparing \u{00B7} Queued", false),
             (.completed, .preparing(stage: "Preparing\u{2026}"), "Preparing", false),
-            (.completed, .prepared(summary: "Ready \u{00B7} 5 ads removed \u{00B7} transcript synced"),
-             "Prepared \u{00B7} 5 ads removed \u{00B7} transcript synced", false),
+            (.completed, .prepared(summary: "Ready \u{00B7} Ads removed \u{00B7} 5 ads \u{00B7} transcript from audio"),
+             "Prepared \u{00B7} Ads removed \u{00B7} 5 ads \u{00B7} transcript from audio", false),
             (.completed, .failed("Preparation failed. See Prep."), "Preparation failed \u{00B7} See Prep.", true),
         ]
 
@@ -284,7 +303,7 @@ extension WiltedMacModelTests {
         XCTAssertEqual(model.articles.first(where: { $0.id == second.id })?.playbackSeconds, 0)
     }
 
-    func testUnavailableTranscriptProjectsAudioReadyWithoutPreparedPrefix() throws {
+    func testUnavailableTranscriptRetainsTheAdCheckResult() throws {
         let itemID = try ItemID(rawValue: "item-" + String(repeating: "9", count: 64))
         let revisionID = try RevisionID(rawValue: "rev-" + String(repeating: "9", count: 64))
         let when = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
@@ -308,10 +327,10 @@ extension WiltedMacModelTests {
                                                 pipelineFingerprint: "f", semanticVersion: "v", producedAt: when)
         let state = WiltedMacModel.preparationState(outcome: outcome, run: run, readyRevisionID: revisionID,
                                                     transcript: nil)
-        XCTAssertEqual(state, .prepared(summary: "Audio ready · Transcript unavailable"))
+        XCTAssertEqual(state, .prepared(summary: "Ready · Ad check skipped · transcript unavailable"))
         XCTAssertEqual(
             WiltedMacEpisodeLifecyclePresentation(downloadState: .completed, preparationState: state).label,
-            "Audio ready · Transcript unavailable"
+            "Prepared · Ad check skipped · transcript unavailable"
         )
     }
 
@@ -348,12 +367,12 @@ extension WiltedMacModelTests {
     func testPreparedLifecycleSeparatesStatusFromExplicitOutcomes() {
         let presentation = WiltedMacEpisodeLifecyclePresentation(
             downloadState: .completed,
-            preparationState: .prepared(summary: "Ready · 3 ads removed · transcript synced")
+            preparationState: .prepared(summary: "Ready · Ads removed · 3 ads · transcript from audio")
         )
 
         XCTAssertEqual(presentation.primaryLabel, "Prepared")
-        XCTAssertEqual(presentation.detailLabel, "3 ads removed · transcript synced")
-        XCTAssertEqual(presentation.label, "Prepared · 3 ads removed · transcript synced")
+        XCTAssertEqual(presentation.detailLabel, "Ads removed · 3 ads · transcript from audio")
+        XCTAssertEqual(presentation.label, "Prepared · Ads removed · 3 ads · transcript from audio")
     }
 
     func testPlaybackAndLarderActionsRequireCompletedPreparation() {
@@ -380,7 +399,7 @@ extension WiltedMacModelTests {
         XCTAssertFalse(WiltedMacModel.isEligibleForPreparation(preparing))
 
         var prepared = base
-        prepared.preparationState = .prepared(summary: "Ready · no ads found · transcript synced")
+        prepared.preparationState = .prepared(summary: "Ready · Ad check skipped · transcript from audio")
         XCTAssertTrue(model.canPlayEpisode(prepared))
         XCTAssertTrue(model.canAddEpisodeToLarder(prepared))
         XCTAssertFalse(WiltedMacModel.isEligibleForPreparation(prepared))
@@ -397,7 +416,7 @@ extension WiltedMacModelTests {
                 id: id, title: id, feedTitle: "Fixtures", summary: "Fixture",
                 artworkURL: nil, releasedAt: Date(timeIntervalSince1970: published), durationSeconds: 600,
                 playbackSeconds: 0, downloadState: .completed,
-                preparationState: .prepared(summary: "Ready · no ads found · transcript synced")
+                preparationState: .prepared(summary: "Ready · Ad check skipped · transcript from audio")
             )
         }
         let current = entry("larder-current", at: 1_700_000_000)

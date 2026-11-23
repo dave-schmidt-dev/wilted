@@ -12,6 +12,10 @@ All notable changes to this project are documented in this file.
 
 - The Mac checks for republished podcast episodes before downloading or preparing them. Uncertain matches wait in Feeds, where duplicate review opens on the closest candidate.
 
+### Changed
+- A podcast’s title and feed address no longer trigger an ad-free prompt on Add. Show settings has an explicit **This show is already ad-free** choice.
+- Mac ad settings distinguish the selected service, its checks and each reason for waiting. Episode preparation reports whether ads were checked or removed, lists passages left in, and identifies the transcript source when recorded.
+
 ## [0.7.2] - 2026-11-22
 
 ### Changed

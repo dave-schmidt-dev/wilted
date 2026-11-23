@@ -304,7 +304,9 @@ extension WiltedMacModel {
                 if let store = self.store {
                     let values = try await self.loadLibrary(from: store)
                     self.articles = values.articles
-                    self.applyEpisodes(values.episodes)
+                    if self.applyEpisodes(values.episodes) {
+                        self.providerEpisodeReplies = values.episodes.latestProviderReplies
+                    }
                     self.subscriptions = values.subscriptions
                     // The reload derives preparation state from the durable
                     // outcome row this run just wrote, with this run's own

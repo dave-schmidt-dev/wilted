@@ -57,8 +57,25 @@ extension WiltedMacModelTests {
             itemID: itemID, revisionID: revisionID, availability: .available, text: "Words.", timing: .aligned,
             cues: [try TranscriptCue(startSeconds: 0, endSeconds: 1, text: "Words.")], updatedAt: when
         )
-        func run(terminal: String, completion: String?, terminalRevisionID: RevisionID) throws -> PreparationRunSummary {
+        let feedTranscript = try Transcript(
+            itemID: itemID, revisionID: revisionID, availability: .available, text: "Feed words.", timing: .published,
+            cues: [try TranscriptCue(startSeconds: 0, endSeconds: 1, text: "Feed words.")], updatedAt: when
+        )
+        func run(terminal: String, completion: String?, terminalRevisionID: RevisionID,
+                 workerTiming: String? = nil) throws -> PreparationRunSummary {
             var entries: [PreparationJournalEntry] = []
+            if let workerTiming {
+                entries.append(PreparationJournalEntry(
+                    id: requestID + "|worker-result", itemID: itemID, requestID: requestID,
+                    status: try PreparationStatus(
+                        stage: .saving, detail: "Worker result", cancellable: true, emittedAt: when,
+                        evidence: try PreparationEvidence(kind: "worker-result", fields: [
+                            "adRemovalOutcome": "noAds", "adsMayRemain": "false",
+                            "advertisements": "0", "removedSeconds": "0", "timing": workerTiming
+                        ])
+                    )
+                ))
+            }
             if let completion {
                 entries.append(PreparationJournalEntry(
                     id: requestID + "|pipeline.complete", itemID: itemID, requestID: requestID,
@@ -90,7 +107,7 @@ extension WiltedMacModelTests {
                                                          completion: "5 advertisements, 1307 cues",
                                                          terminalRevisionID: revisionID),
                                             readyRevisionID: revisionID, transcript: transcript),
-            .prepared(summary: "Ready · 5 ads removed (7:22) · transcript synced")
+            .prepared(summary: "Ready · Ads removed · 5 ads (7:22) · transcript from audio")
         )
         // Older builds wrote "Prepared." and counted advertisements one row
         // earlier; zero there is the honest state of an episode the broken
@@ -100,14 +117,23 @@ extension WiltedMacModelTests {
                                             run: try run(terminal: "Prepared.", completion: "0 advertisements, 1345 cues",
                                                          terminalRevisionID: revisionID),
                                             readyRevisionID: revisionID, transcript: transcript),
-            .prepared(summary: "Ready · no ads found · transcript synced")
+            .prepared(summary: "Ready · Ad check skipped · transcript from audio")
         )
         XCTAssertEqual(
             WiltedMacModel.preparationState(outcome: outcome(for: revisionID),
                                             run: try run(terminal: "Prepared.", completion: "3 advertisements, 900 cues",
                                                          terminalRevisionID: revisionID),
                                             readyRevisionID: revisionID, transcript: transcript),
-            .prepared(summary: "Ready · 3 ads removed · transcript synced")
+            .prepared(summary: "Ready · Ads removed · 3 ads · transcript from audio")
+        )
+        // Legacy Mac reconstruction used to label every saved transcript as
+        // audio-aligned. The stored publication timing is the available source.
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(outcome: outcome(for: revisionID),
+                                            run: try run(terminal: "Prepared.", completion: "3 advertisements, 900 cues",
+                                                         terminalRevisionID: revisionID),
+                                            readyRevisionID: revisionID, transcript: feedTranscript),
+            .prepared(summary: "Ready · Ads removed · 3 ads · transcript from the feed")
         )
         // Transcript timing alone cannot prove that preparation completed.
         XCTAssertEqual(WiltedMacModel.preparationState(outcome: nil, run: nil, readyRevisionID: revisionID,
@@ -118,7 +144,39 @@ extension WiltedMacModelTests {
                                             run: try run(terminal: "Prepared.", completion: nil,
                                                          terminalRevisionID: revisionID),
                                             readyRevisionID: revisionID, transcript: transcript),
-            .prepared(summary: "Ready · transcript synced")
+            .prepared(summary: "Ready · Ad check skipped · transcript from audio")
+        )
+        let untimedTranscript = try Transcript(
+            itemID: itemID, revisionID: revisionID, availability: .available, text: "Words.", updatedAt: when)
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(outcome: outcome(for: revisionID), run: nil,
+                                            readyRevisionID: revisionID, transcript: untimedTranscript),
+            .prepared(summary: "Ready · Ad check skipped · untimed transcript")
+        )
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(outcome: outcome(for: revisionID), run: nil,
+                                            readyRevisionID: revisionID, transcript: nil),
+            .prepared(summary: "Ready · Ad check skipped · transcript unavailable")
+        )
+        // The worker may have used audio-timed speech-to-text even when commit
+        // could not store that transcript. Keep the recorded source and report
+        // the saved transcript as unavailable.
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(
+                outcome: outcome(for: revisionID),
+                run: try run(terminal: "Prepared.", completion: nil,
+                             terminalRevisionID: revisionID, workerTiming: "aligned"),
+                readyRevisionID: revisionID, transcript: nil),
+            .prepared(summary: "Ready · No ads found · audio transcript unavailable")
+        )
+        // If text survives but timing is lost at commit, report both facts.
+        XCTAssertEqual(
+            WiltedMacModel.preparationState(
+                outcome: outcome(for: revisionID),
+                run: try run(terminal: "Prepared.", completion: nil,
+                             terminalRevisionID: revisionID, workerTiming: "published"),
+                readyRevisionID: revisionID, transcript: untimedTranscript),
+            .prepared(summary: "Ready · No ads found · untimed transcript from the feed")
         )
         let staleRevisionID = try RevisionID(rawValue: "rev-" + String(repeating: "8", count: 64))
         XCTAssertEqual(

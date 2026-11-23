@@ -268,7 +268,7 @@ extension PodcastPreparationPipelineTests {
         let terminal = try #require(entries.last { $0.status.terminal })
         #expect(terminal.status.timeline?.removed.isEmpty == true)
         #expect(terminal.status.timeline?.kept.count == 2)
-        #expect(terminal.status.detail == "Ready · no ads found · transcript not synced")
+        #expect(terminal.status.detail == "Ready · No ads found · transcript unavailable")
     }
 
     @Test func realPythonSilenceResponsesDecodeUnderTheSwiftContract() throws {

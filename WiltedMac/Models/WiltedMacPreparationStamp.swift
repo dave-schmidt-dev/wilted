@@ -10,7 +10,7 @@ import WiltedProducer
 /// or a failure predates a fix.
 ///
 /// Display order: labelling wait (with the Mac-only phone note), prepared,
-/// ads left in from a labelled stop, earlier ad-finding setting, last failure,
+/// reason an ad check stopped, earlier ad-finding setting, last failure,
 /// failure detail.
 ///
 /// The prepared line names the run that produced the ready revision; the
@@ -24,7 +24,8 @@ struct WiltedMacPreparationStamp: Equatable, Hashable, Sendable {
     let phoneNote: String?
     let prepared: String?
     /// When the ready run stopped the labelled path (`ads.label.stop`).
-    let adsLeftIn: String?
+    let stoppedAdCheck: String?
+    let passagesLeftIn: [String]
     /// Shown when the ready audio was prepared under an earlier labelled
     /// ad-finding setting than the one now in force.
     let earlierAdFindingSetting: String?
@@ -34,7 +35,7 @@ struct WiltedMacPreparationStamp: Equatable, Hashable, Sendable {
     /// The popover's lines, or nil when there is nothing to say.
     var displayText: String? {
         let lines = [
-            labellingWait, phoneNote, prepared, adsLeftIn,
+            labellingWait, phoneNote, prepared, stoppedAdCheck,
             earlierAdFindingSetting, lastFailure, failureDetail
         ].compactMap { $0 }
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
@@ -44,7 +45,8 @@ struct WiltedMacPreparationStamp: Equatable, Hashable, Sendable {
         labellingWait: String? = nil,
         phoneNote: String? = nil,
         prepared: String?,
-        adsLeftIn: String? = nil,
+        stoppedAdCheck: String? = nil,
+        passagesLeftIn: [String] = [],
         earlierAdFindingSetting: String? = nil,
         lastFailure: String?,
         failureDetail: String?
@@ -52,7 +54,8 @@ struct WiltedMacPreparationStamp: Equatable, Hashable, Sendable {
         self.labellingWait = labellingWait
         self.phoneNote = phoneNote
         self.prepared = prepared
-        self.adsLeftIn = adsLeftIn
+        self.stoppedAdCheck = stoppedAdCheck
+        self.passagesLeftIn = passagesLeftIn
         self.earlierAdFindingSetting = earlierAdFindingSetting
         self.lastFailure = lastFailure
         self.failureDetail = failureDetail
@@ -82,15 +85,7 @@ struct WiltedMacPreparationStamp: Equatable, Hashable, Sendable {
         labellingWait: LabellingWait? = nil,
         formatTime: (Date) -> String = WiltedMacLabellerWait.defaultFormatTime
     ) -> WiltedMacPreparationStamp? {
-        var preparedRun: PreparationRunSummary?
-        if let outcome, let readyRevisionID,
-           outcome.revisionID == readyRevisionID,
-           outcome.eligibility != .invalid {
-            preparedRun = runs.first { run in
-                guard run.outcome == .succeeded else { return false }
-                return run.entries.contains { $0.status.terminalResult?.revisionID == outcome.revisionID }
-            }
-        }
+        let preparedRun = Self.preparedRun(outcome: outcome, readyRevisionID: readyRevisionID, runs: runs)
 
         var newestRun: PreparationRunSummary?
         for run in runs {
@@ -110,10 +105,10 @@ struct WiltedMacPreparationStamp: Equatable, Hashable, Sendable {
             prepared = Self.preparedLine(run: preparedRun, fallbackEngineVersion: outcome.semanticVersion)
         }
 
-        var adsLeftIn: String?
+        var stoppedAdCheck: String?
         if let preparedRun,
            let stop = preparedRun.entries.last(where: { $0.status.step == "ads.label.stop" }) {
-            adsLeftIn = "Ads left in: " + Self.boundedSingleLine(stop.status.detail)
+            stoppedAdCheck = "Ad check stopped. " + Self.boundedSingleLine(stop.status.detail)
         }
 
         var earlierAdFindingSetting: String?
@@ -136,13 +131,53 @@ struct WiltedMacPreparationStamp: Equatable, Hashable, Sendable {
         }
 
         guard waitingSentence != nil || phoneNote != nil || prepared != nil
-                || adsLeftIn != nil || earlierAdFindingSetting != nil
+                || stoppedAdCheck != nil || earlierAdFindingSetting != nil
                 || lastFailure != nil || failureDetail != nil else { return nil }
         return WiltedMacPreparationStamp(
             labellingWait: waitingSentence, phoneNote: phoneNote,
-            prepared: prepared, adsLeftIn: adsLeftIn,
+            prepared: prepared, stoppedAdCheck: stoppedAdCheck,
+            passagesLeftIn: preparedRun.map(Self.passagesKept) ?? [],
             earlierAdFindingSetting: earlierAdFindingSetting,
             lastFailure: lastFailure, failureDetail: failureDetail)
+    }
+
+    nonisolated static func preparedRun(
+        outcome: PodcastPreparationOutcome?, readyRevisionID: RevisionID?, runs: [PreparationRunSummary]
+    ) -> PreparationRunSummary? {
+        guard let outcome, let readyRevisionID, outcome.revisionID == readyRevisionID,
+              outcome.eligibility != .invalid else { return nil }
+        return runs.lazy.filter {
+            $0.itemID == outcome.episodeID && $0.producedRevisionID == readyRevisionID
+        }.max { WiltedMacModel.preparationRunIsNewer($1, than: $0) }
+    }
+
+    /// Times are on the original recording. A rejected passage may have no usable time.
+    private static func passagesKept(in run: PreparationRunSummary) -> [String] {
+        var passages: [Int: String] = [:]
+        for entry in run.entries {
+            guard let evidence = entry.status.evidence, evidence.kind == "advertisement-left-in",
+                  let ordinal = evidence.fields["ordinal"].flatMap(Int.init), ordinal > 0 else { continue }
+            let reason = switch evidence.fields["reason"] {
+            case "house-promotion-disabled": "Show promotion removal is off"
+            case "acceptable-cut": "Optional cut"
+            case "out-of-range": "Timing outside this episode"
+            case "malformed": "Unusable break label or timing"
+            case "total-share-ceiling": "The cuts would remove too much audio"
+            case "cut-unsafe": "The cut could remove part of the show"
+            case "programme-boundary", "programme-boundary-conflict", "boundary-review-unresolved",
+                 "sponsor-prefix-programme-found", "pod-continuation-bracket": "Ad and show audio overlap or have unclear timing"
+            case "credits-boundary-unresolved": "The end of the credits is unclear"
+            default: "Reason unavailable"
+            }
+            var position = "Time unavailable"
+            if let start = evidence.fields["startSeconds"].flatMap(Double.init),
+               let end = evidence.fields["endSeconds"].flatMap(Double.init),
+               start >= 0, end > start, end <= 7 * 24 * 60 * 60 {
+                position = "\(WiltedDuration.clock(start))–\(WiltedDuration.clock(end))"
+            }
+            passages[ordinal] = "\(position) · \(reason)"
+        }
+        return passages.sorted { $0.key < $1.key }.map(\.value)
     }
 
     static let earlierAdFindingSettingLine = "Prepared with an earlier ad-finding setting."
