@@ -12,7 +12,7 @@ All notable changes to this project are documented in this file.
 
 ## [0.7.1] - 2026-11-22
 
-Every build installed since 0.6.0 was labelled 0.7.0, and no 0.7.0 section was ever written, so this section holds everything since 0.6.0. From this release on, each push and install raises the version.
+Every build installed since 0.6.0 was labelled 0.7.0, and no 0.7.0 section was ever written, so this section holds everything since 0.6.0. From this release on, each push and install raises the version. The News switch and ad-finding setup instructions below are superseded. See the README for **Headlines only** and **Remove ads**.
 
 ### Removed
 - Online ad finding now accepts confirmed shows regardless of their feed or audio address, publisher title or custom name.

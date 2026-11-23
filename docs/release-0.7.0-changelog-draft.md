@@ -1,6 +1,6 @@
 # Draft: CHANGELOG 0.7.0 section
 
-Generated 2026-10-27 from `CHANGELOG.md` [Unreleased] at `efe9e256` (236 bullets). Not the final changelog: on the walkthrough pass, replace [Unreleased] with the two sections below, set the 0.7.0 date to the tag date, and reconcile any bullet added after this draft.
+Generated 2026-10-27 from `CHANGELOG.md` [Unreleased] at `efe9e256` (236 bullets). The [0.7.1 changelog](../CHANGELOG.md#071---2026-11-22) supersedes this draft, including its feed settings instructions.
 
 Split rule: the 134 bullet ids in `.logs/release-0.7.0/baseline-ids.txt` already shipped in the 0.6.0 (11) build of 2026-10-13, so they move under `[0.6.0]`. Everything else, including every change since the freeze, is 0.7.0.
 

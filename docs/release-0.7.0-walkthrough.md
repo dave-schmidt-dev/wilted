@@ -49,7 +49,7 @@ Mark each line pass, fail, or skip. A fail that crashes, loses data or breaks so
 - [ ] Open a feed's settings, set Auto keep On and a Kept limit: the resolved values show beside Use global (A20).
 - [ ] With Processing Manual and Auto prepare On, the settings explain why Auto prepare is suppressed (A10).
 - [ ] Open a feed's rules sheet from the gear, add a Keep or Skip pattern, watch the preview, and read the audio-deletion warning beside Apply. Undo after Apply if you try it (A22, F29, C40).
-- [ ] Toggle a feed's News setting twice quickly: the last choice sticks (F37).
+- [ ] Start with **Headlines only** on for an article feed. Switch it off and back on quickly. Reopen its settings and verify the last choice stuck. The feed appears under **Headline feeds**, its posts skip the Keep/Skip inbox, and Auto keep, Auto prepare and Match rules are hidden (F37).
 - [ ] Unsubscribe a test feed: the dialog says its downloaded audio is deleted, and other feeds keep their artwork (C43, F35).
 
 ## D. Mac Playlists
@@ -67,6 +67,7 @@ Mark each line pass, fail, or skip. A fail that crashes, loses data or breaks so
 
 ## F. Prepared episodes (listen)
 
+- [ ] Prepare an episode with a known sponsor break and **Remove ads** on. Check its transcript and listen across the cut. Turn **Remove ads** off and use **Restore Full Episode** on the cut episode. Verify the original break plays.
 - [ ] On a freshly prepared episode, pauses longer than half a second are shortened, and a saved position resumes on speech (A1).
 - [ ] On a fresh AI Daily Brief episode, sponsor spots at ad-break edges are gone and the show is intact (F5, F8, F9; also decision 4).
 - [ ] On a long episode (for example Giant Bombcast), ads are cut. If the review could not finish, the original audio plays and the info popover says why (F4, F41, C2, C20).
