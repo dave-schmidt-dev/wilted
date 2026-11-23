@@ -22,7 +22,7 @@ final class WiltedMacShowSettingsResetTests: XCTestCase {
 
         let view = WiltedMacShowSettingsResetControl(board: fixture.board, feedID: fixture.feedID)
         let text = try WiltedMacHeadless.recognizedText(
-            view, size: CGSize(width: 1_000, height: 360)
+            view, size: CGSize(width: 1_400, height: 360)
         ).joined(separator: " ")
         for label in ["Auto keep", "Auto download", "Auto prepare", "Kept limit", "Remove ads",
                       "own promotion", "ad finding", "Reset all"] {
