@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.7.5] - 2026-11-23
 
 ### Fixed
 - Mac Larder group actions count and act on the displayed rows, including the selected kind. The control names podcast completion or article deletion, and a mixed group explains each action before confirmation.
