@@ -182,6 +182,10 @@ struct WiltedMacEpisodeIdentityReviewLayout: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-identity-review-message")
             }
+            if review.separateDecisionID != nil {
+                Button("Undo Different episodes") { runRead { await review.undoSeparate() } }
+                    .disabled(review.isBusy)
+            }
             if let activity = review.activity {
                 activityStatus(activity)
             }
@@ -197,64 +201,47 @@ struct WiltedMacEpisodeIdentityReviewLayout: View {
 
     @ViewBuilder private func pairSection(_ review: WiltedMacEpisodeIdentityReviewModel) -> some View {
         if review.candidates.isEmpty {
-            Text("No other episode from this show is in the library.")
+            Text("No likely duplicate found.")
                 .wiltedFont(.utility)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .accessibilityIdentifier("wilted-identity-review-no-candidates")
         } else {
             Picker("Possible duplicate", selection: Binding(
                 get: { review.visibleCandidateID },
-                set: { review.setVisibleCandidate($0) }
+                set: {
+                    review.setVisibleCandidate($0)
+                    runRead { await review.compareVisiblePair() }
+                }
             )) {
-                Text("Choose an episode").tag(String?.none)
                 ForEach(review.candidates) { candidate in
                     Text(review.pickerLabel(for: candidate.id)).tag(Optional(candidate.id))
                 }
             }
             .disabled(review.isBusy)
             .accessibilityIdentifier("wilted-identity-review-candidate")
-            Picker("Represented by", selection: Binding(
-                get: { review.visibleRepresentativeID },
-                set: { review.setVisibleRepresentative($0) }
-            )) {
-                Text(review.pickerLabel(for: review.anchorID)).tag(Optional(review.anchorID))
-                if let selectedCandidateID = review.visibleCandidateID,
-                   review.candidates.contains(where: { $0.id == selectedCandidateID }) {
-                    Text(review.pickerLabel(for: selectedCandidateID)).tag(Optional(selectedCandidateID))
-                }
+            if let candidate = review.candidates.first(where: { $0.id == review.visibleCandidateID }) {
+                Text(candidate.reason).wiltedFont(.utility)
             }
-            .disabled(review.isBusy)
-            .accessibilityIdentifier("wilted-identity-review-representative")
-            Button("Compare Selected Pair") {
-                guard let candidate = review.visibleCandidateID else { return }
-                let representative = review.visibleRepresentativeID ?? review.anchorID
-                runRead {
-                    await review.selectPair(
-                        first: review.anchorID, second: candidate, representative: representative
-                    )
-                }
-            }
-            .disabled(review.visibleCandidateID == nil || review.isBusy)
-            .accessibilityIdentifier("wilted-identity-review-compare-pair")
-            Text("Comparing shows evidence only. Nothing changes until you confirm this pair and apply the preview.")
-                .wiltedFont(.caption)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
         }
         if let comparison = review.comparison {
-            Divider()
-            comparisonEvidence(comparison)
-            if !comparison.ambiguities.isEmpty {
-                Text(ambiguitySummary(comparison))
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.stale, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-identity-review-ambiguity")
+            if review.approvalPreview == nil {
+                HStack {
+                    Button("Same episode") { runRead { await review.chooseSameEpisode() } }
+                        .disabled(review.isBusy || !comparison.existingAssociationIDs.isEmpty)
+                        .accessibilityIdentifier("wilted-identity-review-confirm-pair")
+                    Button("Different episodes") { runRead { await review.keepSeparate() } }
+                        .disabled(review.isBusy)
+                        .accessibilityIdentifier("wilted-identity-review-different")
+                }
             }
-            Button("Confirm Same Episode") { runRead { await review.reviewPair() } }
+            DisclosureGroup("Details") {
+                comparisonEvidence(comparison)
+                if !comparison.ambiguities.isEmpty {
+                    Text(ambiguitySummary(comparison)).wiltedFont(.utility)
+                }
+            }
+        } else if review.errorMessage != nil && review.visibleCandidateID != nil {
+            Button("Retry comparison") { runRead { await review.compareVisiblePair() } }
                 .disabled(review.isBusy)
-                .accessibilityIdentifier("wilted-identity-review-confirm-pair")
-            Text("Confirming prepares a preview for this exact pair; nothing is saved until you apply it.")
-                .wiltedFont(.caption)
-                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
         }
         if review.approvalPreview != nil {
             Divider()
@@ -351,7 +338,9 @@ struct WiltedMacEpisodeIdentityReviewLayout: View {
         _ review: WiltedMacEpisodeIdentityReviewModel,
         association: PodcastEpisodeAssociation
     ) -> some View {
-        Text("This episode is already associated with \(association.memberIDs.count - 1) other episode(s).")
+        Text(association.confirmation.source == .feedMatch
+             ? "Wilted matched these copies by show, title, publication time and length."
+             : "These copies are linked as one episode.")
             .wiltedFont(.body)
             .accessibilityIdentifier("wilted-identity-review-active-association")
         if review.reversalPreview == nil {

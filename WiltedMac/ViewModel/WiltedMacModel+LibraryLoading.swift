@@ -114,6 +114,8 @@ extension WiltedMacModel {
         await librarySnapshotReadBarrierForTesting?()
         let associations = WiltedMacLocalLibraryStateSource.associationMetadata(associations: identity.associations, states: identity.states)
         if readEpoch == libraryReadEpoch {
+            heldDuplicateIDs = Set(identity.heldDuplicateIDs.map(\.rawValue))
+            duplicateWorkBlockedIDs = Set(identity.duplicateWorkBlockedIDs.map(\.rawValue))
             episodeAssociations = Dictionary(associations.flatMap { association in
                 association.memberIDs.map { ($0.rawValue, association) }
             }, uniquingKeysWith: { first, _ in first })

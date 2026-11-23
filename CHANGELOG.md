@@ -8,6 +8,10 @@ All notable changes to this project are documented in this file.
 - Mac Larder group actions count and act on the displayed rows, including the selected kind. The control names podcast completion or article deletion, and a mixed group explains each action before confirmation.
 - The Mac player has one Share menu for the page link, title and show text when a link is missing, and transcript summaries.
 
+### Changed
+
+- The Mac checks for republished podcast episodes before downloading or preparing them. Uncertain matches wait in Feeds, where duplicate review opens on the closest candidate.
+
 ## [0.7.2] - 2026-11-22
 
 ### Changed

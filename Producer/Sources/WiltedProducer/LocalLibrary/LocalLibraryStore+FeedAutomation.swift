@@ -256,6 +256,9 @@ extension LocalLibraryStore {
         defer { if context.hasChanges { context.rollback() } }
         let episodeID = value.episodeID.rawValue
         let lookup = try EpisodeAssociationReadLookup(in: context)
+        guard !lookup.duplicateWorkBlockedIDs.contains(value.episodeID) else {
+            throw AutomaticEpisodeAdmissionError.episodeUnavailable
+        }
         let applies = try Self.shouldApplyEpisodeDecision(value, in: context, lookup: lookup)
         try Self.stageAssociationManualTie(value, in: context, lookup: lookup)
         guard applies else {
@@ -346,7 +349,7 @@ extension LocalLibraryStore {
             .first(where: { $0.id == identifier }), episode.removalKind == nil else { return false }
         let existing = try context.fetch(FetchDescriptor<DecisionRecord>()).first { $0.episodeID == identifier }
         guard existing?.source != EpisodeDecisionSource.manual.rawValue else { return false }
-        guard try !Self.associationHasManualChoice(for: episodeID, in: context) else { return false }
+        guard try !Self.associationBlocksAutomaticSkip(for: episodeID, in: context) else { return false }
         episode.retiredAt = decidedAt.date
         episode.removalKind = PodcastEpisodeRemovalKind.retired.rawValue
         if let existing {

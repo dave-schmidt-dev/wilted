@@ -150,8 +150,9 @@ extension WiltedMacModel {
                 try Task.checkCancellation()
                 withheld += loaded.droppedEpisodeCount + admission.skipped
                 result.newEpisodeIDs.append(contentsOf: admission.newlyAdmitted)
-                if !subscribing, !admission.newlyAdmitted.isEmpty {
-                    result.newEpisodeIDsByFeed[loaded.feed.itemID, default: []] += admission.newlyAdmitted
+                let eligible = admission.newlyAdmitted + admission.releasedFromReview
+                if !subscribing, !eligible.isEmpty {
+                    result.newEpisodeIDsByFeed[loaded.feed.itemID, default: []] += eligible
                 }
                 result.successfulFeedTitles.append(loaded.feed.title)
                 result.successfulFeedCount += 1

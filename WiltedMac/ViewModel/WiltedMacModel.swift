@@ -179,6 +179,8 @@ final class WiltedMacModel {
     var pendingAdFreeFeedPrompt: WiltedMacAdFreeFeedPrompt?
     /// Resumes the subscribe loop when the owner answers or the add is cancelled.
     @ObservationIgnored var adFreeFeedPromptContinuation: CheckedContinuation<Bool, Never>?
+    var heldDuplicateIDs: Set<String> = []
+    var duplicateWorkBlockedIDs: Set<String> = []
     var episodeAssociations: [String: LibraryEpisodeAssociation] = [:]
     var isClearingLarderGroup = false
     var podcastOperationMessage: String?

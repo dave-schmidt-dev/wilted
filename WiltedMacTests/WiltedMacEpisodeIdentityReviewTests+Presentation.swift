@@ -17,9 +17,11 @@ extension WiltedMacEpisodeIdentityReviewTests {
         }
         let labels = WiltedMacEpisodeIdentityReviewModel.memberLabels(for: members)
         XCTAssertEqual(Set(labels.values).count, 3)
-        XCTAssertTrue(try XCTUnwrap(labels[members[0].id]).contains("#first-123456"))
-        XCTAssertTrue(try XCTUnwrap(labels[members[1].id]).contains("#second-123456"))
-        XCTAssertTrue(try XCTUnwrap(labels[members[2].id]).contains("#789abc"))
+        for member in members {
+            let label = try XCTUnwrap(labels[member.id])
+            XCTAssertFalse(label.contains("#"))
+            XCTAssertFalse(label.contains(member.id))
+        }
 
         let fixture = try await makeFixture("same-title-approval", sameTitle: true)
         let review = makeReview(fixture)
@@ -110,8 +112,12 @@ extension WiltedMacEpisodeIdentityReviewTests {
         let evidenceView = WiltedMacEpisodeIdentityReviewLayout(review: review, runRead: { _ in }, dismiss: {})
         let evidenceText = try WiltedMacHeadless.recognizedText(evidenceView, size: CGSize(width: 700, height: 900))
             .joined(separator: " ")
-        XCTAssertTrue(evidenceText.contains("Comparison evidence"), evidenceText)
-        XCTAssertTrue(evidenceText.contains("Confirm Same Episode"), evidenceText)
+        XCTAssertTrue(evidenceText.contains("Details"), evidenceText)
+        XCTAssertTrue(evidenceText.contains("Same show and title"), evidenceText)
+        XCTAssertTrue(evidenceText.contains("Different episodes"), evidenceText)
+        XCTAssertFalse(evidenceText.contains("GUID"), evidenceText)
+        XCTAssertFalse(evidenceText.contains("Compare Selected Pair"), evidenceText)
+        XCTAssertTrue(evidenceText.contains("Same episode"), evidenceText)
         XCTAssertFalse(evidenceText.contains("proof"), evidenceText)
         XCTAssertFalse(evidenceText.contains("Prepared revision"), evidenceText)
 
@@ -132,6 +138,24 @@ extension WiltedMacEpisodeIdentityReviewTests {
         XCTAssertTrue(previewText.contains("Apply Association"), previewText)
         XCTAssertTrue(previewText.contains("newest manual choice is Keep"), previewText)
         XCTAssertTrue(previewText.contains("holds queue slot 1 and is current"), previewText)
+    }
+
+    func testHeldCopyOpensFromFeedsWithoutEnteringItsKeepOrSkipSelection() async throws {
+        let fixture = try await makeFixture("feed-hold")
+        let incoming = try episode(guid: "new-guid", title: "Review First", offset: 2, length: nil)
+        let admission = try await fixture.store.savePodcastEpisodes([incoming], admission: .incremental)
+        XCTAssertFalse(admission.newlyAdmitted.contains(incoming.itemID))
+        await fixture.model.reloadLibraryRows()
+        XCTAssertTrue(fixture.model.heldDuplicateIDs.contains(incoming.itemID.rawValue))
+        XCTAssertFalse(fixture.model.feedsEpisodeCandidates.contains { $0.id == incoming.itemID.rawValue })
+        let words = try WiltedMacHeadless.recognizedText(WiltedMacFeedsView(model: fixture.model),
+                                                         size: CGSize(width: 1000, height: 1200)).joined(separator: " ")
+        XCTAssertTrue(words.localizedCaseInsensitiveContains("Review possible duplicate"), words)
+        let review = makeReview(fixture, anchor: incoming.itemID)
+        await review.load()
+        XCTAssertEqual(review.visibleCandidateID, fixture.second.rawValue)
+        XCTAssertEqual(review.visibleRepresentativeID, fixture.second.rawValue)
+        XCTAssertTrue(try XCTUnwrap(review.candidates.first).reason.contains("Length missing"))
     }
 
     // MARK: - The Larder row path

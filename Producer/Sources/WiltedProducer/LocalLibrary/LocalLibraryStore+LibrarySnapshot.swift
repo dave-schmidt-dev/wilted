@@ -137,7 +137,10 @@ extension LocalLibraryStore {
     }
 
     public func podcastLibrarySnapshot(profile: PodcastLibrarySnapshotProfile = .full) throws -> PodcastLibrarySnapshot {
-        let context = ModelContext(container)
+        try podcastLibrarySnapshot(profile: profile, in: ModelContext(container))
+    }
+
+    func podcastLibrarySnapshot(profile: PodcastLibrarySnapshotProfile, in context: ModelContext) throws -> PodcastLibrarySnapshot {
 
         podcastLibrarySnapshotFetchCount += 1
         let articleValues = try articles()

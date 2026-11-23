@@ -318,10 +318,12 @@ final class LocalLibraryEpisodeIdentityAuditTests: XCTestCase {
         let cases: [(String, Timestamp?, Double?, Bool)] = [
             ("Shared Episode", Timestamp(origin), 3_600, true),
             ("Different", Timestamp(origin), 3_600, false),
-            ("Shared Episode", Timestamp(origin.addingTimeInterval(1)), 3_600, false),
+            ("Shared Episode", Timestamp(origin.addingTimeInterval(60)), 3_600, true),
             ("Shared Episode", nil, 3_600, false),
-            ("Shared Episode", Timestamp(origin), 3_601, false),
+            ("Shared Episode", Timestamp(origin), 3_605, true),
             ("Shared Episode", Timestamp(origin), nil, false),
+            ("Shared Episode", Timestamp(origin.addingTimeInterval(61)), 3_600, false),
+            ("Shared Episode", Timestamp(origin), 3_606, false),
         ]
         for (index, value) in cases.enumerated() {
             let guid = "metadata-\(index)"

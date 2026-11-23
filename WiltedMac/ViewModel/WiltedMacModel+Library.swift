@@ -117,6 +117,9 @@ extension WiltedMacModel {
         let members = logicalMemberIDs(display.id)
         let candidates = episodes.filter { members.contains($0.id) && $0.retiredAt == nil && !hiddenEpisodeIDs.contains($0.id) }
         if let loaded = currentPodcastEpisodeID, let row = candidates.first(where: { $0.id == loaded }) { return row }
+        if !members.isDisjoint(with: duplicateWorkBlockedIDs),
+           let original = candidates.first(where: { $0.id == display.id }),
+           original.playbackSeconds > 0 || original.isReadyMediaAvailable { return original }
         if let row = candidates.first(where: { podcastQueueIDs.contains($0.id) && $0.preparationState.isPrepared && $0.isReadyMediaAvailable }) { return row }
         return candidates.first(where: { $0.preparationState.isPrepared && $0.isReadyMediaAvailable })
             ?? candidates.first(where: { $0.id == display.id }) ?? candidates.first
@@ -126,7 +129,7 @@ extension WiltedMacModel {
     /// records are not on the shelf; presentation applies its active-podcast
     /// exclusion separately so queue and playback code retain this full set.
     var larderVisibleEpisodes: [WiltedMacEpisode] {
-        logicalEpisodeRows(episodes.filter { !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil }, hidesTerminal: true)
+        logicalEpisodeRows(episodes.filter { !heldDuplicateIDs.contains($0.id) && !hiddenEpisodeIDs.contains($0.id) && $0.retiredAt == nil }, hidesTerminal: true)
     }
 
     /// The Larder is a waiting list; its active podcast is represented by Now

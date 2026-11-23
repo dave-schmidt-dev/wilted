@@ -168,7 +168,7 @@ extension WiltedMacModel {
         var values = try await loadLibrary(from: store)
         let admitted = try await admitAutomatically(
             feedID: loaded.feed.itemID, feedEpisodes: Array(values.episodes),
-            newlySaved: Set(saved.newlyAdmitted.map(\.rawValue)), store: store
+            newlySaved: Set((saved.newlyAdmitted + saved.releasedFromReview).map(\.rawValue)), store: store
         )
         // A rule Skip retired episodes after that read; read again so the Feed shows them gone.
         if !admitted.ruleSkipped.isEmpty { values = try await loadLibrary(from: store) }
@@ -225,7 +225,7 @@ extension WiltedMacModel {
         let kept = Set(try await store.logicalEpisodeRepresentatives(keptRaw.compactMap { try? ItemID(rawValue: $0) }).map(\.rawValue))
         var plannedGroups = Set<String>()
         let candidates = live.filter {
-            !decided.contains($0.id) && !queued.contains($0.id) && !$0.isPlayed
+            !duplicateWorkBlockedIDs.contains($0.id) && !decided.contains($0.id) && !queued.contains($0.id) && !$0.isPlayed
                 && (newlySaved.contains($0.id) || (policy.autoKeep && policy.keptLimit != nil))
                 && !kept.contains(logicalRepresentativeID($0.id))
                 && plannedGroups.insert(logicalRepresentativeID($0.id)).inserted

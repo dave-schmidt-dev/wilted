@@ -100,6 +100,7 @@ struct WiltedMacFeedHistoryView: View {
     let model: WiltedMacModel
     var feedID: String?
     @Environment(\.colorScheme) private var colorScheme
+    @State private var duplicateReview: WiltedMacEpisodeIdentityReviewRequest?
     @State private var loader: WiltedMacFeedHistoryLoader
 
     /// `loader` lets a test hand in a loader whose page is already loaded.
@@ -129,6 +130,9 @@ struct WiltedMacFeedHistoryView: View {
                 }
                 .frame(minWidth: 620, minHeight: 520)
             }
+        }
+        .sheet(item: $duplicateReview) { request in
+            WiltedMacEpisodeIdentityReview(model: model, anchorID: request.anchorID)
         }
         .task(id: LoadKey(feedID: feedID, hasStore: model.store != nil)) {
             if model.store != nil { loader.useStore(of: model) }
@@ -271,6 +275,9 @@ struct WiltedMacFeedHistoryView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            if model.episodeAssociations[record.id] != nil || model.heldDuplicateIDs.contains(record.id) {
+                Button("Review duplicate") { duplicateReview = .init(anchorID: record.id) }
+            }
             Button("Restore") { restore(record) }
                 .disabled(isPending)
                 .accessibilityLabel("Restore \(record.presentation.title)")

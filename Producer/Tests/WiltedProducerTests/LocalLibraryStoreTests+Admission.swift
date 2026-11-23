@@ -535,10 +535,8 @@ extension LocalLibraryStoreTests {
         XCTAssertEqual(downloadsAfterRefresh.count, 2)
     }
 
-    /// Two feed items with different GUIDs stay two episodes even when title,
-    /// publication date, and duration all match. Only a repeated canonical ID
-    /// collapses; metadata similarity is never association proof.
-    func testDistinctGUIDTwinsRemainSeparateWithoutAssociationProof() async throws {
+    /// Both raw identities survive, but a single clear pair needs only one transfer.
+    func testDistinctGUIDTwinsRetainBothSourcesAndClaimOnlyTheFirst() async throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let origin = Date(timeIntervalSince1970: 1_700_000_000)
         let feedURL = URL(string: "https://podcasts.example.test/twins/feed.xml")!
@@ -563,7 +561,8 @@ extension LocalLibraryStoreTests {
 
         let result = try await store.admitPodcastEpisodes([first, second], admission: .incremental, claimingNewest: 5)
         XCTAssertEqual(Set(result.admission.saved), Set([first.itemID, second.itemID]))
-        XCTAssertEqual(Set(result.claimed), Set([first.itemID, second.itemID]))
+        XCTAssertEqual(result.claimed, [first.itemID])
+        XCTAssertEqual(result.admission.newlyAdmitted, [first.itemID])
         let storedTwins = try await store.podcastEpisodes(for: feedID)
         XCTAssertEqual(storedTwins.count, 2)
     }
