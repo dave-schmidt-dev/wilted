@@ -75,7 +75,27 @@ wilted_refuse_active_preparation() {
 [[ -d "$destination_dir" && -w "$destination_dir" ]] ||
   { status "install.error destination is not a writable directory: $destination_dir"; exit 1; }
 
+# A copy that xcodebuild launched to host a test run belongs to that run: the
+# installer quit one mid-test on 2026-11-22 and failed the run's Mac leg. While
+# an `xcodebuild test` is running, any copy outside the install destination is
+# taken to be its host, and the install waits for the run instead. With no test
+# running, a leftover copy is quit with the rest (the 2026-09-01 stale build).
+wilted_refuse_live_test_host() {
+  local pid path app
+  command -v pgrep >/dev/null 2>&1 || return 0
+  pgrep -f 'xcodebuild.*[[:space:]](test|test-without-building)([[:space:]]|$)' >/dev/null 2>&1 || return 0
+  while read -r pid path; do
+    [[ -n "$pid" && "$path" == *.app/Contents/MacOS/* ]] || continue
+    app="${path%%.app/Contents/MacOS/*}.app"
+    [[ "$(wilted_bundle_identifier "$app")" == "$bundle_id" ]] || continue
+    [[ "$app" == "$destination_dir/WiltedMac.app" ]] && continue
+    status "install.error a test run is using a test copy of Wilted (pid $pid); retry after it ends"
+    return 1
+  done < <(ps -axo pid=,comm= 2>/dev/null || true)
+}
+
 wilted_refuse_active_preparation || exit 1
+wilted_refuse_live_test_host || exit 1
 
 command -v xcodegen >/dev/null 2>&1 || { status 'install.error missing xcodegen'; exit 1; }
 command -v xcodebuild >/dev/null 2>&1 || { status 'install.error missing xcodebuild'; exit 1; }
@@ -158,6 +178,7 @@ fi
 # Recheck at the last safe point: preparation may have started while the build
 # above was running.
 wilted_refuse_active_preparation || exit 1
+wilted_refuse_live_test_host || exit 1
 running=()
 while IFS= read -r pid; do
   [[ -n "$pid" ]] && running+=("$pid")

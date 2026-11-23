@@ -83,6 +83,7 @@ printf '%s\n' '#!/usr/bin/env bash' \
     'esac' \
     >"$guard_bin/python3"
 printf '%s\n' '#!/usr/bin/env bash' \
+    'if [[ "$*" == *xcodebuild* ]]; then [[ "${WILTED_TEST_XCODEBUILD_TEST:-0}" == 1 ]]; exit; fi' \
     '[[ "${WILTED_TEST_PIPELINE_RUNNING:-0}" == 1 || -e "$WILTED_TEST_ACTIVE_MARKER" ]]' \
     >"$guard_bin/pgrep"
 printf '%s\n' '#!/usr/bin/env bash' \
@@ -106,7 +107,7 @@ owner_pid=$!
 
 run_guard() {
     local output_file="$1" pipeline_running="${2:-0}" app_running="${3:-0}"
-    local complete_build="${4:-0}" activate_during_build="${5:-0}"
+    local complete_build="${4:-0}" activate_during_build="${5:-0}" xcodebuild_test="${6:-0}"
     PATH="$guard_bin:/usr/bin:/bin:/usr/sbin:/sbin" \
         WILTED_INSTALL_LIBRARY_URL="$journal" \
         WILTED_TEST_PIPELINE_RUNNING="$pipeline_running" \
@@ -115,6 +116,7 @@ run_guard() {
         WILTED_TEST_OWNER_EXECUTABLE="$owner_executable" \
         WILTED_TEST_COMPLETE_BUILD="$complete_build" \
         WILTED_TEST_ACTIVATE_DURING_BUILD="$activate_during_build" \
+        WILTED_TEST_XCODEBUILD_TEST="$xcodebuild_test" \
         WILTED_TEST_GENERATE_MARKER="$tmp_root/generated" \
         WILTED_TEST_ACTIVE_MARKER="$tmp_root/active" \
         WILTED_TEST_DERIVED="$tmp_root/derived" \
@@ -189,6 +191,31 @@ elif [[ -e "$tmp_root/quit" || -e "$tmp_root/replaced" ]]; then
     fail 'late activation was detected only after app quit or bundle replacement began'
 else
     pass 'preparation activated during build stops before quit or replacement'
+fi
+
+# A copy outside the install destination while `xcodebuild test` runs is that
+# run's test host. Quitting it fails the run mid-test, so the install refuses
+# before any build or quit. The same copy with no test running is a leftover
+# and must not block the install.
+rm -f "$tmp_root/generated" "$tmp_root/active" "$tmp_root/quit" "$tmp_root/replaced"
+if run_guard "$tmp_root/live-test-host.out" 0 1 0 0 1; then
+    fail 'a live test host did not stop installation'
+elif ! grep -Fq 'install.error a test run is using a test copy of Wilted' "$tmp_root/live-test-host.out"; then
+    fail 'a live test host did not produce the test-run message'
+elif [[ -e "$tmp_root/generated" || -e "$tmp_root/quit" ]]; then
+    fail 'a live test host was detected only after the build or quit began'
+else
+    pass 'a live test host stops installation before build or quit'
+fi
+rm -f "$tmp_root/generated"
+if run_guard "$tmp_root/idle-test-host.out" 0 1 0 0 0; then
+    fail 'idle test host unexpectedly completed the stubbed installer'
+elif grep -Fq 'a test run is using' "$tmp_root/idle-test-host.out"; then
+    fail 'a leftover copy with no test running blocked installation'
+elif [[ ! -e "$tmp_root/generated" ]]; then
+    fail 'a leftover copy with no test running did not reach the build'
+else
+    pass 'a leftover copy with no test running does not block installation'
 fi
 
 # A preparation the installer DID kill: the app is running, no preparation is
