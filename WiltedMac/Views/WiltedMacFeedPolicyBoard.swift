@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import os
 import WiltedDomain
+import WiltedLibrary
 import WiltedProducer
 
 /// Per-feed automation policies as the Feeds page needs them, read and written
@@ -36,6 +37,12 @@ final class WiltedMacFeedPolicyBoard {
     private(set) var adFreeFeedIDs: Set<String> = []
     /// The podcast feeds confirmed to send transcripts to the online ad labeller.
     private(set) var confirmedAdFeedIDs: Set<String> = []
+    private(set) var showStartOffsets: [String: LibraryShowStartOffset] = [:]
+    private(set) var showStartOffsetConflictFeedIDs: Set<String> = []
+    private var showStartOffsetOwner: String?
+    private var showStartOffsetsWritable = false
+    var showStartOffsetResetRevisions: [String: Int64] = [:]
+    @ObservationIgnored var showStartOffsetEditTasks: [String: Task<LibraryShowStartOffset?, Never>] = [:]
     @ObservationIgnored private var rules: [String: EpisodeMatchRules] = [:]
     @ObservationIgnored private var editors: [String: WiltedMacFeedRulesEditor] = [:]
     @ObservationIgnored private var writeChain: Task<Void, Never>?
@@ -92,6 +99,56 @@ final class WiltedMacFeedPolicyBoard {
 
     func policy(for feedID: String) -> FeedAutomationPolicy { policies[feedID] ?? FeedAutomationPolicy() }
 
+    func startOffsetSeconds(for feedID: String) -> Double { showStartOffsets[feedID]?.seconds ?? 0 }
+
+    func isStartOffsetCustomized(_ feedID: String) -> Bool { startOffsetSeconds(for: feedID) > 0 }
+
+    func canEditStartOffset(_ feedID: String) -> Bool {
+        isLoaded(feedID) && !isArticleFeed(feedID) && showStartOffsetsWritable
+    }
+
+    /// A settings edit changes only the stored policy; it never seeks a loaded episode.
+    @discardableResult
+    func setStartOffsetSeconds(_ seconds: Double, for feedID: String) async -> LibraryShowStartOffset? {
+        guard showStartOffsetsWritable, let owner = showStartOffsetOwner, let store = model.store,
+              let id = try? ItemID(rawValue: feedID),
+              seconds.isFinite, (0...LibraryShowStartOffset.maximumSeconds).contains(seconds) else { return nil }
+        let current = showStartOffsets[feedID] ?? (try? LibraryShowStartOffset(feedID: id, seconds: 0, revision: 0))
+        guard let current else { return nil }
+        let result: WiltedMacShowStartOffsetApplyResult
+        do {
+            result = try await WiltedMacShowStartOffsetStore(store: store).apply(
+                commandID: UUID().uuidString, owner: owner, feedID: id,
+                seconds: seconds, basedOnRevision: current.revision)
+        } catch {
+            Self.log.error("show start offset save failed: \(LogSafeError.describe(error), privacy: .public)")
+            return nil
+        }
+        switch result {
+        case let .applied(updated):
+            showStartOffsets[feedID] = updated
+            showStartOffsetConflictFeedIDs.remove(feedID)
+            model.librarySyncController?.requestPublish()
+            return updated
+        case let .conflict(authoritative):
+            showStartOffsets[feedID] = authoritative
+            showStartOffsetConflictFeedIDs.insert(feedID)
+            return nil
+        }
+    }
+
+    func clearStartOffsetConflict(_ feedID: String) { showStartOffsetConflictFeedIDs.remove(feedID) }
+
+    func scheduleStartOffsetEdit(_ seconds: Double, for feedID: String, reset: Bool = false) {
+        if reset { showStartOffsetResetRevisions[feedID] = nil }
+        let task = Task { @MainActor in
+            let updated = await self.setStartOffsetSeconds(seconds, for: feedID)
+            if reset, let updated { self.showStartOffsetResetRevisions[feedID] = updated.revision }
+            return updated
+        }
+        showStartOffsetEditTasks[feedID] = task
+    }
+
     /// Reads every subscription's policy and match rules from the store.
     /// Each feed becomes editable only once its whole read succeeds, and is
     /// published then rather than after every later feed. A failed or
@@ -106,6 +163,19 @@ final class WiltedMacFeedPolicyBoard {
             guard isActiveReload(reloadID) else { return }
             let store = try await availableStore()
             await settle()
+            let binding = try await store.libraryAccountBinding()
+            let offsetOwner = binding?.ownerToken ?? (binding == nil ? "local-library" : nil)
+            if let offsetOwner {
+                showStartOffsets = try await WiltedMacShowStartOffsetStore(store: store).offsets(owner: offsetOwner)
+                showStartOffsetOwner = offsetOwner
+                showStartOffsetsWritable = binding == nil
+                    || (binding?.state == .bound && (model.libraryAccountStatus?.allowsSync ?? false))
+            } else {
+                showStartOffsets = [:]
+                showStartOffsetOwner = nil
+                showStartOffsetsWritable = false
+            }
+            showStartOffsetConflictFeedIDs = []
             let readRevision = mutationRevision
             await reloadReadHookForTesting?()
             guard isActiveReload(reloadID) else { return }

@@ -319,6 +319,7 @@ extension WiltedMacModel {
         controller.listenNextRearmHandler = old.listenNextRearmHandler
         controller.restoreListenNextHoldEpoch(old.listenNextHoldEpoch)
         controller.episodeEligibilityPredicate = old.episodeEligibilityPredicate
+        controller.freshStartOffsetProvider = old.freshStartOffsetProvider
         controller.defaultRate = old.defaultRate
         controller.automaticPodcastQueueAdvancePredicate = old.automaticPodcastQueueAdvancePredicate
         controller.onOutputLostPause = old.onOutputLostPause

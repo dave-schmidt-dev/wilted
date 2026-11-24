@@ -68,6 +68,7 @@ actor WiltedMacLibraryPublisher {
     private var nextLocalSeq: UInt64 = 1
     private var deliveredIntentIDs = Set<String>()
     private let statsProvider: (@Sendable () async -> LifetimeStatistics?)?
+    private let showStartOffsetsProvider: (@Sendable () async -> [String: LibraryShowStartOffset]?)?
     private let relaysIntents: Bool
     private let clock: @Sendable () -> Date
     private var publishedStats: LibraryStats?
@@ -105,6 +106,7 @@ actor WiltedMacLibraryPublisher {
         sink: any LibraryIntentSink,
         isEnabled: Bool = true,
         statsProvider: (@Sendable () async -> LifetimeStatistics?)? = nil,
+        showStartOffsetsProvider: (@Sendable () async -> [String: LibraryShowStartOffset]?)? = nil,
         relaysIntents: Bool = true,
         clock: @escaping @Sendable () -> Date = { Date() },
         publicationStore: WiltedMacLibraryPublicationStore? = nil,
@@ -119,6 +121,7 @@ actor WiltedMacLibraryPublisher {
         self.sink = sink
         self.isEnabled = isEnabled
         self.statsProvider = statsProvider
+        self.showStartOffsetsProvider = showStartOffsetsProvider
         self.clock = clock
         self.publicationStore = publicationStore
         self.deviceID = deviceID
@@ -395,6 +398,8 @@ actor WiltedMacLibraryPublisher {
         try await verify(context)
         var next = LibraryStats(lifetime, updatedAt: clock())
         next.supportedIntentActions = Self.supportedIntentActions
+        next.showStartOffsets = await showStartOffsetsProvider?()
+        try await verify(context)
         if let publishedStats {
             if publishedStats.hasSameMetrics(as: next) { return }
             // The listening clock moves on every round while audio plays; it goes up at most once
@@ -432,7 +437,7 @@ actor WiltedMacLibraryPublisher {
     /// The phone intents this Mac answers beyond the media and decision actions, so a phone sends
     /// only what it sees listed. `addLink` lets the Mac classify a pasted address once.
     static let supportedIntentActions = [
-        "subscribe", "addArticle", "addLink", "adFeedback", "setHeadlineSaved", "setHeadlinePublisherMuted"
+        "subscribe", "addArticle", "addLink", "adFeedback", "setHeadlineSaved", "setHeadlinePublisherMuted", "setShowStartOffset"
     ]
 
     // MARK: - Intents

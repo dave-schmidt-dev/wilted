@@ -124,6 +124,21 @@ final class LibraryIntentTests: XCTestCase {
             story: story, isSaved: true, basedOnRevision: -1, deviceID: "phone"))
     }
 
+    func testShowStartOffsetIntentCarriesItsMacFieldRevision() throws {
+        let feed = try item("feed")
+        let intent = try LibraryIntent.setShowStartOffset(
+            feedID: feed, seconds: 45, basedOnRevision: 7, deviceID: "phone", createdAt: created, id: "offset")
+        let encoded = try JSONEncoder().encode(intent)
+        XCTAssertEqual(try JSONDecoder().decode(LibraryIntent.self, from: encoded), intent)
+        XCTAssertEqual(intent.action.entryID, feed)
+        XCTAssertTrue(intent.action.isDecision)
+        XCTAssertFalse(IntentRetention.isExpired(intent, now: created.addingTimeInterval(IntentRetention.maximumAge + 1)))
+        XCTAssertThrowsError(try LibraryIntent.setShowStartOffset(
+            feedID: feed, seconds: 601, basedOnRevision: 7, deviceID: "phone"))
+        XCTAssertThrowsError(try LibraryIntent.setShowStartOffset(
+            feedID: feed, seconds: 30, basedOnRevision: -1, deviceID: "phone"))
+    }
+
     func testAddIntentsRejectNonHTTPSAndCredentialedURLsAtInitAndDecode() throws {
         let bad = ["http://example.com/feed.xml", "ftp://example.com/f", "https://user:pw@example.com/f",
                    "https://user@example.com/f", "https:///nohost"]

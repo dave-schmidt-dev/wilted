@@ -34,6 +34,8 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         case cancelListenNext(requestID: String)
         /// Ask the Mac to classify and add an HTTPS link as a feed or article.
         case addLink(url: URL)
+        /// Set a show's fresh-start offset if its Mac-authoritative revision still matches.
+        case setShowStartOffset(feedID: ItemID, seconds: Double, basedOnRevision: Int64)
         /// The listener's verdict on ad removal at `playedSeconds` of the prepared revision `revisionID`
         /// they were hearing. The Mac maps it onto the original episode and files it for review; the
         /// intent id is the feedback id. The Mac answers with an `IntentOutcome`.
@@ -65,7 +67,7 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
                 return Self.invalidURLEntryID
             case let .requestMedia(entryID), let .mediaCached(entryID, _, _), let .keep(entryID), let .skip(entryID),
                  let .markDone(entryID), let .removeFromLarder(entryID), let .restore(entryID), let .reorder(entryID, _),
-                 let .adFeedback(entryID, _, _, _):
+                 let .adFeedback(entryID, _, _, _), let .setShowStartOffset(entryID, _, _):
                 return entryID
             case let .setHeadlineSaved(story, _, _):
                 return (try? ItemID(rawValue: story.id)) ?? Self.invalidURLEntryID
@@ -81,7 +83,7 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
             switch self {
             case .keep, .skip, .markDone, .removeFromLarder, .restore, .reorder, .subscribe, .addArticle,
                  .listenNext, .cancelListenNext, .addLink, .adFeedback,
-                 .setHeadlineSaved, .setHeadlinePublisherMuted: return true
+                 .setHeadlineSaved, .setHeadlinePublisherMuted, .setShowStartOffset: return true
             case .requestMedia, .mediaCached: return false
             case .unsupported: return true
             }
@@ -129,6 +131,10 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
             }
         default:
             break
+        }
+        if case let .setShowStartOffset(_, seconds, revision) = action,
+           !(seconds.isFinite && (0...LibraryShowStartOffset.maximumSeconds).contains(seconds) && revision >= 0) {
+            throw DomainError.invalidValue(field: "showStartOffset", reason: "must be finite, bounded, and revisioned")
         }
         if let url = action.addURL {
             guard let canonical = try? ItemID.canonicalURL(url) else {
@@ -247,6 +253,15 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
             action: .adFeedback(entryID: entryID, revisionID: revisionID, kind: kind, playedSeconds: playedSeconds))
     }
 
+
+    public static func setShowStartOffset(
+        feedID: ItemID, seconds: Double, basedOnRevision: Int64, deviceID: String,
+        createdAt: Date = Date(), id: String = UUID().uuidString
+    ) throws -> LibraryIntent {
+        try LibraryIntent(
+            id: id, deviceID: deviceID, createdAt: createdAt,
+            action: .setShowStartOffset(feedID: feedID, seconds: seconds, basedOnRevision: basedOnRevision))
+    }
 
     /// The stand-in for an intent whose action this build cannot decode, built from the fields
     /// that did decode. It carries no usable action and cannot be encoded.
@@ -381,7 +396,7 @@ public enum IntentRetention {
     /// Feedback, headline edits, and durable story request/cancel commands remain valid offline.
     public static func isExpired(_ intent: LibraryIntent, now: Date) -> Bool {
         switch intent.action {
-        case .adFeedback, .setHeadlineSaved, .setHeadlinePublisherMuted, .listenNext, .cancelListenNext: return false
+        case .adFeedback, .setHeadlineSaved, .setHeadlinePublisherMuted, .listenNext, .cancelListenNext, .setShowStartOffset: return false
         default: break
         }
         return now.timeIntervalSince(intent.createdAt) > maximumAge

@@ -33,6 +33,13 @@ final class LibraryStatsRecordTests: XCTestCase {
         }
     }
 
+    func testShowStartOffsetsRoundTripInsideTheStatsRecord() throws {
+        let feed = try ItemID(rawValue: "feed-show")
+        let offset = try LibraryShowStartOffset(feedID: feed, seconds: 75, revision: 3)
+        let value = LibraryStats(updatedAt: stamp, showStartOffsets: [feed.rawValue: offset])
+        XCTAssertEqual(try mapper.decode(mapper.record(stats: value)), .stats(value))
+    }
+
     func testAMalformedStatsPayloadThrowsAndAnOldPayloadDecodes() throws {
         let bad = CKRecord(recordType: "LibraryStatsRecord", recordID: mapper.statsRecordID)
         bad[LibraryRecordMapper.payloadField] = Data("nope".utf8) as CKRecordValue

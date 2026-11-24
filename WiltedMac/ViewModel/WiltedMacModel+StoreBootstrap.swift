@@ -585,6 +585,33 @@ extension WiltedMacModel {
             }
             return self.canPlayEpisode(episode)
         }
+        playback?.freshStartOffsetProvider = { [weak self, weak configuredStore] feedID in
+            guard let self, let configuredStore, self.store === configuredStore else { return nil }
+            let binding: LocalLibraryAccountBinding?
+            do { binding = try await configuredStore.libraryAccountBinding() }
+            catch { return nil }
+            let owner: String
+            if let binding {
+                guard binding.state == .bound, self.libraryAccountStatus?.allowsSync == true,
+                      let ownerToken = binding.ownerToken else { return nil }
+                owner = ownerToken
+            } else {
+                owner = "local-library"
+            }
+            guard let offsets = try? await WiltedMacShowStartOffsetStore(store: configuredStore).offsets(owner: owner),
+                  self.store === configuredStore else { return nil }
+            let currentBinding: LocalLibraryAccountBinding?
+            do { currentBinding = try await configuredStore.libraryAccountBinding() }
+            catch { return nil }
+            if let binding {
+                guard currentBinding?.ownerToken == binding.ownerToken,
+                      currentBinding?.state == .bound,
+                      self.libraryAccountStatus?.allowsSync == true else { return nil }
+            } else if currentBinding != nil {
+                return nil
+            }
+            return offsets[feedID.rawValue]?.seconds
+        }
         playback?.podcastStateHandler = { [weak self] itemID, fault in
             self?.applyPodcastPlaybackObservation(itemID: itemID, fault: fault)
         }

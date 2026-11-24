@@ -271,12 +271,14 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
     private func assertShippingFacts(_ screen: LibraryScreen, app: XCUIApplication, image: UIImage) {
         guard screen == .larder || screen == .settings || screen == .bookRow else { return }
         do {
-            func assertPaintedLine(_ expected: String, frame: CGRect) throws {
-                let bounds = CGRect(origin: .zero, size: image.size)
+            func assertPaintedLine(_ expected: String, frame: CGRect, in screenshot: UIImage) throws {
+                let bounds = CGRect(origin: .zero, size: screenshot.size)
                 XCTAssertTrue(bounds.contains(frame), "Factual text stays inside the shipping screen")
+                guard bounds.contains(frame) else { return }
                 let region = frame.insetBy(dx: -2, dy: -3).intersection(bounds)
-                let scale = CGFloat(try XCTUnwrap(image.cgImage).width) / image.size.width
-                let crop = try XCTUnwrap(image.cgImage?.cropping(to: CGRect(
+                let cgImage = try XCTUnwrap(screenshot.cgImage)
+                let scale = CGFloat(cgImage.width) / screenshot.size.width
+                let crop = try XCTUnwrap(cgImage.cropping(to: CGRect(
                     x: region.minX * scale, y: region.minY * scale,
                     width: region.width * scale, height: region.height * scale).integral))
                 let request = VNRecognizeTextRequest()
@@ -299,8 +301,8 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
                 // The book row names its author and its length, painted whole.
                 let metadata = app.descendants(matching: .any)["wilted-library-meta-fixture-book-1"].firstMatch
                 XCTAssertTrue(metadata.exists)
-                try assertPaintedLine("Ada Fixture", frame: metadata.frame)
-                try assertPaintedLine("10:00", frame: metadata.frame)
+                try assertPaintedLine("Ada Fixture", frame: metadata.frame, in: image)
+                try assertPaintedLine("10:00", frame: metadata.frame, in: image)
             } else if screen == .larder {
                 // Frame-bound pixels prove each date, painted whole on its own line below the show and
                 // duration, including the longer second show's row.
@@ -310,17 +312,32 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
                     XCTAssertTrue(metadata.exists && date.exists)
                     XCTAssertGreaterThanOrEqual(date.frame.minY, metadata.frame.maxY - 1,
                         "The date is its own line under the show and duration")
-                    try assertPaintedLine("Nov 14, 2023", frame: date.frame)
+                    try assertPaintedLine("Nov 14, 2023", frame: date.frame, in: image)
                 }
             } else {
+                let scrollView = app.scrollViews.firstMatch
+                XCTAssertTrue(scrollView.exists, "Settings remain scrollable when more controls are added")
+                for feedID in ["fixture-show", "fixture-show-2"] {
+                    let picker = app.descendants(matching: .any)[
+                        "wilted-library-show-start-offset-\(feedID)"
+                    ].firstMatch
+                    XCTAssertTrue(picker.waitForExistence(timeout: 5), "Each show has a start control")
+                    for _ in 0..<6 where !picker.isHittable { scrollView.swipeUp() }
+                    XCTAssertTrue(picker.isHittable, "Each show's start control is reachable by scrolling")
+                }
+
                 let value = app.staticTexts["wilted-library-settings-cache-size"]
                 XCTAssertTrue(value.exists)
                 let label = app.staticTexts["Downloaded audio"].firstMatch
                 XCTAssertTrue(label.exists)
+                for _ in 0..<6 where !label.isHittable { scrollView.swipeUp() }
+                XCTAssertTrue(label.isHittable && value.isHittable,
+                    "Storage facts remain visible after scrolling past show settings")
                 XCTAssertGreaterThanOrEqual(value.frame.minY, label.frame.maxY,
                     "Storage paints its value below the label in its own full-width line")
-                try assertPaintedLine("Downloaded audio", frame: label.frame)
-                try assertPaintedLine(value.label, frame: value.frame)
+                let scrolledScreenshot = app.screenshot().image
+                try assertPaintedLine("Downloaded audio", frame: label.frame, in: scrolledScreenshot)
+                try assertPaintedLine(value.label, frame: value.frame, in: scrolledScreenshot)
             }
         } catch {
             XCTFail("Shipping factual layout could not be verified: \(error)")

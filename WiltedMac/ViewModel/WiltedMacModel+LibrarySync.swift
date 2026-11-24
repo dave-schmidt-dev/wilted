@@ -59,6 +59,8 @@ actor WiltedMacLibraryIntentSink: LibraryIntentSink {
             try await record(intent, describing: "headline publisher-mute command")
         case let .adFeedback(entryID, _, kind, _):
             try await record(intent, describing: "\(kind.rawValue) feedback for \(entryID.rawValue)")
+        case let .setShowStartOffset(feedID, _, _):
+            try await record(intent, describing: "show start offset for \(feedID.rawValue)")
         case .unsupported:
             try await record(intent, describing: "unsupported action")
         }
@@ -201,13 +203,40 @@ extension WiltedMacModel {
             onApplied: { [weak self] in self?.librarySyncController?.requestPublish() },
             listenNextHandler: listenNextHandler
         )
-        let sink = WiltedMacLibraryIntentSink(consumer: mediaRequestConsumer ?? { intent in
-            // A media request is queued, not awaited, so its upload never holds up the round.
-            if intent.action.isDecision { try await applier.apply(intent) } else { await inbound.admit(intent) }
+        let publisherHasManagedAccount = account != nil
+        let offsetOwnerProvider: @Sendable () async -> String? = { [weak account] in
+            if publisherHasManagedAccount { return await account?.approvedPublicationOwner }
+            return "local-library"
+        }
+        let offsetIntentHandler = WiltedMacShowStartOffsetIntentHandler(
+            store: WiltedMacShowStartOffsetStore(store: store), transport: resolvedTransport,
+            ownerProvider: offsetOwnerProvider,
+            feedValidator: { feedID in
+                let subscription = try await store.subscription(for: feedID)
+                let feed = try await store.podcastFeed(for: feedID)
+                return subscription != nil && feed != nil
+            },
+            onApplied: { [weak self] in
+                await MainActor.run { self?.librarySyncController?.requestPublish() }
+            })
+        let sink = WiltedMacLibraryIntentSink(consumer: { intent in
+            if try await offsetIntentHandler.applyIfOffset(intent) { return }
+            if let mediaRequestConsumer {
+                try await mediaRequestConsumer(intent)
+            } else if intent.action.isDecision {
+                try await applier.apply(intent)
+            } else {
+                // A media request is queued, not awaited, so its upload never holds up the round.
+                await inbound.admit(intent)
+            }
         })
         let publisher = WiltedMacLibraryPublisher(
             source: source, transport: resolvedTransport, sink: sink, isEnabled: true,
             statsProvider: { try? await store.lifetimeStatistics() },
+            showStartOffsetsProvider: {
+                guard let owner = await offsetOwnerProvider() else { return nil }
+                return try? await WiltedMacShowStartOffsetStore(store: store).offsets(owner: owner)
+            },
             // The sync round reads intents once for everything; the publisher does not read them again.
             relaysIntents: false,
             publicationStore: account == nil ? nil : .store(store), deviceID: deviceID,

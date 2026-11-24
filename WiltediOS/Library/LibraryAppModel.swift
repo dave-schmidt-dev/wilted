@@ -105,6 +105,18 @@ final class LibraryAppModel: ObservableObject {
     @Published var macAddActions: Set<String>?
     /// True when the last read of the Mac's published actions failed.
     @Published var macAddCheckFailed = false
+    /// Mac-authoritative show offsets cached for offline settings and fresh playback starts.
+    @Published var showStartOffsets: [String: LibraryShowStartOffset] = [:]
+    @Published var showStartOffsetCommands: [String: LibraryShowStartOffsetOutbox.Command] = [:]
+    @Published var showStartOffsetNotices: [String: String] = [:]
+    @Published var macSupportsShowStartOffsets: Bool?
+    let showStartOffsetOutbox: LibraryShowStartOffsetOutbox
+    var showStartOffsetOutboxWritable = true
+    var showStartOffsetOwnerVerified = false
+    var showStartOffsetOwnerToken: String?
+    var showStartOffsetRestoredOwner: String?
+    /// Per-feed sends reserved before transport suspension, to reject concurrent edits and retries.
+    var showStartOffsetSendsInFlight: Set<String> = []
     /// What is typed in the Add sheet, kept so closing the sheet does not lose it.
     @Published var addDraft = ""
 
@@ -234,7 +246,7 @@ final class LibraryAppModel: ObservableObject {
     func setListenNextDownloadProgress(_ bytes: Int64?, requestID: String) {
         listenNextDownloadProgress[requestID] = bytes
     }
-    private var store: any LibraryStore
+    var store: any LibraryStore
     private var reconciler: LibraryReconciler
     private var refreshTask: Task<Void, Never>?
     var hasPendingRefresh: Bool { refreshTask != nil }
@@ -255,6 +267,7 @@ final class LibraryAppModel: ObservableObject {
         preferences: UserDefaults = .standard,
         ownPositionsURL: URL? = nil,
         outboxURL: URL? = nil,
+        showStartOffsetOutboxURL: URL? = nil,
         listenNextURL: URL? = nil,
         finishedHereURL: URL? = nil,
         headlineStateURL: URL? = nil,
@@ -285,6 +298,9 @@ final class LibraryAppModel: ObservableObject {
         self.headlinePhoneState = LibraryHeadlinePhoneState(url: headlineStateURL)
         handoffState.ownPositionStore = LibraryOwnPositionStore(url: ownPositionsURL)
         self.outboxState = LibraryOutboxState(outbox: LibraryIntentOutbox(url: outboxURL))
+        let resolvedOffsetOutboxURL = showStartOffsetOutboxURL
+            ?? outboxURL?.deletingLastPathComponent().appendingPathComponent("show-start-offset-outbox.json")
+        self.showStartOffsetOutbox = LibraryShowStartOffsetOutbox(url: resolvedOffsetOutboxURL)
         let storyOutboxURL = listenNextURL ?? outboxURL?.deletingLastPathComponent()
             .appendingPathComponent("pending-listen-next-v1.json")
         self.listenNextState = LibraryListenNextPhoneState(outbox: LibraryListenNextPhoneOutbox(url: storyOutboxURL))
@@ -300,6 +316,7 @@ final class LibraryAppModel: ObservableObject {
         kindFilter = LibraryKindFilter.stored(preferences.string(forKey: LibraryKindFilter.storageKey))
         relay.model = self
         restoreOutbox()
+        restoreShowStartOffsetOutbox()
         restoreListenNextOutbox()
     }
 
@@ -330,6 +347,7 @@ final class LibraryAppModel: ObservableObject {
         let saved = await store.state()
         verifyOutboxOwner(saved.ownerToken)
         verifyListenNextOutboxOwner(saved.ownerToken)
+        verifyShowStartOffsetOwner(saved.ownerToken)
         restoreDeviceLink(owner: saved.ownerToken)
         applyStoreMetadata(saved)
         headlinePhoneState.bindLocalOwner(
@@ -423,6 +441,7 @@ final class LibraryAppModel: ObservableObject {
         discardDecisionsAfterAccountChange()
         discardAddsAfterAccountChange()
         discardAdFeedbackAfterAccountChange()
+        discardShowStartOffsetsAfterAccountChange()
         await discardMediaAfterAccountChange()
         discardDeviceLinkAfterAccountChange()
         await refresh()
@@ -475,7 +494,7 @@ final class LibraryAppModel: ObservableObject {
         if plan.readsOffers { options.insert(.offers) }
         if plan.forcesOffers { options.insert(.forceOffers) }
         let headlineNeedsOutcome = headlinePhoneState.commands.contains { $0.delivery == .pending || $0.delivery == .sent }
-        if !decisions.isEmpty || hasAddAwaitingAnswer || headlineNeedsOutcome { options.insert(.outcomes) }
+        if !decisions.isEmpty || hasAddAwaitingAnswer || headlineNeedsOutcome || !showStartOffsetCommands.isEmpty { options.insert(.outcomes) }
         let beforePoll = await roundStore.state()
         guard await current() else { return }
         await tellTransportKnownPeers(writer: beforePoll.ownerToken == nil ? nil : beforePoll.observedPublication?.writerDeviceID)
@@ -512,6 +531,11 @@ final class LibraryAppModel: ObservableObject {
         let saved = await roundStore.state()
         guard await current() else { return }
         applyStoreMetadata(saved)
+        if let owner = saved.ownerToken {
+            await refreshShowStartOffsetStats(
+                owner: owner, generation: generation, storeIdentity: ObjectIdentifier(roundStore as AnyObject))
+            guard await current() else { return }
+        }
         headlinePhoneState.bindLocalOwner(
             saved.ownerToken,
             generation: generation,
@@ -540,6 +564,8 @@ final class LibraryAppModel: ObservableObject {
         }
         await resolveDecisions(outcomes: polled?.outcomes ?? [])
         await resolveAdds(outcomes: polled?.outcomes ?? [])
+        resolveShowStartOffsetOutcomes(polled?.outcomes ?? [])
+        await sendDueShowStartOffsetCommands()
         await reconcileHeadlineProjection(
             outcomes: polled?.outcomes ?? [], expectedOwner: saved.ownerToken,
             generation: generation, isCurrent: { await current() })
@@ -556,6 +582,7 @@ final class LibraryAppModel: ObservableObject {
 
     private func applyStoreMetadata(_ saved: LibraryStoreState) {
         outboxOwnerChanged(saved.ownerToken)
+        verifyShowStartOffsetOwner(saved.ownerToken)
         finishedHereOwnerSeen(saved.ownerToken)
         accountQuarantined = accountQuarantined || saved.reviewHold
         cachedDisplayIDs = saved.displayPreparedIDs ?? []

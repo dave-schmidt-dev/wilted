@@ -415,7 +415,8 @@ assert_contains 'func testSettingsTabScrollTargetsRenderTheirSections' \
   "$repo_root/WiltedMacTests/WiltedPixelSnapshotTests+Reports.swift"
 assert_contains 'VNRecognizeTextRequest()' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
 assert_contains 'value.frame.minY, label.frame.maxY' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
-assert_contains 'assertPaintedLine("Nov 14, 2023", frame: date.frame)' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
+assert_contains 'assertPaintedLine("Nov 14, 2023", frame: date.frame, in: image)' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
+assert_contains 'assertPaintedLine(value.label, frame: value.frame, in: scrolledScreenshot)' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
 assert_contains 'XCTAssertGreaterThanOrEqual(date.frame.minY, metadata.frame.maxY - 1,' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
 
 printf '%s\n' 'native gate aggregate meta-test passed (nine native Xcode legs; the macOS UI leg defers unless WILTED_MAC_UI=1 and its deferral is fail-loud; forced and zero-test failures are fail-closed; the retained failure bundle is untouched)'

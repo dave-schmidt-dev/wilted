@@ -426,11 +426,19 @@ extension LibraryAppModel {
         }
         commandState.pending = nil
         playbackCommand = nil
-        guard player.start(item, at: position, traceToken: token) else {
+        let hasSavedPlayback = hasSavedPlaybackState(for: rawID)
+        let configuredOffset = row.kind == .podcastEpisode
+            ? row.showID.flatMap { showStartOffsets[$0.rawValue]?.seconds } ?? 0 : 0
+        let freshOffset = LibraryShowStartOffsetRules.freshStartPosition(
+            configuredSeconds: configuredOffset,
+            playableDurationSeconds: row.durationSeconds ?? entryDurations[rawID],
+            hasSavedPlayback: hasSavedPlayback)
+        let startPosition = position > 0 || hasSavedPlayback ? position : freshOffset
+        guard player.start(item, at: startPosition, traceToken: token, automatic: kind == .automatic) else {
             return failStart(row, player.lastFailure ?? .engineRefused, kind: kind)
         }
         if isManual { handoffState.forwardSequenceIDs = forwardSequence }
-        return position > 0 ? .resumed : .started
+        return position > 0 || hasSavedPlayback ? .resumed : .started
     }
 
     /// Publishes a failure after the player effect, so the effect's own command hook cannot clear

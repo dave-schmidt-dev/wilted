@@ -1,5 +1,6 @@
 import Foundation
 import WiltedDomain
+import WiltedLibrary
 
 /// Why an explicit request for audio did not produce it, typed at the one
 /// seam that asks the backend to start. A caller can therefore tell a
@@ -134,6 +135,21 @@ extension PlaybackController {
         }
         guard loadedBackendGeneration == loadedGeneration, itemID == episodeID else {
             throw CancellationError()
+        }
+        if lastWritten == nil, let offsetProvider = freshStartOffsetProvider,
+           let feedID = try? await store.podcastEpisode(for: episodeID)?.feedID,
+           let configuredOffset = await offsetProvider(feedID),
+           loadedBackendGeneration == loadedGeneration, itemID == episodeID, lastWritten == nil {
+            let startPosition = LibraryShowStartOffsetRules.freshStartPosition(
+                configuredSeconds: configuredOffset,
+                playableDurationSeconds: durationSeconds,
+                hasSavedPlayback: false
+            )
+            if startPosition > 0 {
+                positionSeconds = startPosition
+                backend.currentTime = startPosition
+                speedSavingsBaselineSeconds = startPosition
+            }
         }
         if listenerRateSerial == listenerRateBaseline { setRate(savedRate) }
         // Queue operations keep their silent autoplay: the queue move must

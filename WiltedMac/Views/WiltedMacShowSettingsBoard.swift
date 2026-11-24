@@ -1,4 +1,5 @@
 import WiltedDomain
+import WiltedLibrary
 import WiltedProducer
 
 struct WiltedMacShowSettingsResetUndo {
@@ -8,6 +9,8 @@ struct WiltedMacShowSettingsResetUndo {
     fileprivate let isAdFree: Bool
     fileprivate let removesSelfPromotion: Bool
     fileprivate let sendsForAdFinding: Bool
+    fileprivate let startOffset: LibraryShowStartOffset?
+    fileprivate let resetStartOffsetRevision: Int64?
 }
 
 enum WiltedMacShowSetting: String, CaseIterable {
@@ -19,6 +22,7 @@ enum WiltedMacShowSetting: String, CaseIterable {
     case removeAds
     case selfPromotion
     case adFinding
+    case startOffset
 }
 
 extension WiltedMacFeedPolicyBoard {
@@ -41,6 +45,8 @@ extension WiltedMacFeedPolicyBoard {
             !isArticleFeed(feedID) && removesSelfPromotion(feedID)
         case .adFinding:
             !isArticleFeed(feedID) && sendsForAdFinding(feedID)
+        case .startOffset:
+            !isArticleFeed(feedID) && isStartOffsetCustomized(feedID)
         }
     }
 
@@ -59,6 +65,7 @@ extension WiltedMacFeedPolicyBoard {
             case .removeAds: "Remove ads"
             case .selfPromotion: "Remove the show's own promotion"
             case .adFinding: "Send this show for ad finding"
+            case .startOffset: "Start new episodes at"
             }
         }
     }
@@ -85,6 +92,8 @@ extension WiltedMacFeedPolicyBoard {
             _ = setRemoveSelfPromotion(false, for: feedID)
         case .adFinding:
             if isOverridden(.adFinding, for: feedID) { resetAdFinding(for: feedID) }
+        case .startOffset:
+            if isStartOffsetCustomized(feedID) { scheduleStartOffsetEdit(0, for: feedID, reset: true) }
         }
     }
 
@@ -108,7 +117,8 @@ extension WiltedMacFeedPolicyBoard {
         let undo = WiltedMacShowSettingsResetUndo(
             feedID: feedID, policy: policy(for: feedID), isNews: isNews(feedID),
             isAdFree: isAdFree(feedID), removesSelfPromotion: removesSelfPromotion(feedID),
-            sendsForAdFinding: sendsForAdFinding(feedID)
+            sendsForAdFinding: sendsForAdFinding(feedID), startOffset: showStartOffsets[feedID],
+            resetStartOffsetRevision: nil
         )
 
         // Revoke an opt-in before other changes can restart preparation.
@@ -125,7 +135,11 @@ extension WiltedMacFeedPolicyBoard {
         if isOverridden(.news, for: feedID) { reset(.news, for: feedID) }
         if isOverridden(.selfPromotion, for: feedID) { reset(.selfPromotion, for: feedID) }
         if isOverridden(.removeAds, for: feedID) { reset(.removeAds, for: feedID) }
-        return undo
+        if isOverridden(.startOffset, for: feedID) { reset(.startOffset, for: feedID) }
+        return WiltedMacShowSettingsResetUndo(
+            feedID: undo.feedID, policy: undo.policy, isNews: undo.isNews, isAdFree: undo.isAdFree,
+            removesSelfPromotion: undo.removesSelfPromotion, sendsForAdFinding: undo.sendsForAdFinding,
+            startOffset: undo.startOffset, resetStartOffsetRevision: showStartOffsetResetRevisions[feedID])
     }
 
     /// Restores reset choices that still have their reset value, preserving any later edits.
@@ -135,6 +149,7 @@ extension WiltedMacFeedPolicyBoard {
 
         await settle()
         if model.store != nil {
+            await showStartOffsetEditTasks[feedID]?.value
             await reload()
             guard loadState == .loaded, isLoaded(feedID) else { return false }
         }
@@ -159,6 +174,13 @@ extension WiltedMacFeedPolicyBoard {
         if !sendsForAdFinding(feedID), undo.sendsForAdFinding,
            !AdLabellerPreferences(preferences: model.preferences).keptBackFeedIDs.contains(feedID) {
             _ = setSendForAdFinding(true, for: feedID)
+        }
+        if let oldOffset = undo.startOffset,
+           let resetRevision = undo.resetStartOffsetRevision ?? showStartOffsetResetRevisions[feedID],
+           showStartOffsets[feedID]?.seconds == 0,
+           showStartOffsets[feedID]?.revision == resetRevision {
+            guard let restored = await setStartOffsetSeconds(oldOffset.seconds, for: feedID),
+                  restored.seconds == oldOffset.seconds else { return false }
         }
         let expectedPolicy = policy(for: feedID)
         let expectedHeadlinesOnly = isNews(feedID)

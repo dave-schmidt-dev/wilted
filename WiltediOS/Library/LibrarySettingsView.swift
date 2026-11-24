@@ -26,7 +26,11 @@ struct LibrarySettingsView: View {
                     ForEach(LibrarySettingsSection.allCases, id: \.self) { section in
                         switch section {
                         case .general: generalCard
-                        case .playback: playbackCard
+                        case .playback:
+                            VStack(spacing: WiltedTheme.Spacing.xLarge) {
+                                playbackCard
+                                if !podcastSources.isEmpty { showStartOffsetsCard }
+                            }
                         case .storage: storageCard
                         case .reports: LibrarySettingsBulletinsCard(model: model)
                         case .devices: devicesCard
@@ -105,6 +109,74 @@ struct LibrarySettingsView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-settings-playback")
+    }
+
+    private var podcastSources: [LibrarySource] {
+        model.decisionContent.sources.values.filter { $0.kind == .podcastFeed }
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    private var showStartOffsetsCard: some View {
+        WiltedSettingsCard(title: "New episode starts") {
+            Text("Choose where a new episode starts for each show. Saved progress always resumes at its saved position.")
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+            if model.macSupportsShowStartOffsets == false {
+                Text("Update Wilted on your Mac to use show start times.")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-library-show-start-offset-update-mac")
+            }
+            ForEach(podcastSources) { source in
+                showStartOffsetRow(source)
+            }
+            Text("These choices sync with your Mac and apply only to a new episode.")
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("wilted-library-show-start-offsets")
+    }
+
+    private func showStartOffsetRow(_ source: LibrarySource) -> some View {
+        let command = model.showStartOffsetCommands[source.id.rawValue]
+        let selected = model.showStartOffsetSeconds(for: source.id)
+        let options = Array(Set([0.0, 15, 30, 45, 60, 90, 120, 180, 300, 600, selected])).sorted()
+        return VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+            HStack(spacing: WiltedTheme.Spacing.medium) {
+                Text(source.title).wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    .lineLimit(2)
+                Spacer(minLength: WiltedTheme.Spacing.small)
+                Picker("Start new episodes at for \(source.title)", selection: Binding(
+                    get: { model.showStartOffsetSeconds(for: source.id) },
+                    set: { seconds in Task { await model.setShowStartOffset(seconds, for: source.id) } }
+                )) {
+                    ForEach(options, id: \.self) { seconds in
+                        Text(seconds == 0 ? "Beginning" : "\(Int(seconds)) seconds").tag(seconds)
+                    }
+                }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("wilted-library-show-start-offset-\(source.id.rawValue)")
+                .disabled(model.macSupportsShowStartOffsets == false
+                    || ((command?.reservedAt != nil || command?.sentAt != nil) && command?.conflict == false))
+            }
+            if let notice = model.showStartOffsetStatus(for: source.id) {
+                HStack(spacing: WiltedTheme.Spacing.small) {
+                    Text(notice).wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: WiltedTheme.Spacing.small)
+                    if command?.conflict == true {
+                        Button("Apply again") { Task { await model.reapplyShowStartOffset(for: source.id) } }
+                            .font(.footnote)
+                            .accessibilityIdentifier("wilted-library-show-start-offset-reapply-\(source.id.rawValue)")
+                    }
+                }
+            }
+            Divider()
+        }
     }
 
     private var storageCard: some View {

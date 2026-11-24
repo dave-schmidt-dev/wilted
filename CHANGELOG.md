@@ -2,12 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
-## [Unreleased]
+## [0.7.7] - 2026-11-24
 
 ### Added
 
 - Mac and iPhone headline cards show the publisher and link, with seven-day history, Save, and Mute this source. Spoken headlines can be turned off separately from weather alerts.
 - Headline cards offer **Listen next**: the Mac narrates the story with the selected approved local voice, then makes completed audio available only to the requesting device.
+- Mac and iPhone show per-show **Start new episodes at** / **New episode starts** controls. They apply to fresh episode starts while saved playback resumes normally.
 
 ## [0.7.6] - 2026-11-23
 

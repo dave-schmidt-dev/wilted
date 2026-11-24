@@ -156,6 +156,7 @@ struct WiltedMacShowSettingsView: View {
                         update: { board.update(feedID, autoPrepare: $0) }
                     )
                     keptLimitRow
+                    if !isArticle { startOffsetRow }
                     WiltedMacFeedRulesEntry(
                         editor: board.rulesEditor(for: feedID), subscription: subscription,
                         isEnabled: board.isLoaded(feedID), open: { isEditingRules = true }
@@ -245,6 +246,42 @@ struct WiltedMacShowSettingsView: View {
                         .labelsHidden()
                         .accessibilityLabel("Adjust episodes kept for \(subscription.title)")
                         .accessibilityIdentifier("wilted-feed-policy-kept-limit-stepper")
+                }
+            }
+        }
+    }
+
+    private var startOffsetRow: some View {
+        settingRow(
+            "Start new episodes at", defaultValue: "0 seconds", setting: .startOffset,
+            resetID: "start-offset",
+            detail: "Only applies to a new episode. Saved progress always resumes where you left off."
+        ) {
+            VStack(alignment: .trailing, spacing: WiltedTheme.Spacing.xSmall) {
+                Picker("Start new episodes at", selection: Binding(
+                    get: { board.startOffsetSeconds(for: feedID) },
+                    set: { board.scheduleStartOffsetEdit($0, for: feedID) }
+                )) {
+                    ForEach([0.0, 15, 30, 45, 60, 90, 120, 180, 300, 600], id: \.self) { seconds in
+                        Text(seconds == 0 ? "Beginning" : "\(Int(seconds)) seconds").tag(seconds)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .accessibilityLabel("Start new episodes at for \(subscription.title)")
+                .accessibilityIdentifier("wilted-show-settings-start-offset")
+                .disabled(!board.canEditStartOffset(feedID))
+                if !board.canEditStartOffset(feedID) {
+                    Text("Read only until iCloud sync is available.")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-show-settings-start-offset-read-only")
+                }
+                if board.showStartOffsetConflictFeedIDs.contains(feedID) {
+                    Text("Changed on another device. Choose again to apply.")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-show-settings-start-offset-conflict")
                 }
             }
         }

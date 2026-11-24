@@ -206,6 +206,9 @@ public final class PlaybackController {
     /// Predicate used to determine whether a queued podcast episode is eligible
     /// for playback (e.g. downloaded, prepared, and ready media available).
     @ObservationIgnored public var episodeEligibilityPredicate: (@MainActor @Sendable (ItemID) async -> Bool)?
+    /// The Mac's owner-scoped per-show offset, queried only for a new queued episode start.
+    /// Direct revision loads, including story playback, never consult this preference.
+    @ObservationIgnored public var freshStartOffsetProvider: (@MainActor @Sendable (ItemID) async -> Double?)?
 
     var currentRevision: AudioRevision?
     var completionHandledGeneration: UInt64?

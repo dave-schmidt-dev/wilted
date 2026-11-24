@@ -32,12 +32,22 @@ class SettingsInventory(unittest.TestCase):
     def test_phone_sections_render_in_declared_order(self):
         view = (ROOT.parent / "WiltediOS/Library/LibrarySettingsView.swift").read_text()
         self.assertIn("ForEach(LibrarySettingsSection.allCases", view)
-        for name in ("general", "playback", "storage", "devices", "about"):
+        for name in ("general", "storage", "devices", "about"):
             self.assertRegex(view, rf"case \.{name}:\s+{name}Card")
             body = view.split(f"private var {name}Card:", 1)[1].split("\n    }", 1)[0]
             self.assertIn(f"WiltedSettingsCard(title: LibrarySettingsSection.{name}.title)", body)
             self.assertIn(f"scopeNote(.{name})", body)
-        self.assertEqual(view.count("WiltedSettingsCard(title:"), 5)
+        self.assertRegex(view, r"case \.playback:\s+VStack")
+        playback_switch = view.split("case .playback:", 1)[1].split("case .storage:", 1)[0]
+        self.assertIn("playbackCard", playback_switch)
+        self.assertIn("if !podcastSources.isEmpty { showStartOffsetsCard }", playback_switch)
+        playback = view.split("private var playbackCard:", 1)[1].split("private var podcastSources:", 1)[0]
+        self.assertIn("WiltedSettingsCard(title: LibrarySettingsSection.playback.title)", playback)
+        self.assertIn("scopeNote(.playback)", playback)
+        self.assertIn('WiltedSettingsCard(title: "New episode starts")', view)
+        self.assertIn('Picker("Start new episodes at for \\(source.title)"', view)
+        self.assertEqual(view.count('"wilted-library-show-start-offset-\\(source.id.rawValue)"'), 1)
+        self.assertEqual(view.count("WiltedSettingsCard(title:"), 6)
         about = view.split("private var aboutCard:", 1)[1].split("private var", 1)[0]
         for content in ("StatisticsRows(", "aboutRows(", "supportDetails"):
             self.assertIn(content, about)
@@ -141,6 +151,7 @@ class ShowSettingsInventory(unittest.TestCase):
             '"wilted-feed-policy-restore-cuts"',
             '"wilted-feed-policy-remove-self-promotion"',
             '"wilted-feed-policy-send-for-ad-finding"',
+            '"wilted-show-settings-start-offset"',
             '"wilted-show-settings-rename"',
             '"wilted-feed-details-source-\\(subscription.id)"',
         ])

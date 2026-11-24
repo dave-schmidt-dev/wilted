@@ -401,7 +401,7 @@ final class WiltedMacIntentApplier {
             return try rejected(IntentOutcome.reasonUnsupportedAction)
         case .requestMedia, .mediaCached, .subscribe, .addArticle, .addLink, .adFeedback,
              .listenNext, .cancelListenNext,
-             .setHeadlineSaved, .setHeadlinePublisherMuted:
+             .setHeadlineSaved, .setHeadlinePublisherMuted, .setShowStartOffset:
             return try rejected(notApplicable)
         }
     }

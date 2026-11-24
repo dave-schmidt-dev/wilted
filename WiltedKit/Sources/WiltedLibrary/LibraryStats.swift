@@ -20,6 +20,8 @@ public struct LibraryStats: Codable, Equatable, Sendable {
     /// Names of the intent actions this Mac applies (for example `subscribe`, `addArticle`). Nil
     /// from a Mac that predates the field, so a phone sends only what it sees listed.
     public var supportedIntentActions: [String]?
+    /// Mac-authoritative per-feed start offsets. Nil from older Macs means all feeds start at zero.
+    public var showStartOffsets: [String: LibraryShowStartOffset]?
 
     public init(
         audioProcessedSeconds: Double = 0,
@@ -30,7 +32,8 @@ public struct LibraryStats: Codable, Equatable, Sendable {
         gigabytesDownloaded: Double? = nil,
         minutesSkipped: Double? = nil,
         updatedAt: Date? = nil,
-        supportedIntentActions: [String]? = nil
+        supportedIntentActions: [String]? = nil,
+        showStartOffsets: [String: LibraryShowStartOffset]? = nil
     ) {
         self.audioProcessedSeconds = audioProcessedSeconds
         self.speechGeneratedSeconds = speechGeneratedSeconds
@@ -41,6 +44,7 @@ public struct LibraryStats: Codable, Equatable, Sendable {
         self.minutesSkipped = minutesSkipped
         self.updatedAt = updatedAt
         self.supportedIntentActions = supportedIntentActions
+        self.showStartOffsets = showStartOffsets
     }
 
     /// Maps the Mac's four lifetime counters onto the wire value. Negative or non-finite
