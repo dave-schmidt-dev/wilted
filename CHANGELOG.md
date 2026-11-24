@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- Mac **Prepare Again** retries transient connection failures while staging original audio and shows the final HTTP status or a safe connection cause when it stops.
+
 ## [0.7.5] - 2026-11-23
 
 ### Fixed

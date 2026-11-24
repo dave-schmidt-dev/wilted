@@ -116,7 +116,7 @@ extension WiltedMacModelTests {
         await model.waitForPodcastPreparationOperationsForTesting()
 
         XCTAssertEqual(model.prepareAgainRows[episode.id]?.phase,
-                       .note("Could not download the original, so nothing changed"))
+                       .note("Could not download the original (HTTP 503), so nothing changed"))
         let after = try XCTUnwrap(model.episodes.first { $0.id == episode.id })
         XCTAssertEqual(WiltedMacModel.larderGroup(for: after), .playable)
         XCTAssertTrue(stagedFiles(under: fixture.directory).isEmpty)
@@ -221,7 +221,7 @@ extension WiltedMacModelTests {
         XCTAssertEqual(attempts.count, 4, "the first download and three retries")
         XCTAssertEqual(waits, [2, 4, 8])
         XCTAssertEqual(model.prepareAgainRows[episode.id]?.phase,
-                       .note("Could not download the original, so nothing changed"))
+                       .note("Could not download the original (HTTP 503), so nothing changed"))
         let after = try XCTUnwrap(model.episodes.first { $0.id == episode.id })
         XCTAssertTrue(stagedFiles(under: fixture.directory).isEmpty)
         XCTAssertTrue(model.canPrepareAgain(after), "nothing was decided, so the offer stands")
@@ -245,7 +245,91 @@ extension WiltedMacModelTests {
         XCTAssertEqual(attempts.count, 1, "the server answered that the file is not there")
         XCTAssertEqual(waits, [])
         XCTAssertEqual(model.prepareAgainRows[episode.id]?.phase,
-                       .note("Could not download the original, so nothing changed"))
+                       .note("Could not download the original (HTTP 404), so nothing changed"))
+    }
+
+    func testATimeoutOnTheOriginalIsRetriedAndTheRunContinues() async throws {
+        let attempts = DownloadAttemptCounter()
+        let runner = BlockingPodcastPipelineRunner()
+        let body = Data("the original, recovered from timeout".utf8)
+        let fixture = try await cutFixture("timeout-once", transport: { enclosure in
+            ErrorThenPodcastDownloadTransport(
+                error: URLError(.timedOut), failures: 1, counter: attempts,
+                events: [
+                    .response(.init(url: enclosure, statusCode: 200, mediaType: "audio/mpeg",
+                                    expectedByteCount: Int64(body.count))),
+                    .data(body),
+                ])
+        }, runner: runner)
+        let model = fixture.model
+        var waits: [TimeInterval] = []
+        model.prepareAgainRetrySleep = { waits.append($0) }
+        let episode = try XCTUnwrap(model.episodes.first { $0.id == fixture.episodeID.rawValue })
+
+        model.prepareAgain(episode)
+        try await eventually("the second download to stage the original after timeout") {
+            model.prepareAgainRows[episode.id]?.phase == .preparing
+        }
+
+        XCTAssertEqual(attempts.count, 2)
+        XCTAssertEqual(waits, [2])
+        await runner.resume(throwing: PodcastPreparationError.workerUnavailable("test worker refused the run"))
+        await model.waitForPodcastPreparationOperationsForTesting()
+    }
+
+    func testTimeoutExhaustionReportsCauseWithoutPrivateURLDetails() async throws {
+        let attempts = DownloadAttemptCounter()
+        let privateURL = try XCTUnwrap(URL(string: "https://192.168.1.12:8443/ep.mp3?token=SECRET"))
+        let fixture = try await cutFixture(
+            "timeout-persists",
+            transport: { _ in
+                FailingURLErrorPodcastDownloadTransport(
+                    error: URLError(.timedOut, userInfo: [
+                        NSURLErrorFailingURLErrorKey: privateURL,
+                        NSURLErrorFailingURLStringErrorKey: privateURL.absoluteString,
+                    ]),
+                    counter: attempts
+                )
+            },
+            runner: CancellingPodcastPipelineRunner()
+        )
+        let model = fixture.model
+        var waits: [TimeInterval] = []
+        model.prepareAgainRetrySleep = { waits.append($0) }
+        let episode = try XCTUnwrap(model.episodes.first { $0.id == fixture.episodeID.rawValue })
+
+        model.prepareAgain(episode)
+        await model.waitForPodcastPreparationOperationsForTesting()
+
+        XCTAssertEqual(attempts.count, 4)
+        XCTAssertEqual(waits, [2, 4, 8])
+        let expectedNote = "Could not download the original (timed out), so nothing changed"
+        XCTAssertEqual(model.prepareAgainRows[episode.id]?.phase, .note(expectedNote))
+        XCTAssertFalse(model.podcastOperationMessage?.contains("192.168") ?? false)
+        XCTAssertFalse(model.podcastOperationMessage?.contains("SECRET") ?? false)
+        XCTAssertTrue(stagedFiles(under: fixture.directory).isEmpty)
+    }
+
+    func testCancelledStagingIsNotRetriedOrReportedAsFailure() async throws {
+        let attempts = DownloadAttemptCounter()
+        let fixture = try await cutFixture(
+            "cancelled-staging",
+            transport: { _ in
+                FailingURLErrorPodcastDownloadTransport(error: URLError(.cancelled), counter: attempts)
+            },
+            runner: CancellingPodcastPipelineRunner()
+        )
+        let model = fixture.model
+        let episode = try XCTUnwrap(model.episodes.first { $0.id == fixture.episodeID.rawValue })
+
+        model.prepareAgain(episode)
+        await model.waitForPodcastPreparationOperationsForTesting()
+
+        XCTAssertEqual(attempts.count, 1)
+        XCTAssertNil(model.prepareAgainRows[episode.id])
+        XCTAssertEqual(model.podcastOperationMessage, "Preparation cancelled.")
+        let after = try XCTUnwrap(model.episodes.first { $0.id == episode.id })
+        XCTAssertTrue(model.canPrepareAgain(after))
     }
 
     func testAStopDuringTheWaitBeforeARetryIsAStopNotAFailure() async throws {
@@ -299,5 +383,37 @@ extension WiltedMacModelTests {
         model.prepareAgainRows[id] = WiltedMacPrepareAgainRow(phase: .note("why"))
         model.finishPrepareAgainRow(id)
         XCTAssertEqual(model.prepareAgainRows[id]?.label, "why", "a note stays for the listener")
+    }
+}
+
+private struct ErrorThenPodcastDownloadTransport: PodcastDownloadTransporting {
+    let error: URLError
+    let failures: Int
+    let counter: DownloadAttemptCounter
+    let events: [PodcastDownloadEvent]
+
+    func events(for url: URL) -> AsyncThrowingStream<PodcastDownloadEvent, Error> {
+        counter.increment()
+        let isFailing = counter.count <= failures
+        return AsyncThrowingStream { continuation in
+            if isFailing {
+                continuation.finish(throwing: error)
+            } else {
+                for event in events { continuation.yield(event) }
+                continuation.finish()
+            }
+        }
+    }
+}
+
+private struct FailingURLErrorPodcastDownloadTransport: PodcastDownloadTransporting {
+    let error: URLError
+    let counter: DownloadAttemptCounter
+
+    func events(for url: URL) -> AsyncThrowingStream<PodcastDownloadEvent, Error> {
+        counter.increment()
+        return AsyncThrowingStream { continuation in
+            continuation.finish(throwing: error)
+        }
     }
 }

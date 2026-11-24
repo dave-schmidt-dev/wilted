@@ -1,6 +1,7 @@
 import Foundation
 import os
 import WiltedDomain
+import WiltedLibrary
 import WiltedProducer
 
 /// What a Larder row says about a prepare-again run on a cut episode.
@@ -139,11 +140,46 @@ extension WiltedMacModel {
             podcastOperationMessage = "\(episode.title): \(Self.preparationFailedLabel)"
             return
         }
-        let note = error is PodcastDownloadCoordinatorError
-            ? "Could not download the original, so nothing changed"
-            : "Preparing again failed, so nothing changed"
+        let note: String
+        if let cause = Self.prepareAgainFailureCause(for: error) {
+            note = "Could not download the original (\(cause)), so nothing changed"
+        } else if error is PodcastDownloadCoordinatorError {
+            note = "Could not download the original, so nothing changed"
+        } else {
+            note = "Preparing again failed, so nothing changed"
+        }
         prepareAgainRows[episode.id] = WiltedMacPrepareAgainRow(phase: .note(note))
         podcastOperationMessage = "\(episode.title): \(note)"
+    }
+
+    /// Returns a short, safe explanation for an original-download failure.
+    /// Only fixed status text and URL error codes reach the row.
+    nonisolated static func prepareAgainFailureCause(for error: Error) -> String? {
+        if case PodcastDownloadCoordinatorError.invalidResponse(let status?) = error {
+            return "HTTP \(status)"
+        }
+        if case PodcastDownloadCoordinatorError.invalidResponse(nil) = error {
+            return "invalid response"
+        }
+        if let urlError = error as? URLError {
+            return prepareAgainFailureCause(forURLErrorCode: urlError.code.rawValue)
+        }
+        return nil
+    }
+
+    private nonisolated static func prepareAgainFailureCause(forURLErrorCode code: Int) -> String {
+        switch URLError.Code(rawValue: code) {
+        case .timedOut: return "timed out"
+        case .networkConnectionLost: return "network connection lost"
+        case .notConnectedToInternet: return "offline"
+        case .cannotFindHost: return "cannot find host"
+        case .cannotConnectToHost: return "cannot connect to host"
+        case .dnsLookupFailed: return "DNS lookup failed"
+        case .internationalRoamingOff: return "roaming off"
+        case .dataNotAllowed: return "data not allowed"
+        case .callIsActive: return "call active"
+        default: return "download failed"
+        }
     }
 
     /// A run whose request could not be saved. A cut keeps its Ready row for
@@ -163,13 +199,9 @@ extension WiltedMacModel {
 
     // MARK: Run
 
-    /// Fetches the original for a prepare-again run, trying again after a
-    /// server error (HTTP 5xx): a podcast host's bad moment usually passes in
-    /// seconds, and a run that gives up on the first one waits for the listener
-    /// to notice. Bounded like automation's retries (three, the wait doubling
-    /// from two seconds). Every other failure, and a stop during the wait,
-    /// ends the run as before.
-    func stageOriginalRetryingServerErrors(
+    /// Fetches the original for a prepare-again run, retrying transient network
+    /// errors and HTTP 5xx responses with a bounded, increasing delay.
+    func stageOriginalRetryingTransientFailures(
         _ coordinator: PodcastDownloadCoordinator, episodeID: ItemID, enclosureURL: URL,
         onStatus: @escaping @Sendable (PodcastDownloadProgress) -> Void
     ) async throws -> StagedPodcastAudio {
@@ -178,16 +210,38 @@ extension WiltedMacModel {
             do {
                 return try await coordinator.stageOriginal(
                     episodeID: episodeID, enclosureURL: enclosureURL, onStatus: onStatus)
-            } catch PodcastDownloadCoordinatorError.invalidResponse(let status?)
-                where (500..<600).contains(status) && retry < WiltedAutomationCoordinator.maximumRetries {
+            } catch {
+                if Task.isCancelled || error is CancellationError
+                    || (error as? URLError)?.code == .cancelled
+                    || (error as? PodcastDownloadCoordinatorError) == .cancelled {
+                    throw CancellationError()
+                }
+                let retryable = Self.isTransientPrepareAgainFailure(error)
+                let cause = Self.prepareAgainFailureCause(for: error) ?? "download failed"
+                guard retryable, retry < WiltedAutomationCoordinator.maximumRetries else {
+                    Self.downloadLog.error(
+                        "prepare-again download failed: episode=\(episodeID.rawValue, privacy: .public) cause=\(cause, privacy: .public) retries=\(retry, privacy: .public)"
+                    )
+                    throw error
+                }
                 retry += 1
                 let delay = WiltedAutomationCoordinator.baseRetryDelay * pow(2, Double(retry - 1))
                 Self.downloadLog.warning(
-                    "prepare-again download got HTTP \(status, privacy: .public): episode=\(episodeID.rawValue, privacy: .public) retry=\(retry, privacy: .public) afterSeconds=\(delay, privacy: .public)"
+                    "prepare-again download failed: episode=\(episodeID.rawValue, privacy: .public) cause=\(cause, privacy: .public) retry=\(retry, privacy: .public) afterSeconds=\(delay, privacy: .public)"
                 )
                 try await prepareAgainRetrySleep(delay)
             }
         }
+    }
+
+    private nonisolated static func isTransientPrepareAgainFailure(_ error: Error) -> Bool {
+        if case PodcastDownloadCoordinatorError.invalidResponse(let status?) = error {
+            return (500..<600).contains(status)
+        }
+        if let urlError = error as? URLError {
+            return MediaFetchErrorClassifier.isTransient(urlError)
+        }
+        return false
     }
 
     /// Runs one admitted preparation and returns the sentence that reports it.
@@ -233,7 +287,7 @@ extension WiltedMacModel {
             let outcome = try await pipeline.prepareAgain(
                 candidate: again,
                 stage: {
-                    try await self.stageOriginalRetryingServerErrors(
+                    try await self.stageOriginalRetryingTransientFailures(
                         coordinator, episodeID: itemID, enclosureURL: again.enclosureURL
                     ) { report in
                         throttle.submit(report) { progress in

@@ -146,6 +146,13 @@ extension PodcastDownloadCoordinator {
             throw error
         } catch is CancellationError {
             throw PodcastDownloadCoordinatorError.cancelled
+        } catch let error as URLError {
+            if Task.isCancelled || error.code == .cancelled {
+                throw PodcastDownloadCoordinatorError.cancelled
+            }
+            // Keep the typed URL code for retry classification and the
+            // preparation journal, while discarding request URLs and headers.
+            throw URLError(error.code)
         } catch {
             if Task.isCancelled { throw PodcastDownloadCoordinatorError.cancelled }
             throw PodcastDownloadCoordinatorError.transport(LogSafeError.describe(error))
