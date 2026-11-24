@@ -7,6 +7,7 @@ All notable changes to this project are documented in this file.
 ### Added
 
 - Mac and iPhone headline cards show the publisher and link, with seven-day history, Save, and Mute this source. Spoken headlines can be turned off separately from weather alerts.
+- Headline cards offer **Listen next**: the Mac narrates the story with the selected approved local voice, then makes completed audio available only to the requesting device.
 
 ## [0.7.6] - 2026-11-23
 

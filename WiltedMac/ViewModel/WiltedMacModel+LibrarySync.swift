@@ -49,12 +49,16 @@ actor WiltedMacLibraryIntentSink: LibraryIntentSink {
             try await record(intent, describing: "add-flow intent for \(intent.action.entryID.rawValue)")
         case .addLink:
             try await record(intent, describing: "unclassified add-link intent")
+        case .listenNext:
+            try await record(intent, describing: "Listen next request")
+        case .cancelListenNext:
+            try await record(intent, describing: "Listen next cancellation")
+        case .setHeadlineSaved:
+            try await record(intent, describing: "headline saved-state command")
+        case .setHeadlinePublisherMuted:
+            try await record(intent, describing: "headline publisher-mute command")
         case let .adFeedback(entryID, _, kind, _):
             try await record(intent, describing: "\(kind.rawValue) feedback for \(entryID.rawValue)")
-        case let .setHeadlineSaved(story, isSaved, _):
-            try await record(intent, describing: "headline save state for \(story.id): \(isSaved)")
-        case let .setHeadlinePublisherMuted(publisherID, isMuted, _):
-            try await record(intent, describing: "headline publisher mute state for \(publisherID): \(isMuted)")
         case .unsupported:
             try await record(intent, describing: "unsupported action")
         }
@@ -150,6 +154,16 @@ extension WiltedMacModel {
             inner: rawTransport, gate: account?.gate ?? WiltedMacLibraryAccountGate(open: true))
         let resolvedTransport = ThrottledLibraryTransport(wrapping: accountGated, gate: gate)
         let syncDirectory = libraryURL.deletingLastPathComponent().appendingPathComponent("library-sync", isDirectory: true)
+        let storyAudioDirectory = libraryURL.deletingLastPathComponent().appendingPathComponent("listen-next-audio", isDirectory: true)
+        let phoneRequestStore = WiltedMacListenNextStore(
+            fileURL: libraryURL.deletingLastPathComponent().appendingPathComponent("listen-next-phone-requests.json"))
+        let listenNextRuntime = try? WiltedMacListenNextCoordinator(
+            model: self, transport: resolvedTransport, directory: storyAudioDirectory,
+            deviceID: deviceID, store: phoneRequestStore)
+        listenNextRemoteCoordinator = listenNextRuntime
+        if listenNextRuntime == nil {
+            librarySyncLog.error("Listen next is unavailable because the active transport has no scoped story-audio service")
+        }
         // The phone's positions become the Mac's stored positions (see WiltedMacPositionImporter).
         let importer = WiltedMacPositionImporter(host: WiltedMacModelPositionImportHost(model: self), deviceID: deviceID)
         let inbound = WiltedMacInboundRuntime(
@@ -164,18 +178,28 @@ extension WiltedMacModel {
             },
             onDeviceRecords: { records in await importer.handle(records) }, maintenance: inboundMaintenance,
             beforePollerStart: { await previousShutdown?.value },
-            onRoundFinished: { [weak self] error in await MainActor.run { self?.recordLibraryCheck(error) } },
+            onRoundFinished: { [weak self] error in
+                await MainActor.run { self?.recordLibraryCheck(error) }
+                await listenNextRuntime?.retryPendingStatusUpdates()
+            },
             onDevicesChange: { [weak self] devices in await MainActor.run { self?.recordLinkedDevices(devices) } },
             preuploadLimit: WiltedMacMediaService.standardPreuploadLimit
         )
         // Decision intents (keep, skip, mark done, remove from Larder, restore, reorder) go to the applier, which shares
         // the media service's ledger; media intents keep their existing route.
+        let listenNextHandler: (@MainActor (LibraryIntent) async throws -> IntentOutcome)?
+        if let listenNextRuntime {
+            listenNextHandler = { intent in try await listenNextRuntime.handle(intent) }
+        } else {
+            listenNextHandler = nil
+        }
         let applier = WiltedMacIntentApplier(
             host: self, ledger: inbound.ledger,
             book: WiltedMacIntentOutcomeBook(fileURL: syncDirectory.appendingPathComponent("intent-outcomes.json")),
             transport: resolvedTransport,
             headlineCatalog: headlineCatalogStore,
-            onApplied: { [weak self] in self?.librarySyncController?.requestPublish() }
+            onApplied: { [weak self] in self?.librarySyncController?.requestPublish() },
+            listenNextHandler: listenNextHandler
         )
         let sink = WiltedMacLibraryIntentSink(consumer: mediaRequestConsumer ?? { intent in
             // A media request is queued, not awaited, so its upload never holds up the round.
@@ -207,9 +231,11 @@ extension WiltedMacModel {
             account.didOpen = { [weak controller] in
                 startPolling()
                 controller?.requestPublish()
+                Task { await listenNextRuntime?.activateAndResume() }
             }
             account.didClose = { [weak self, weak controller] in
                 _ = inbound.stop(); controller?.publicationHydration?.cancel()
+                listenNextRuntime?.invalidate()
                 self?.librarySyncActivity.publicationOwner = nil
             }
             account.onStatus = { [weak self] status in self?.libraryAccountStatus = status }
@@ -218,6 +244,7 @@ extension WiltedMacModel {
         } else {
             libraryAccountStatus = .unmanaged
             startPolling()
+            Task { await listenNextRuntime?.activateAndResume() }
         }
         let handoff = WiltedMacHandoffController(
             coordinator: HandoffCoordinator(transport: resolvedTransport, deviceID: deviceID),
@@ -237,6 +264,7 @@ extension WiltedMacModel {
     }
 
     func stopLibrarySync() {
+        listenNextRemoteCoordinator = nil
         if let controller = librarySyncController {
             controller.publicationHydration?.cancel()
             controller.stop()
@@ -268,6 +296,7 @@ extension WiltedMacModel {
     }
 
     func librarySyncPlaybackSample() -> WiltedMacPlaybackSample? {
+        guard currentListenNextStory == nil else { return nil }
         // An article or audiobook is what the player holds when it is not a podcast.
         let raw = isPodcastPlayback ? (playback?.itemID?.rawValue ?? currentPodcastEpisodeID) : playback?.itemID?.rawValue
         guard let raw, let id = try? ItemID(rawValue: raw) else { return nil }

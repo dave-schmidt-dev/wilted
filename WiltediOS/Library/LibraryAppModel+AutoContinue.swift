@@ -26,6 +26,8 @@ extension LibraryAppModel {
         // told the episode played out. Only the advance is cancelled, and `autoContinue` does
         // that on its own.
         Task { await markPlayedOut(endedID) }
+        if await startStoryAtNaturalBoundary(
+            after: endedID, completion: completion, autoPlayNext: autoPlayNext) { return }
         if autoPlayNext { await autoContinue(after: endedID, completion: completion, walked: walked) }
     }
 
@@ -138,7 +140,7 @@ extension LibraryAppModel {
     /// Prepared bytes alone do not authorize automatic continuation. Read
     /// current row/listening/removal state after every awaited admission step;
     /// explicit replay of a completed episode remains a separate user action.
-    private func automaticContinuationIsEligible(_ entryID: ItemID) -> Bool {
+    func automaticContinuationIsEligible(_ entryID: ItemID) -> Bool {
         guard let row = logicalRow(for: entryID),
               decisionContent.entries[entryID]?.removal == LibraryRemoval.none,
               decisionContent.listening[entryID]?.isCompleted != true,

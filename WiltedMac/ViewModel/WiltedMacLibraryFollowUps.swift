@@ -66,6 +66,7 @@ final class WiltedMacLibraryFollowUps {
 final class WiltedMacNaturalEnd {
     let finishedID: ItemID
     let reachedEndAt: ContinuousClock.Instant
+    let listenNextHoldEpochAtEnd: UInt64
     /// The controller saved the completion and reported it.
     var completionIsDurable = false
     /// The controller called the natural-end handler, which it does only after saving the completion.
@@ -73,9 +74,11 @@ final class WiltedMacNaturalEnd {
     private var retirementTaken = false
     private weak var model: WiltedMacModel?
 
-    init(finishedID: ItemID, reachedEndAt: ContinuousClock.Instant, model: WiltedMacModel) {
+    init(finishedID: ItemID, reachedEndAt: ContinuousClock.Instant,
+         listenNextHoldEpochAtEnd: UInt64, model: WiltedMacModel) {
         self.finishedID = finishedID
         self.reachedEndAt = reachedEndAt
+        self.listenNextHoldEpochAtEnd = listenNextHoldEpochAtEnd
         self.model = model
     }
 

@@ -601,6 +601,24 @@ extension WiltedMacModel {
         playback?.podcastNaturalCompletionHandlerFactory = { [weak self] itemID in
             self?.naturalPodcastEndHandler(for: itemID)
         }
+        playback?.restoreListenNextHoldEpoch(
+            preferences.object(forKey: Self.listenNextPlaybackHoldKey) as? UInt64 ?? 0)
+        playback?.listenNextPositionHandler = { [weak self] requestID, position in
+            self?.saveStoryPlaybackPosition(requestID: requestID, positionSeconds: position)
+            self?.refreshPlaybackReadout()
+        }
+        playback?.listenNextCompletionHandler = { [weak self] requestID in
+            await self?.finishMacStoryPlayback(requestID: requestID)
+        }
+        playback?.listenNextFailureHandler = { [weak self] requestID in
+            await self?.failMacStoryPlayback(requestID: requestID)
+        }
+        playback?.listenNextNaturalBoundaryHandler = { [weak self] itemID, holdEpoch, serial in
+            await self?.startStoryAtPlaylistBoundary(
+                after: itemID, holdEpochAtEnd: holdEpoch, boundarySerial: serial) ?? false
+        }
+        playback?.listenNextHoldHandler = { [weak self] epoch in self?.persistStoryQueueHold(at: epoch) }
+        playback?.listenNextRearmHandler = { [weak self] epoch in self?.rearmStoryQueueAfterExplicitStart(at: epoch) }
         playback?.playbackDidFinishHandler = { [weak self] in
             guard let self else { return }
             // Podcasts use the EOF-captured owner; the legacy observer still handles playlist ends.
@@ -685,6 +703,16 @@ extension WiltedMacModel {
         let selectionToken = playbackCommands.selectionToken
         playbackOperationStatus = "Restoring Larder…"
         isRestoringPodcastPlayback = true
+        if await restoreStoryPlaybackAfterRelaunch() {
+            if playbackCommands.selectionToken == selectionToken {
+                isRestoringPodcastPlayback = false
+                playbackOperationStatus = nil
+                if let itemID = playback.itemID {
+                    requestPlaybackPresentation(itemID: itemID, includesCuts: false)
+                }
+            }
+            return
+        }
         await playback.restorePodcastQueue()
         await refreshPodcastQueueState()
         let restoredQueueState = try? await store?.podcastQueueState()

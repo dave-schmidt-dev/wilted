@@ -4,10 +4,8 @@ import WiltedLibrary
 /// The newest story cards stay in the Larder after their announcement has ended.
 struct LibraryStoryCardsSection: View {
     @ObservedObject var state: LibraryHeadlinePhoneState
-    let model: LibraryAppModel
+    @ObservedObject var model: LibraryAppModel
     @Environment(\.colorScheme) private var colorScheme
-    var onListenNext: ((LibraryHeadlineStory) -> Void)? = nil
-    var listenNextStatus: ((String) -> String?)? = nil
 
     private var stories: [LibraryHeadlineStory] { Array(model.headlineStories.prefix(3)) }
     private var hasArchive: Bool {
@@ -29,16 +27,12 @@ struct LibraryStoryCardsSection: View {
                 }
                 ForEach(stories) { story in
                     LibraryHeadlineStoryCard(
-                        state: state, model: model, story: story,
-                        onListenNext: onListenNext,
-                        listenNextStatus: listenNextStatus?(story.id))
+                        state: state, model: model, story: story)
                 }
                 if hasArchive {
                     NavigationLink {
                         LibraryHeadlineArchiveView(
-                            state: state, model: model,
-                            onListenNext: onListenNext,
-                            listenNextStatus: listenNextStatus)
+                            state: state, model: model)
                     } label: {
                         Text("Recent headlines").wiltedFont(.body)
                     }
@@ -62,9 +56,7 @@ struct LibraryStoryCardsSection: View {
 
 private struct LibraryHeadlineArchiveView: View {
     @ObservedObject var state: LibraryHeadlinePhoneState
-    let model: LibraryAppModel
-    var onListenNext: ((LibraryHeadlineStory) -> Void)?
-    var listenNextStatus: ((String) -> String?)?
+    @ObservedObject var model: LibraryAppModel
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -88,9 +80,7 @@ private struct LibraryHeadlineArchiveView: View {
                     Section("Pending changes") {
                         ForEach(model.headlineCommandStories) { story in
                             LibraryHeadlineStoryCard(
-                                state: state, model: model, story: story,
-                                onListenNext: onListenNext,
-                                listenNextStatus: listenNextStatus?(story.id))
+                                state: state, model: model, story: story)
                         }
                     }
                 }
@@ -98,9 +88,7 @@ private struct LibraryHeadlineArchiveView: View {
                     Section("Recent") {
                         ForEach(model.recentHeadlineStories) { story in
                             LibraryHeadlineStoryCard(
-                                state: state, model: model, story: story,
-                                onListenNext: onListenNext,
-                                listenNextStatus: listenNextStatus?(story.id))
+                                state: state, model: model, story: story)
                         }
                     }
                 }
@@ -108,9 +96,7 @@ private struct LibraryHeadlineArchiveView: View {
                     Section("Saved") {
                         ForEach(savedOlderStories) { story in
                             LibraryHeadlineStoryCard(
-                                state: state, model: model, story: story,
-                                onListenNext: onListenNext,
-                                listenNextStatus: listenNextStatus?(story.id))
+                                state: state, model: model, story: story)
                         }
                     }
                 }
@@ -143,10 +129,8 @@ private struct LibraryHeadlineArchiveView: View {
 
 private struct LibraryHeadlineStoryCard: View {
     @ObservedObject var state: LibraryHeadlinePhoneState
-    let model: LibraryAppModel
+    @ObservedObject var model: LibraryAppModel
     let story: LibraryHeadlineStory
-    var onListenNext: ((LibraryHeadlineStory) -> Void)?
-    var listenNextStatus: String?
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -160,6 +144,10 @@ private struct LibraryHeadlineStoryCard: View {
 
     private var publisherCommand: LibraryStoryCommandOutboxV1.Command? {
         state.commands.filter { $0.publisherID == story.publisherID }.max { $0.createdAt < $1.createdAt }
+    }
+
+    private var listenNextRequest: LibraryListenNextRequestSnapshot? {
+        model.listenNextRequest(forStoryID: story.id)
     }
 
     var body: some View {
@@ -201,23 +189,21 @@ private struct LibraryHeadlineStoryCard: View {
                     .disabled(publisherCommand.map { $0.delivery != .failed } == true)
                     .accessibilityIdentifier("wilted-library-headline-mute-\(story.id)")
                 }
-                if let onListenNext {
-                    Button { onListenNext(story) } label: {
-                        Label("Listen next", systemImage: "text.book.closed")
-                    }
-                    .accessibilityIdentifier("wilted-library-headline-listen-next-\(story.id)")
-                }
             }
             .buttonStyle(.borderless)
             .controlSize(.small)
+            LibraryListenNextControl(
+                storyID: story.id,
+                request: listenNextRequest,
+                receivedBytes: listenNextRequest.flatMap { model.listenNextDownloadProgress[$0.requestID] },
+                statusText: listenNextRequest.flatMap { model.listenNextStoryStatuses[$0.requestID] },
+                message: listenNextRequest.flatMap { model.listenNextStoryMessages[$0.requestID] },
+                identifierPrefix: "wilted-library-headline",
+                onListenNext: { Task { await model.listenNext(story) } },
+                onUndo: { requestID in Task { await model.undoListenNext(requestID: requestID) } },
+                onRetry: { requestID in Task { await model.retryListenNext(requestID: requestID) } })
             if let storyCommand { commandStatus(storyCommand) }
             if let publisherCommand { commandStatus(publisherCommand) }
-            if let listenNextStatus {
-                Text(listenNextStatus)
-                    .wiltedFont(.utility)
-                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                    .accessibilityIdentifier("wilted-library-headline-listen-status-\(story.id)")
-            }
         }
         .padding(.vertical, WiltedTheme.Spacing.small)
         .listRowBackground(WiltedTheme.color(.card, scheme: colorScheme))

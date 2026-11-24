@@ -178,13 +178,15 @@ final class WiltedMacIntentApplier {
     private let headlineCatalog: WiltedMacHeadlineCatalogStore?
     private let now: @Sendable () -> Date
     private let onApplied: (@MainActor () -> Void)?
+    private let listenNextHandler: (@MainActor (LibraryIntent) async throws -> IntentOutcome)?
 
     /// `onApplied` runs after a decision changed the Mac's state, to trigger a republish.
     init(
         host: any WiltedMacDecisionHost, ledger: WiltedMacIntentLedger, book: WiltedMacIntentOutcomeBook,
         transport: any LibraryTransport, headlineCatalog: WiltedMacHeadlineCatalogStore? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
-        onApplied: (@MainActor () -> Void)? = nil
+        onApplied: (@MainActor () -> Void)? = nil,
+        listenNextHandler: (@MainActor (LibraryIntent) async throws -> IntentOutcome)? = nil
     ) {
         self.host = host
         self.ledger = ledger
@@ -193,34 +195,22 @@ final class WiltedMacIntentApplier {
         self.headlineCatalog = headlineCatalog
         self.now = now
         self.onApplied = onApplied
+        self.listenNextHandler = listenNextHandler
     }
 
     /// Applies one decision intent; other intents are ignored.
     func apply(_ intent: LibraryIntent) async throws {
         guard intent.action.isDecision else { return }
         if Self.isHeadlineCommand(intent.action) {
-            if let saved = await book.entry(for: intent.id) {
-                if !saved.published { try await publish(saved.outcome) }
-                return
-            }
-            let at = now()
-            let outcome: IntentOutcome
-            if let headlineCatalog, let result = try headlineCatalog.apply(intent, at: at) {
-                switch result {
-                case .applied:
-                    outcome = try .applied(for: intent, at: at)
-                case .staleRevision:
-                    outcome = try .rejected(for: intent, reason: IntentOutcome.reasonStaleRevision, at: at)
-                case let .rejected(reason):
-                    outcome = try .rejected(for: intent, reason: reason, at: at)
-                }
-            } else {
-                outcome = try .rejected(for: intent, reason: IntentOutcome.reasonFailed, at: at)
-            }
-            try await book.save(outcome, published: false)
-            // Even a stale or rejected action should trigger a projection refresh on the phone.
-            onApplied?()
-            try await publish(outcome)
+            try await applyHeadlineCommand(intent)
+            return
+        }
+        if case .listenNext = intent.action {
+            try await applyListenNext(intent)
+            return
+        }
+        if case .cancelListenNext = intent.action {
+            try await applyListenNext(intent)
             return
         }
         if let saved = await book.entry(for: intent.id) {
@@ -237,6 +227,56 @@ final class WiltedMacIntentApplier {
             // An earlier run began this intent and never saved an answer, so whether it took effect
             // is unknown. It is not applied again; the phone reads the next publish for the truth.
             applierLog.error("Intent \(intent.id, privacy: .public) was begun earlier without an outcome")
+            outcome = try .rejected(for: intent, reason: IntentOutcome.reasonFailed, at: at)
+        }
+        try await book.save(outcome, published: false)
+        if outcome.isApplied { onApplied?() }
+        try await publish(outcome)
+    }
+
+    /// Applies offline Save and publisher mute commands against the Mac's current field revision.
+    private func applyHeadlineCommand(_ intent: LibraryIntent) async throws {
+        if let saved = await book.entry(for: intent.id) {
+            if !saved.published { try await publish(saved.outcome) }
+            return
+        }
+        let at = now()
+        let outcome: IntentOutcome
+        if let headlineCatalog, let result = try headlineCatalog.apply(intent, at: at) {
+            switch result {
+            case .applied:
+                outcome = try .applied(for: intent, at: at)
+            case .staleRevision:
+                outcome = try .rejected(for: intent, reason: IntentOutcome.reasonStaleRevision, at: at)
+            case let .rejected(reason):
+                outcome = try .rejected(for: intent, reason: reason, at: at)
+            }
+        } else {
+            outcome = try .rejected(for: intent, reason: IntentOutcome.reasonFailed, at: at)
+        }
+        try await book.save(outcome, published: false)
+        onApplied?()
+        try await publish(outcome)
+    }
+
+    /// Uses the Listen next store as its admission ledger so the ticket survives a crash before
+    /// the immutable intent outcome is written. A replay calls the idempotent handler again.
+    private func applyListenNext(_ intent: LibraryIntent) async throws {
+        if let saved = await book.entry(for: intent.id) {
+            if !saved.published { try await publish(saved.outcome) }
+            return
+        }
+        let at = now()
+        let outcome: IntentOutcome
+        if let expired = try IntentRetention.expiryOutcome(for: intent, now: at) {
+            outcome = expired
+        } else if let listenNextHandler {
+            do { outcome = try await listenNextHandler(intent) }
+            catch {
+                applierLog.error("Listen next request handling failed: \(String(describing: error), privacy: .private)")
+                outcome = try .rejected(for: intent, reason: IntentOutcome.reasonFailed, at: at)
+            }
+        } else {
             outcome = try .rejected(for: intent, reason: IntentOutcome.reasonFailed, at: at)
         }
         try await book.save(outcome, published: false)
@@ -268,6 +308,8 @@ final class WiltedMacIntentApplier {
         }
 
         if case .unsupported = intent.action { return try rejected(IntentOutcome.reasonUnsupportedAction) }
+        if case .listenNext = intent.action { return try rejected(IntentOutcome.reasonFailed) }
+        if case .cancelListenNext = intent.action { return try rejected(IntentOutcome.reasonFailed) }
         guard let host else { return try rejected(IntentOutcome.reasonFailed) }
         switch intent.action {
         case let .subscribe(feedURL):
@@ -358,6 +400,7 @@ final class WiltedMacIntentApplier {
         case .unsupported:
             return try rejected(IntentOutcome.reasonUnsupportedAction)
         case .requestMedia, .mediaCached, .subscribe, .addArticle, .addLink, .adFeedback,
+             .listenNext, .cancelListenNext,
              .setHeadlineSaved, .setHeadlinePublisherMuted:
             return try rejected(notApplicable)
         }

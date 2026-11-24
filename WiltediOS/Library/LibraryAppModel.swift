@@ -134,6 +134,8 @@ final class LibraryAppModel: ObservableObject {
     /// Wraps the transport this model was given, so every call the phone makes (refresh, handoff,
     /// media, decisions) goes through one gate.
     let transport: any LibraryTransport
+    /// Direct article-audio methods are retained beside the throttled library transport.
+    let storyAudioTransport: (any LibraryStoryAudioTransport)?
     /// Per-operation CloudKit counters for diagnostics.
     let operationCounters: CloudKitOperationCounters?
     /// The durable record of commands, decisions and starts; nil in tests and previews.
@@ -202,6 +204,10 @@ final class LibraryAppModel: ObservableObject {
     }
     /// The unsent intents on disk; owned by `LibraryAppModel+Outbox`.
     let outboxState: LibraryOutboxState
+    /// Separate versioned phone story requests.
+    let listenNextState: LibraryListenNextPhoneState
+    @Published private(set) var listenNextRequests: [LibraryListenNextRequestSnapshot] = []
+    @Published private(set) var listenNextDownloadProgress: [String: Int64] = [:]
     /// Episodes the listener finished on this phone; owned by `LibraryAppModel+FinishedHere`.
     let finishedHereState: LibraryFinishedHereState
     var mediaRevocations: Set<ItemID> = []
@@ -218,6 +224,16 @@ final class LibraryAppModel: ObservableObject {
     var playbackStoreIdentity: ObjectIdentifier { ObjectIdentifier(store as AnyObject) }
     func mediaStoreState() async -> LibraryStoreState { await store.state() }
     func mediaAdmissionFailed(_ message: String) { errorMessage = message }
+    func reportListenNextError(_ message: String) { errorMessage = message }
+    func publishListenNextRows() {
+        listenNextRequests = listenNextState.entries.map(\.snapshot).sorted {
+            ($0.createdAt, $0.requestID) < ($1.createdAt, $1.requestID)
+        }
+        refreshStoryQueueSnapshots(listenNextRequests)
+    }
+    func setListenNextDownloadProgress(_ bytes: Int64?, requestID: String) {
+        listenNextDownloadProgress[requestID] = bytes
+    }
     private var store: any LibraryStore
     private var reconciler: LibraryReconciler
     private var refreshTask: Task<Void, Never>?
@@ -239,6 +255,7 @@ final class LibraryAppModel: ObservableObject {
         preferences: UserDefaults = .standard,
         ownPositionsURL: URL? = nil,
         outboxURL: URL? = nil,
+        listenNextURL: URL? = nil,
         finishedHereURL: URL? = nil,
         headlineStateURL: URL? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
@@ -254,19 +271,23 @@ final class LibraryAppModel: ObservableObject {
         let gate = TransportGate(clock: now, onChange: { state in
             Task { @MainActor in relay.model?.throttleChanged(state) }
         })
-        let transport = ThrottledLibraryTransport(wrapping: transport, gate: gate)
+        let throttledTransport = ThrottledLibraryTransport(wrapping: transport, gate: gate)
         self.throttleGate = gate
-        self.transport = transport
+        self.transport = throttledTransport
+        self.storyAudioTransport = throttledTransport as? any LibraryStoryAudioTransport
         self.mediaCache = mediaCache ?? FileMediaCache(rootURL: FileMediaCache.defaultRoot())
         self.mediaTiming = mediaTiming
         self.handoffTiming = handoffTiming
         self.decisionTiming = decisionTiming
         self.coordinator = HandoffCoordinator(
-            transport: transport, deviceID: deviceID, clock: now, sleep: handoffTiming.settleSleep)
+            transport: throttledTransport, deviceID: deviceID, clock: now, sleep: handoffTiming.settleSleep)
         self.preferences = preferences
         self.headlinePhoneState = LibraryHeadlinePhoneState(url: headlineStateURL)
         handoffState.ownPositionStore = LibraryOwnPositionStore(url: ownPositionsURL)
         self.outboxState = LibraryOutboxState(outbox: LibraryIntentOutbox(url: outboxURL))
+        let storyOutboxURL = listenNextURL ?? outboxURL?.deletingLastPathComponent()
+            .appendingPathComponent("pending-listen-next-v1.json")
+        self.listenNextState = LibraryListenNextPhoneState(outbox: LibraryListenNextPhoneOutbox(url: storyOutboxURL))
         self.finishedHereState = LibraryFinishedHereState(store: LibraryFinishedHereStore(url: finishedHereURL))
         self.phoneStats = LibraryPhoneStatsStore(defaults: preferences)
         self.store = store
@@ -275,10 +296,11 @@ final class LibraryAppModel: ObservableObject {
         self.recovery = recovery
         self.now = now
         self.clockFormat = LibraryClockFormat(timeZone: timeZone)
-        self.reconciler = LibraryReconciler(transport: transport, store: store)
+        self.reconciler = LibraryReconciler(transport: throttledTransport, store: store)
         kindFilter = LibraryKindFilter.stored(preferences.string(forKey: LibraryKindFilter.storageKey))
         relay.model = self
         restoreOutbox()
+        restoreListenNextOutbox()
     }
 
     /// Launch entry point: watches for account changes once, then fetches.
@@ -307,6 +329,7 @@ final class LibraryAppModel: ObservableObject {
     func loadLocalState() async {
         let saved = await store.state()
         verifyOutboxOwner(saved.ownerToken)
+        verifyListenNextOutboxOwner(saved.ownerToken)
         restoreDeviceLink(owner: saved.ownerToken)
         applyStoreMetadata(saved)
         headlinePhoneState.bindLocalOwner(
@@ -385,6 +408,7 @@ final class LibraryAppModel: ObservableObject {
         store = fresh
         reconciler = LibraryReconciler(transport: transport, store: fresh)
         accountQuarantined = false
+        discardListenNextAfterAccountChange()
         headlinePhoneState.reset(for: nil, generation: await transport.operationGeneration())
         queued = []
         readyOffers = []

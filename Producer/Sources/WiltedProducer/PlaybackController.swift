@@ -127,9 +127,9 @@ public final class PlaybackController {
     @ObservationIgnored public let backend: any PlaybackBackend
     public let deviceID: String
 
-    public private(set) var itemID: ItemID?
-    public private(set) var revisionID: RevisionID?
-    public private(set) var mediaURL: URL?
+    public internal(set) var itemID: ItemID?
+    public internal(set) var revisionID: RevisionID?
+    public internal(set) var mediaURL: URL?
     /// The rate every load starts at unless the episode has its own saved
     /// speed. The owner's last chosen speed, not 1: a listener who always
     /// plays at 1.25× should not have to re-select it for each article and
@@ -140,7 +140,7 @@ public final class PlaybackController {
     }
     private var clampedDefaultRate: Float = 1
     public internal(set) var positionSeconds: TimeInterval = 0
-    public private(set) var durationSeconds: TimeInterval = 0
+    public internal(set) var durationSeconds: TimeInterval = 0
     public internal(set) var isPlaying = false {
         didSet { outputLossPlayingChanged() }
     }
@@ -191,6 +191,18 @@ public final class PlaybackController {
     /// before that function re-reads queue state, and a queue mutation here
     /// would race that read.
     @ObservationIgnored public var podcastCompletionHandler: (@MainActor @Sendable (ItemID) -> Void)?
+    /// Request-owned playback stores progress outside podcast and article rows.
+    @ObservationIgnored public var listenNextRequestID: String?
+    @ObservationIgnored public var listenNextPositionHandler: (@MainActor @Sendable (String, Double) -> Void)?
+    @ObservationIgnored public var listenNextCompletionHandler: (@MainActor @Sendable (String) async -> Void)?
+    @ObservationIgnored public var listenNextFailureHandler: (@MainActor @Sendable (String) async -> Void)?
+    @ObservationIgnored public var listenNextNaturalBoundaryHandler:
+        (@MainActor @Sendable (ItemID, UInt64, UInt64) async -> Bool)?
+    @ObservationIgnored public var listenNextHoldHandler: (@MainActor @Sendable (UInt64) -> Void)?
+    @ObservationIgnored public var listenNextRearmHandler: (@MainActor @Sendable (UInt64) -> Void)?
+    @ObservationIgnored public internal(set) var listenNextHoldEpoch: UInt64 = 0
+    /// Increments at synchronous backend completion, giving delayed request work a stable boundary identity.
+    @ObservationIgnored public private(set) var listenNextNaturalBoundarySerial: UInt64 = 0
     /// Predicate used to determine whether a queued podcast episode is eligible
     /// for playback (e.g. downloaded, prepared, and ready media available).
     @ObservationIgnored public var episodeEligibilityPredicate: (@MainActor @Sendable (ItemID) async -> Bool)?
@@ -200,7 +212,10 @@ public final class PlaybackController {
     /// Bumped by every explicit pause or stop. A queue advance compares it
     /// with the value at the end of file to tell whether one was issued since.
     @ObservationIgnored var explicitHoldSerial: UInt64 = 0 {
-        didSet { interruptionUserPaused() }
+        didSet {
+            interruptionUserPaused()
+            if explicitHoldSerial != oldValue { holdListenNextQueue() }
+        }
     }
     /// Output-route loss pause (`PlaybackController+OutputLoss.swift`). Off until
     /// the app enables it, so fixtures never register CoreAudio listeners.
@@ -257,12 +272,16 @@ public final class PlaybackController {
             guard let self, generation == self.loadedBackendGeneration,
                   self.completionHandledGeneration != generation, let itemID = self.itemID else { return }
             self.completionHandledGeneration = generation
+            self.listenNextNaturalBoundarySerial &+= 1
             let holdAtEnd = self.explicitHoldSerial
+            let storyHoldAtEnd = self.listenNextHoldEpoch
+            let boundarySerial = self.listenNextNaturalBoundarySerial
             let completion = successfully && self.loadedIsPodcastEpisode
                 ? self.podcastNaturalCompletionHandlerFactory?(itemID) : nil
             Task { @MainActor [weak self] in
                 await self?.handleBackendCompletion(
                     generation: generation, successfully: successfully, holdAtEnd: holdAtEnd,
+                    storyHoldAtEnd: storyHoldAtEnd, boundarySerial: boundarySerial,
                     naturalCompletion: completion)
             }
         }
@@ -270,8 +289,13 @@ public final class PlaybackController {
 
     @discardableResult
     func loadRevision(
-        _ revision: AudioRevision, mediaURL: URL, expectedGeneration: UInt64? = nil, isPodcast: Bool = false
+        _ revision: AudioRevision, mediaURL: URL, expectedGeneration: UInt64? = nil,
+        isPodcast: Bool = false, listenNextRequestID: String? = nil
     ) async throws -> UInt64 {
+        let previousListenNextRequestID = self.listenNextRequestID
+        var committedLoad = false
+        self.listenNextRequestID = listenNextRequestID
+        defer { if !committedLoad { self.listenNextRequestID = previousListenNextRequestID } }
         // Checked and recorded before the first suspension, so a deletion either sees this load or
         // is seen by it, never neither (see `leaseMediaForDeletion`).
         try checkMediaLease(revision.itemID)
@@ -285,15 +309,18 @@ public final class PlaybackController {
         // switching items never leaves more than the crash-tail bound unsaved.
         // A statistics failure must not block loading; the amount stays pending.
         try? await flushLifetimeMeasures()
-        let persisted = try await store.playbackState(
-            for: revision.itemID,
-            revisionID: revision.revisionID
-        )
+        let persisted: PlaybackState?
+        if listenNextRequestID == nil {
+            persisted = try await store.playbackState(for: revision.itemID, revisionID: revision.revisionID)
+        } else {
+            persisted = nil
+        }
         if let expectedGeneration, loadedBackendGeneration != expectedGeneration {
             throw CancellationError()
         }
         try backend.load(url: mediaURL)
-        beginLifetimeAttempt(itemID: revision.itemID, revisionID: revision.revisionID)
+        committedLoad = true
+        if listenNextRequestID == nil { beginLifetimeAttempt(itemID: revision.itemID, revisionID: revision.revisionID) }
         pendingSpeedIntervals.removeAll()
         loadedBackendGeneration = backend.loadedGeneration
         setRate(defaultRate)
@@ -329,15 +356,6 @@ public final class PlaybackController {
         recoverableFault = nil
         completionHandledGeneration = nil
         return backend.loadedGeneration
-    }
-
-    /// Restores the durable current queue item without starting a duplicate
-    /// playback session. Loading the exact revision reuses its saved session.
-    public func restorePodcastQueue() async {
-        guard let current = try? await store.podcastQueueState().currentEpisodeID else { return }
-        do { try await loadQueuedEpisode(current, playAfterLoad: false) }
-        catch PlaybackControllerError.mediaDeletionInProgress { return }
-        catch { podcastStateHandler?(current, recoverableFault) }
     }
 
     public func replacePodcastQueue(_ state: PodcastQueueState) async throws {
@@ -622,6 +640,7 @@ public final class PlaybackController {
 
     private func handleBackendCompletion(
         generation: UInt64, successfully: Bool, holdAtEnd: UInt64,
+        storyHoldAtEnd: UInt64, boundarySerial: UInt64,
         naturalCompletion: (@MainActor @Sendable () -> Void)?
     ) async {
         guard generation == loadedBackendGeneration,
@@ -631,6 +650,15 @@ public final class PlaybackController {
             backend.pause()
             isPlaying = false
             meterListening()
+            if let requestID = listenNextRequestID {
+                positionSeconds = durationSeconds
+                completed = true
+                listenNextPositionHandler?(requestID, durationSeconds)
+                await listenNextCompletionHandler?(requestID)
+                guard generation == loadedBackendGeneration, itemID == completedItemID else { return }
+                playbackDidFinishHandler?()
+                return
+            }
             let completedIsPodcastEpisode = loadedIsPodcastEpisode
             do { try await checkpointCompletedRevision(accountPlaybackToEnd: true) }
             catch {
@@ -642,6 +670,10 @@ public final class PlaybackController {
                 podcastCompletionHandler?(completedItemID)
             }
             guard generation == loadedBackendGeneration, itemID == completedItemID else { return }
+            let storyHandled = await listenNextNaturalBoundaryHandler?(
+                completedItemID, storyHoldAtEnd, boundarySerial) ?? false
+            guard generation == loadedBackendGeneration, itemID == completedItemID else { return }
+            if storyHandled { return }
             let state = try? await store.podcastQueueState()
             guard generation == loadedBackendGeneration, itemID == completedItemID else { return }
             guard completedIsPodcastEpisode, let state, state.currentEpisodeID == completedItemID else {
@@ -664,6 +696,14 @@ public final class PlaybackController {
             backend.pause()
             isPlaying = false
             meterListening()
+            if let requestID = listenNextRequestID {
+                if let itemID { recoverableFault = .playbackFailed(itemID) }
+                listenNextPositionHandler?(requestID, clamp(backend.currentTime))
+                await listenNextFailureHandler?(requestID)
+                guard generation == loadedBackendGeneration, itemID == completedItemID else { return }
+                playbackDidFinishHandler?()
+                return
+            }
             if let itemID { recoverableFault = .playbackFailed(itemID) }
             // Keep the interrupted playhead, including failure at the final
             // frame, without turning it into a completed revision. A store

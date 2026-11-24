@@ -35,7 +35,8 @@ struct WiltedMacReportsCard: View {
         self.location = location
         _feedPolicyBoard = State(initialValue: policyBoard ?? WiltedMacFeedPolicyBoard(model: model))
         self.readinessOverride = readinessOverride
-        _showsDetails = State(initialValue: startsExpanded)
+        _showsDetails = State(initialValue:
+            startsExpanded || model.listenNextActionMessage == WiltedHeadlineStoryCard.listenNextFailureMessage(.missingVoice))
     }
 
     private var settings: WiltedAutomationSettings { model.automationSettings }
@@ -55,22 +56,12 @@ struct WiltedMacReportsCard: View {
                     readinessSection
                 }
                 #endif
-                DisclosureGroup(isExpanded: $showsHeadlineHistory) {
-                    let catalog = model.headlineCatalogState
-                    WiltedHeadlinesList(
-                        recent: catalog.projection?.recent ?? [], saved: catalog.projection?.saved ?? [],
-                        publishers: catalog.projection?.publishers ?? [],
-                        actionInProgress: catalog.isActionInProgress, actionMessage: catalog.actionMessage,
-                        projectionMessage: catalog.projectionMessage,
-                        setSaved: { catalog.setSaved($0, isSaved: $1) },
-                        setMuted: { catalog.setMuted($0, isMuted: $1) })
-                        .task { catalog.refresh() }
-                } label: {
-                    Text("Recent and saved stories")
-                        .wiltedFont(.utility)
-                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                }
-                .accessibilityIdentifier("wilted-reports-headline-history")
+                WiltedMacHeadlineHistoryDisclosure(
+                    model: model, isExpanded: $showsHeadlineHistory,
+                    chooseReadingVoice: {
+                        showsDetails = true
+                        model.openReadingVoiceSettings()
+                    })
                 DisclosureGroup(isExpanded: $showsDetails) {
                     VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                         if let line = Self.interruptionsOffNote(interruptionsEnabled: settings.interruptionsEnabled) {
@@ -153,6 +144,11 @@ struct WiltedMacReportsCard: View {
             contactText = settings.nwsContact
             skipWordsText = Self.wordsText(settings.skippedHeadlineWords)
             location.typedCoordinates = settings.typedCoordinates
+        }
+        .onChange(of: model.listenNextActionMessage) { _, message in
+            if message == WiltedHeadlineStoryCard.listenNextFailureMessage(.missingVoice) {
+                showsDetails = true
+            }
         }
     }
 

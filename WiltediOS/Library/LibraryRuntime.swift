@@ -110,6 +110,9 @@ final class LibraryRuntime {
         model.attachPlayer(player)
         player.authorizePlayback = { [weak model] item in
             guard let model else { return false }
+            if let requestID = item.storyRequestID {
+                return await model.authorizesStoryPlayback(requestID: requestID, item: item)
+            }
             let token = model.beginExternalStart()
             guard let cached = await model.verifiedCachedMedia(item.entryID, token: token) else { return false }
             return cached.url == item.fileURL
@@ -140,6 +143,7 @@ final class LibraryRuntime {
             }
             .store(in: &subscriptions)
         await model.loadLocalState()
+        await model.restoreStoryPlaybackAfterRelaunch()
         keepArtworkCached()
         startWatchBridge()
     }

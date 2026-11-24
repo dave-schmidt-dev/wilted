@@ -402,7 +402,7 @@ extension WiltedMacModel {
     /// The live total overlays the active playhead; this retained projection
     /// prevents that progress from disappearing as soon as the overlay moves.
     private func updateCurrentLibraryPlaybackProjection() {
-        guard isNowPlaying, let id = loadedPlaybackItemID else { return }
+        guard isNowPlaying, currentListenNextStory == nil, let id = loadedPlaybackItemID else { return }
         let position = min(max(0, playbackPositionSeconds), max(0, playbackDurationSeconds))
         if let index = episodes.firstIndex(where: { $0.id == id }) {
             if episodes[index].playbackSeconds != position {
@@ -473,7 +473,10 @@ extension WiltedMacModel {
     var currentNowPlayingInfo: WiltedNowPlayingInfo? {
         guard isNowPlaying else { return nil }
         let identity: (id: String, title: String, show: String, artwork: URL?)
-        if let episode = currentEpisode, isPodcastPlayback {
+        if let story = currentListenNextStory,
+           playback?.listenNextRequestID == story.requestID {
+            identity = (story.storyID, story.title, story.publisherName, nil)
+        } else if let episode = currentEpisode, isPodcastPlayback {
             identity = (episode.id, episode.title, episode.feedTitle, episode.artworkURL)
         } else if let article = currentArticle {
             identity = (article.id, article.title, article.source, nil)

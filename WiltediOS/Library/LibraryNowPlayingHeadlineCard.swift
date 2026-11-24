@@ -4,21 +4,28 @@ import WiltedLibrary
 /// Names the exact headline being read and keeps its original article link after speech ends.
 struct LibraryNowPlayingHeadlineCard: View {
     @ObservedObject var controller: LibraryInterruptionController
+    @ObservedObject var headlineState: LibraryHeadlinePhoneState
+    @ObservedObject var model: LibraryAppModel
     @Environment(\.colorScheme) private var colorScheme
 
     private var bulletin: Bulletin? { controller.nowPlayingHeadline }
+    private var canonicalStory: LibraryHeadlineStory? {
+        guard headlineState.isBoundToLocalOwner, let bulletin else { return nil }
+        return model.canonicalHeadlineStory(for: bulletin)
+    }
 
     var body: some View {
         if let bulletin {
+            let isReading = controller.activeSpokenHeadline?.id == bulletin.id
+            let stateLabel = isReading ? "Reading this story" : "Last story read"
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                 Label(
-                    controller.activeSpokenHeadline?.id == bulletin.id ? "Reading this story" : "Last story read",
-                    systemImage: controller.activeSpokenHeadline?.id == bulletin.id ? "speaker.wave.2.fill" : "newspaper")
+                    stateLabel,
+                    systemImage: isReading ? "speaker.wave.2.fill" : "newspaper")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(
-                        controller.activeSpokenHeadline?.id == bulletin.id ? "Reading this story" : "Last story read")
+                    .accessibilityLabel(stateLabel)
                     .accessibilityIdentifier("wilted-player-headline-state")
                 Text(bulletin.headline ?? bulletin.text)
                     .wiltedFont(.body)
@@ -43,10 +50,24 @@ struct LibraryNowPlayingHeadlineCard: View {
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-player-headline-link-unavailable")
                 }
+                if let story = canonicalStory {
+                    let request = model.listenNextRequest(forStoryID: story.id)
+                    LibraryListenNextControl(
+                        storyID: story.id,
+                        request: request,
+                        receivedBytes: request.flatMap { model.listenNextDownloadProgress[$0.requestID] },
+                        statusText: request.flatMap { model.listenNextStoryStatuses[$0.requestID] },
+                        message: request.flatMap { model.listenNextStoryMessages[$0.requestID] },
+                        identifierPrefix: "wilted-player-headline",
+                        onListenNext: { Task { await model.listenNext(story) } },
+                        onUndo: { requestID in Task { await model.undoListenNext(requestID: requestID) } },
+                        onRetry: { requestID in Task { await model.retryListenNext(requestID: requestID) } })
+                }
             }
             .wiltedCard(colorScheme, padding: WiltedTheme.Spacing.medium)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("wilted-player-headline-story-card")
         }
     }
+
 }

@@ -47,6 +47,13 @@ extension LibraryAppModel {
         return headlineProjection.recent.filter { $0.isRecent(at: now()) }
     }
 
+    /// Resolves the exact Mac-catalog story named by the active or last spoken headline.
+    func canonicalHeadlineStory(for bulletin: Bulletin) -> LibraryHeadlineStory? {
+        guard let storyID = bulletin.headlineStoryID, let projection = headlineProjection else { return nil }
+        return projection.recent.first(where: { $0.id == storyID })
+            ?? projection.saved.first(where: { $0.id == storyID })
+    }
+
     var mutedHeadlinePublishers: [LibraryHeadlinePublisher] {
         headlineProjection?.publishers.filter(\.isMuted).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending } ?? []
     }

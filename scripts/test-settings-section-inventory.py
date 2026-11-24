@@ -53,7 +53,8 @@ class SettingsInventory(unittest.TestCase):
         declarations = dict(re.findall(r'var (\w+): some View \{\n(.*?)(?=\n    \})', settings, re.S))
         declarations = {name: body for name, body in declarations.items() if name.endswith("Card")}
         declarations["WiltedMacLibrarySyncCard"] = source("WiltedMacLibrarySyncCard").split("struct WiltedMacLibrarySyncCard: View {", 1)[1]
-        for name in ("WiltedMacAdFindingSettingsView", "WiltedMacReportsCard", "WiltedMacHeadlineSourceSheet", "WiltedMacAdFeedbackCard",
+        for name in ("WiltedMacAdFindingSettingsView", "WiltedMacReportsCard", "WiltedMacHeadlineHistoryDisclosure",
+                     "WiltedMacHeadlineSourceSheet", "WiltedMacAdFeedbackCard",
                      "WiltedMacLifetimeStatisticsCard"):
             declarations[name] = source(name)
         providers_page = source("WiltedMacProvidersSettingsView")

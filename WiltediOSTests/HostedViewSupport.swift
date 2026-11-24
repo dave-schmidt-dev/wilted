@@ -7,6 +7,7 @@ import XCTest
 struct HostedElement {
     let identifier: String?
     let label: String?
+    let value: String?
     let traits: UIAccessibilityTraits
     let frame: CGRect
     fileprivate let object: NSObject
@@ -89,6 +90,26 @@ final class HostedView<Content: View> {
         window.layoutIfNeeded()
     }
 
+    /// Scrolls the largest hosted list to its end so lazy rows enter the accessibility tree.
+    @discardableResult
+    func scrollToBottom() -> Bool {
+        var candidates: [UIScrollView] = []
+        func visit(_ view: UIView) {
+            if let scrollView = view as? UIScrollView { candidates.append(scrollView) }
+            view.subviews.forEach(visit)
+        }
+        visit(window)
+        guard let scrollView = candidates.max(by: { $0.contentSize.height < $1.contentSize.height }) else {
+            return false
+        }
+        let bottom = max(
+            -scrollView.adjustedContentInset.top,
+            scrollView.contentSize.height - scrollView.bounds.height + scrollView.adjustedContentInset.bottom)
+        scrollView.setContentOffset(CGPoint(x: 0, y: bottom), animated: false)
+        settle()
+        return true
+    }
+
     private static func identifier(of node: NSObject) -> String? {
         if let id = (node as? UIAccessibilityIdentification)?.accessibilityIdentifier, !id.isEmpty { return id }
         return node.responds(to: Selector(("accessibilityIdentifier")))
@@ -102,7 +123,8 @@ final class HostedView<Content: View> {
             if node.isAccessibilityElement {
                 found.append(HostedElement(
                     identifier: Self.identifier(of: node),
-                    label: node.accessibilityLabel, traits: node.accessibilityTraits,
+                    label: node.accessibilityLabel, value: node.accessibilityValue as? String,
+                    traits: node.accessibilityTraits,
                     frame: node.accessibilityFrame, object: node))
             }
             if let children = node.accessibilityElements as? [NSObject] {

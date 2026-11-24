@@ -73,6 +73,17 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(backend.volume, 0.4)
     }
 
+    func testExplicitListenNextRearmAdvancesTheCurrentHoldEpoch() async throws {
+        let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
+        let controller = PlaybackController(
+            store: try LocalLibraryStore(url: path), backend: FakeBackend())
+        controller.restoreListenNextHoldEpoch(7)
+
+        controller.rearmListenNextQueueForExplicitStart()
+
+        XCTAssertEqual(controller.listenNextHoldEpoch, 8)
+    }
+
     func testPodcastSpeedRestoresAppliesAndDefaultsPerEpisode() async throws {
         let path = storeURL(); let root = path.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: root) }

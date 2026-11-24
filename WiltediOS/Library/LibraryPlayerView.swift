@@ -134,8 +134,9 @@ struct LibraryPlayerView: View {
                         .accessibilityIdentifier("wilted-player-retry")
                 }
             }
-            if let interruptions = model?.handoffState.interruptions {
-                LibraryNowPlayingHeadlineCard(controller: interruptions)
+            if let model, let interruptions = model.handoffState.interruptions {
+                LibraryNowPlayingHeadlineCard(
+                    controller: interruptions, headlineState: model.headlinePhoneState, model: model)
             }
             scrubber
             transport

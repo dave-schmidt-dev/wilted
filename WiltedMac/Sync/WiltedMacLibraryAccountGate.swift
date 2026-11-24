@@ -161,3 +161,34 @@ struct WiltedMacAccountGatedLibraryTransport: LibraryTransport {
         try await run { try await inner.commitSentState(token) }
     }
 }
+
+extension WiltedMacAccountGatedLibraryTransport: LibraryStoryAudioTransport {
+    func publishStoryAudio(offer: LibraryStoryAudioOffer, fileURL: URL, expectedOwner: String) async throws {
+        try await run { try await inner.storyAudioService().publishStoryAudio(offer: offer, fileURL: fileURL, expectedOwner: expectedOwner) }
+    }
+
+    func fetchStoryAudio(_ offer: LibraryStoryAudioOffer, expectedOwner: String,
+                         progress: @escaping MediaProgressHandler) async throws -> URL {
+        let generation = try gate.admit()
+        let file = try await inner.storyAudioService().fetchStoryAudio(offer, expectedOwner: expectedOwner, progress: progress)
+        do {
+            try gate.verify(generation)
+            return file
+        } catch {
+            try? FileManager.default.removeItem(at: file)
+            throw error
+        }
+    }
+
+    func removeStoryAudio(_ offer: LibraryStoryAudioOffer, expectedOwner: String) async throws {
+        try await run { try await inner.storyAudioService().removeStoryAudio(offer, expectedOwner: expectedOwner) }
+    }
+
+    func publishListenNextStatus(_ status: LibraryListenNextStatus, expectedOwner: String) async throws {
+        try await run { try await inner.storyAudioService().publishListenNextStatus(status, expectedOwner: expectedOwner) }
+    }
+
+    func listenNextStatuses(requestIDs: Set<String>, expectedOwner: String) async throws -> [LibraryListenNextStatus] {
+        try await run { try await inner.storyAudioService().listenNextStatuses(requestIDs: requestIDs, expectedOwner: expectedOwner) }
+    }
+}

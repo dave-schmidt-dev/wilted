@@ -417,7 +417,7 @@ extension WiltedMacModel {
     /// Loads and starts one entry of the session as a selection (W-INV-017): it supersedes any
     /// pending command, and only the newest command may start the audio. The entry loads outside
     /// the durable queue, so the Larder order and its current episode stay as they were.
-    private func startPlaylistEntry(at index: Int) {
+    func startPlaylistEntry(at index: Int) {
         guard let session = playlists.session, session.entryIDs.indices.contains(index),
               let playback, let store else { return }
         let displayID = session.entryIDs[index]

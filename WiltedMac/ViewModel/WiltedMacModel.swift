@@ -6,7 +6,6 @@ import WiltedDomain
 import WiltedLibrary
 
 #if canImport(WiltedProducer)
-import WiltedDomain
 import WiltedProducer
 #endif
 
@@ -263,6 +262,7 @@ final class WiltedMacModel {
     var currentTranscript: WiltedMacTranscript?
     var podcastQueueIDs: [String] = []
     var currentPodcastEpisodeID: String?
+    var currentListenNextStory: WiltedMacListenNextNowPlaying?
     /// Removed spans per episode, filled in as each episode's transcript
     /// loads. Keyed rather than held as one current value so that changing
     /// episode cannot leave the previous episode's cuts on screen.

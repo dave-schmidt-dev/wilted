@@ -120,23 +120,10 @@ struct WiltedMacPlayerContent: View {
                     }
                 }
                 if let story = featuredHeadlineStory {
-                    let catalog = model.headlineCatalogState
-                    let isMuted = catalog.projection?.publishers.contains {
-                        $0.id == story.publisherID && $0.isMuted
-                    } ?? false
-                    WiltedHeadlineStoryCard(
-                        story: story,
-                        isMuted: isMuted,
-                        actionInProgress: catalog.isActionInProgress,
-                        setSaved: { catalog.setSaved(story, isSaved: $0) },
-                        setMuted: { catalog.setMuted(story, isMuted: $0) },
+                    WiltedMacPlayerHeadlineCard(
+                        model: model, story: story,
                         isSpeakingHeadline: model.speakingBulletin?.kind == .headline,
                         stopReading: model.skipSpokenBulletin)
-                    if let message = catalog.actionMessage {
-                        Text(message)
-                            .wiltedFont(.utility)
-                            .accessibilityIdentifier("wilted-headline-action-status")
-                    }
                 }
                 #endif
                 HStack(spacing: WiltedTheme.Spacing.medium) {

@@ -107,19 +107,36 @@ extension LibraryAppModel {
         if player.journal == nil { player.journal = journal }
         player.onListened = { [phoneStats] wall, rate in phoneStats.recordListening(wall: wall, rate: rate) }
         player.onFinished = { [weak self] ended, autoPlayNext in
-            Task { @MainActor [weak self] in await self?.episodeFinished(ended, autoPlayNext: autoPlayNext) }
+            let storyRequestID = player.item?.entryID == ended ? player.item?.storyRequestID : nil
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let requestID = storyRequestID {
+                    await self.finishStoryPlayback(requestID: requestID, autoPlayNext: autoPlayNext)
+                } else {
+                    await self.episodeFinished(ended, autoPlayNext: autoPlayNext)
+                }
+            }
         }
-        player.resumePosition = { [weak self] item in await self?.resumePositionFromOtherDevice(item.entryID) }
+        player.resumePosition = { [weak self] item in
+            guard item.storyRequestID == nil else { return nil }
+            return await self?.resumePositionFromOtherDevice(item.entryID)
+        }
         player.onWillReplaceItem = { [weak self] outgoingID, position in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                let saveTask = self.savePositionLocally(for: outgoingID, position: position)
+                let saveTask: Task<Void, Never>?
+                if let requestID = player.item?.storyRequestID, player.item?.entryID == outgoingID {
+                    self.saveStoryPlaybackPosition(requestID: requestID, positionSeconds: position)
+                    saveTask = nil
+                } else {
+                    saveTask = self.savePositionLocally(for: outgoingID, position: position)
+                }
                 let reportedPlaying = self.handoffState.reportedPlaying && self.handoffState.reportedEntry == outgoingID
                 if reportedPlaying { self.handoffState.reportedPlaying = false }
                 let previous = self.handoffState.chain
                 self.handoffState.chain = Task { @MainActor [weak self] in
                     await previous?.value
-                    await saveTask.value
+                    await saveTask?.value
                     guard let self else { return }
                     if reportedPlaying {
                         await self.publishPause(outgoingID, at: position, stopped: false, clock: self.now())
@@ -148,6 +165,10 @@ extension LibraryAppModel {
         }.store(in: &handoffState.subscriptions)
         player.$position.sink { [weak self] position in
             MainActor.assumeIsolated {
+                if let requestID = player.item?.storyRequestID {
+                    self?.saveStoryPlaybackPosition(requestID: requestID, positionSeconds: position)
+                    return
+                }
                 if let state = self?.handoffState {
                     if let last = state.lastLocalSave {
                         if player.status == .playing, abs(position - last) >= Self.localSaveInterval {
@@ -162,6 +183,9 @@ extension LibraryAppModel {
         }.store(in: &handoffState.subscriptions)
         // Any transport command given meanwhile (lock screen, headset, a seek) replaces a pending start.
         player.onCommand = { [weak self] in self?.playerCommandArrived() }
+        player.onStoryQueueRearm = { [weak self] epoch in self?.rearmStoryQueueAfterExplicitStart(at: epoch) }
+        player.restoreStoryAutoStartEpoch(preferences.object(forKey: Self.listenNextPlaybackHoldKey) as? UInt64 ?? 0)
+        player.onStoryQueueHold = { [weak self] epoch in self?.persistStoryQueueHold(at: epoch) }
         player.$item.sink { [weak self] item in
             // `@Published` emits before the value changes, so hand the new item over rather than re-reading it.
             MainActor.assumeIsolated {
@@ -247,6 +271,7 @@ extension LibraryAppModel {
     /// Reads the settled player state and tells the coordinator what changed since last time.
     private func syncHandoff() async {
         guard let player = handoffState.player else { return }
+        guard player.item?.storyRequestID == nil else { return }
         let state = handoffState
         let (status, position, item) = (player.status, player.position, player.item)
         let clock = now()
@@ -345,6 +370,10 @@ extension LibraryAppModel {
     @discardableResult
     func saveLoadedPositionLocally(_ position: Double? = nil) -> Task<Void, Never>? {
         guard let player = handoffState.player, let entryID = player.item?.entryID else { return nil }
+        if let requestID = player.item?.storyRequestID {
+            saveStoryPlaybackPosition(requestID: requestID, positionSeconds: position ?? player.position)
+            return nil
+        }
         return savePositionLocally(for: entryID, position: position ?? player.position)
     }
 

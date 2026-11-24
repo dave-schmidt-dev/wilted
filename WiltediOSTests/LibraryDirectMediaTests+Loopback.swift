@@ -24,24 +24,45 @@ extension LibraryDirectMediaTests {
         let file = scratch.appendingPathComponent("ten-megabytes")
         try data.write(to: file)
         let target = try offer(state: .available, data: data)
-        let (port, served) = try await startLoopbackMac(serving: file, target: target)
+        let (port, served, serverPeer) = try await startLoopbackMac(serving: file, target: target)
         let real = DirectFakeLocator(.found([.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)]))
 
         try seedDirect(offers: [target])
         let model = makeModel(direct: false)
         let key = phoneKey
+        let peerProbe = LoopbackPeerProbe(expected: serverPeer)
         model.directState.environment = LibraryDirectEnvironment(
             locator: real, phoneKey: { key },
             makeSource: { connection in
-                LANMediaClient(endpoints: connection.endpoints, peer: connection.peer,
-                               partialDirectory: connection.partialDirectory, binding: .loopback, onPhase: connection.onPhase)
+                peerProbe.record(connection.peer)
+                return LANMediaClient(endpoints: connection.endpoints, peer: connection.peer,
+                                      partialDirectory: connection.partialDirectory, binding: .loopback,
+                                      onPhase: connection.onPhase)
             }, scheduler: nil)
         model.performMediaAction(.request, entryID: entryA)
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(20))
+        while model.mediaState(for: entryA) != .onPhone {
+            let observedCauses = causes(model)
+            if let cause = observedCauses.first {
+                model.performMediaAction(.cancel, entryID: entryA)
+                XCTFail("Real TLS-PSK transfer fell back to iCloud: \(cause); client pairing matched server: \(peerProbe.matched)")
+                return
+            }
+            if clock.now >= deadline {
+                model.performMediaAction(.cancel, entryID: entryA)
+                XCTFail("Real TLS-PSK transfer did not finish within 20 seconds; client pairing matched server: \(peerProbe.matched)")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
         await model.waitForMedia(entryID: entryA)
 
         XCTAssertEqual(model.mediaState(for: entryA), .onPhone, notice(model))
         XCTAssertEqual(counter.serverCalls, 0)
         XCTAssertTrue(causes(model).isEmpty, "\(causes(model))")
+        XCTAssertTrue(peerProbe.matched, "The phone's derived TLS peer must match the loopback Mac peer.")
         XCTAssertEqual(served.requests.count, 1)
         let played = await model.verifiedCachedMedia(entryA, token: model.commandState.token)
         let cachedFile = try XCTUnwrap(played?.url)
@@ -53,7 +74,7 @@ extension LibraryDirectMediaTests {
         let file = scratch.appendingPathComponent("served")
         try payload.write(to: file)
         let target = try offer(state: .available)
-        let (port, _) = try await startLoopbackMac(serving: file, target: target)
+        let (port, _, _) = try await startLoopbackMac(serving: file, target: target)
         let real = DirectFakeLocator(.found([.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)]))
         try seedDirect(macDeviceID: "some-other-mac")
         let model = makeModel(direct: false)
@@ -69,7 +90,9 @@ extension LibraryDirectMediaTests {
 
     /// A Mac-side server on loopback with the key the Mac derives on its own from the pairing facts
     /// (owner token, `LibraryPublication.writerDeviceID`, the phone's device id).
-    private func startLoopbackMac(serving file: URL, target: LibraryMediaOffer) async throws -> (UInt16, LoopbackRequests) {
+    private func startLoopbackMac(
+        serving file: URL, target: LibraryMediaOffer
+    ) async throws -> (UInt16, LoopbackRequests, LANTLSPeer) {
         let psk = try LANPairingKey.derive(
             ownKey: macKey, peerPublicKey: phoneKey.publicKey, ownerBindingTag: owner, macDeviceID: "mac",
             phoneDeviceID: "phone", macPublicKey: macKey.publicKey, phonePublicKey: phoneKey.publicKey)
@@ -82,7 +105,7 @@ extension LibraryDirectMediaTests {
             source: { request in requests.add(request); return .ready(served) })
         addTeardownBlock { await lan.stop() }
         let port = try await lan.start(peers: [peer])
-        return (try XCTUnwrap(port), requests)
+        return (try XCTUnwrap(port), requests, peer)
     }
 }
 
@@ -91,4 +114,18 @@ private final class LoopbackRequests: @unchecked Sendable {
     private var seen: [LANMediaRequest] = []
     var requests: [LANMediaRequest] { lock.withLock { seen } }
     func add(_ request: LANMediaRequest) { lock.withLock { seen.append(request) } }
+}
+
+private final class LoopbackPeerProbe: @unchecked Sendable {
+    private let expected: LANTLSPeer
+    private let lock = NSLock()
+    private var didMatch = false
+
+    init(expected: LANTLSPeer) { self.expected = expected }
+
+    var matched: Bool { lock.withLock { didMatch } }
+
+    func record(_ actual: LANTLSPeer) {
+        lock.withLock { didMatch = actual.identity == expected.identity && actual.psk == expected.psk }
+    }
 }

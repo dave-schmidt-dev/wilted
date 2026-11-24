@@ -285,6 +285,9 @@ extension WiltedMacModel {
         playbackCommands.automaticAdvance = nil
         guard let playback else { return }
         let startPending = playbackCommands.pending?.command.kind.startsAudio == true
+        if !startPending && !playback.liveIsPlaying && !isPlaying {
+            playback.fenceListenNextQueueForExplicitPause()
+        }
         guard startPending || playback.liveIsPlaying || isPlaying else { return }
         let loadedAtPress = playback.revisionID != nil
         let command = issuePlaybackCommand(.pause, pending: nil) { [weak self] issued in

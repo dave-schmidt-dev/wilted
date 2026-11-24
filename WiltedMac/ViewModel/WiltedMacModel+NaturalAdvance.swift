@@ -1,4 +1,5 @@
 import Foundation
+import WiltedLibrary
 import os
 
 #if canImport(WiltedProducer)
@@ -24,7 +25,8 @@ extension WiltedMacModel {
         guard isPodcastPlayback, !playlistSessionIsCurrent,
               episodes.first(where: { $0.id == itemID.rawValue })?.isAudiobook != true else { return nil }
         let end = WiltedMacNaturalEnd(
-            finishedID: itemID, reachedEndAt: logNaturalEnd(finishedID: itemID.rawValue), model: self)
+            finishedID: itemID, reachedEndAt: logNaturalEnd(finishedID: itemID.rawValue),
+            listenNextHoldEpochAtEnd: playback?.listenNextHoldEpoch ?? 0, model: self)
         libraryFollowUps.pendingNaturalEnd = end
         let advance = beginAutomaticAdvance()
         let keepsFinishedOnPause = isLarderQueuePlayback
@@ -65,6 +67,17 @@ extension WiltedMacModel {
             let candidates = self.larderUnfilteredEpisodes(in: .playable).filter {
                 $0.id != finishedID && !$0.isAudiobook && !self.hiddenEpisodeIDs.contains($0.id)
                     && $0.retiredAt == nil && !$0.isPlayed && self.canPlayEpisode($0)
+            }
+            if let finishedItemID {
+                let continuation = ListenNextContinuation(
+                    kind: .macReadyLarder, anchorID: finishedItemID,
+                    entryIDs: candidates.compactMap { try? ItemID(rawValue: $0.id) })
+                if await self.startStoryAtNaturalBoundary(
+                    after: finishedID, continuation: continuation, advance: advance,
+                    holdEpochAtEnd: end?.listenNextHoldEpochAtEnd ?? self.playback?.listenNextHoldEpoch ?? 0) {
+                    self.enqueueNaturalEndFollowUp(finishedItemID, end: end)
+                    return
+                }
             }
             for candidate in candidates {
                 guard self.automaticAdvanceClaim(advance) == .owns else { break }
@@ -114,6 +127,15 @@ extension WiltedMacModel {
                 // Queue-origin Pause retains its loaded item; generic continuation clears the player.
                 if claim == .paused, !keepsFinishedOnPause { await self.stopPlaybackForRemovedEpisode() }
                 self.enqueueNaturalEndFollowUp(finishedItemID, end: end)
+                return
+            }
+            if await self.hasWaitingListenNextRequest() {
+                self.isPlaying = false
+                self.isNowPlaying = true
+                self.logAutomaticAdvanceDecision(chosenID: nil, reason: "waiting_for_story_audio")
+                self.enqueueNaturalEndFollowUp(
+                    finishedItemID, end: end,
+                    suffix: "Waiting for the queued story audio to finish preparing.")
                 return
             }
             await self.stopPlaybackForRemovedEpisode()

@@ -159,3 +159,47 @@ public struct ThrottledLibraryTransport: LibraryTransport {
         try await inner.commitSentState(token)
     }
 }
+
+extension LibraryTransport {
+    /// Returns the optional reading-audio service provided by the active library backend.
+    public func storyAudioService() throws -> any LibraryStoryAudioTransport {
+        guard let service = self as? any LibraryStoryAudioTransport else {
+            throw LibraryTransportError.transport("This library connection does not support narrated stories.")
+        }
+        return service
+    }
+}
+
+extension ThrottledLibraryTransport: LibraryStoryAudioTransport {
+    public func publishStoryAudio(offer: LibraryStoryAudioOffer, fileURL: URL, expectedOwner: String) async throws {
+        try await gate.run(priority: .background) {
+            try await inner.storyAudioService().publishStoryAudio(offer: offer, fileURL: fileURL, expectedOwner: expectedOwner)
+        }
+    }
+
+    public func fetchStoryAudio(_ offer: LibraryStoryAudioOffer, expectedOwner: String,
+                                progress: @escaping MediaProgressHandler) async throws -> URL {
+        try await gate.run(priority: .ownerAction) {
+            try await inner.storyAudioService().fetchStoryAudio(offer, expectedOwner: expectedOwner, progress: progress)
+        }
+    }
+
+    public func removeStoryAudio(_ offer: LibraryStoryAudioOffer, expectedOwner: String) async throws {
+        try await gate.run(priority: .background) {
+            try await inner.storyAudioService().removeStoryAudio(offer, expectedOwner: expectedOwner)
+        }
+    }
+
+    public func publishListenNextStatus(_ status: LibraryListenNextStatus, expectedOwner: String) async throws {
+        try await gate.run(priority: .background) {
+            try await inner.storyAudioService().publishListenNextStatus(status, expectedOwner: expectedOwner)
+        }
+    }
+
+    public func listenNextStatuses(requestIDs: Set<String>, expectedOwner: String) async throws -> [LibraryListenNextStatus] {
+        guard !requestIDs.isEmpty else { return [] }
+        return try await gate.run(priority: .poll) {
+            try await inner.storyAudioService().listenNextStatuses(requestIDs: requestIDs, expectedOwner: expectedOwner)
+        }
+    }
+}

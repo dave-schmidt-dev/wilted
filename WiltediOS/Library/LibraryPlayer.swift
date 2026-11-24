@@ -48,6 +48,9 @@ final class LibraryPlayer: ObservableObject {
         let title: String
         let showTitle: String
         let fileURL: URL
+        /// Set only for generated headline narration, which keeps progress and
+        /// completion in the request ledger rather than episode sync records.
+        var storyRequestID: String? = nil
         /// Where the artwork came from; the player reads only its local copy.
         var artworkURL: URL? = nil
         /// An audiobook volume's chapters in start order; empty for everything else.
@@ -106,6 +109,11 @@ final class LibraryPlayer: ObservableObject {
     /// Counts every transport action (start, play, pause, seek, stop); `owns(_:)` compares it
     /// with its value when the item finished, so a command given after the end cancels what follows it.
     private(set) var transportCount = 0
+    /// Changes when a listener explicitly holds automatic story playback.
+    /// Automatic episode starts do not change this fence.
+    private(set) var storyAutoStartEpoch: UInt64 = 0
+    var onStoryQueueRearm: (@MainActor (UInt64) -> Void)?
+    var onStoryQueueHold: (@MainActor (UInt64) -> Void)?
     private var autoPausedAt: (generation: UInt64, transportCount: Int)?
     var admissionEpoch: UInt64 = 0
     var admissionTask: Task<Void, Never>?
@@ -231,11 +239,13 @@ final class LibraryPlayer: ObservableObject {
     /// Loads `item` and, unless `autoplay` is false, starts it at `start`. Returns false and
     /// sets `.failed` when the file cannot be loaded or the session or engine refuses.
     @discardableResult
-    func start(_ item: Item, at start: TimeInterval = 0, autoplay: Bool = true, traceToken: UInt64 = 0) -> Bool {
+    func start(_ item: Item, at start: TimeInterval = 0, autoplay: Bool = true,
+               traceToken: UInt64 = 0, automatic: Bool = false) -> Bool {
         if let old = self.item, old.entryID != item.entryID { journal?.note("stop reason=replaced entry=\(old.entryID.rawValue) position=\(String(format: "%.1f", position))") }
         _ = cancelRemoteSeeking()
         onCommand?()
         transportCount &+= 1; cancelAdmission()
+        if !automatic { rearmStoryQueueForExplicitStart() }
         stopTicking()
         resumeAfterInterruption = false
         // "End of this episode" belongs to the episode it was set on, not to whatever plays next.
@@ -290,6 +300,7 @@ final class LibraryPlayer: ObservableObject {
         _ = cancelRemoteSeeking()
         onCommand?()
         transportCount &+= 1; cancelAdmission()
+        rearmStoryQueueForExplicitStart()
         autoPausedAt = nil
         guard item != nil else { return false }
         do {
@@ -317,6 +328,10 @@ final class LibraryPlayer: ObservableObject {
         _ = cancelRemoteSeeking()
         onCommand?()
         transportCount &+= 1; cancelAdmission()
+        if reason != "interruption" {
+            storyAutoStartEpoch &+= 1
+            onStoryQueueHold?(storyAutoStartEpoch)
+        }
         guard item != nil else { return }
         resumeAfterInterruption = false
         accrueListening()
@@ -376,7 +391,15 @@ final class LibraryPlayer: ObservableObject {
         PlaybackSpeeds.all.first { $0 > current + 0.001 } ?? PlaybackSpeeds.all[0]
     }
 
-    func setStopsAfterCurrentItem(_ on: Bool) { stopsAfterCurrentItem = on }
+    func setStopsAfterCurrentItem(_ on: Bool) {
+        stopsAfterCurrentItem = on
+        if on {
+            storyAutoStartEpoch &+= 1
+            onStoryQueueHold?(storyAutoStartEpoch)
+        } else {
+            rearmStoryQueueForExplicitStart()
+        }
+    }
 
     func setRate(_ newRate: Double) {
         guard supportsRate else { return }
@@ -390,7 +413,24 @@ final class LibraryPlayer: ObservableObject {
     func stop() {
         onCommand?()
         transportCount &+= 1; cancelAdmission()
+        storyAutoStartEpoch &+= 1
+        onStoryQueueHold?(storyAutoStartEpoch)
         clearLoadedItem()
+    }
+
+    private func rearmStoryQueueForExplicitStart() {
+        storyAutoStartEpoch &+= 1
+        onStoryQueueRearm?(storyAutoStartEpoch)
+    }
+
+    /// A committed Listen next request is also an explicit release of the stop fence.
+    func rearmStoryQueueForExplicitListenNext() {
+        rearmStoryQueueForExplicitStart()
+    }
+
+    /// Restores the durable queue fence before the player accepts commands after relaunch.
+    func restoreStoryAutoStartEpoch(_ epoch: UInt64) {
+        storyAutoStartEpoch = max(storyAutoStartEpoch, epoch)
     }
 
     /// Library eligibility loss clears resume access immediately. An untouched natural finish

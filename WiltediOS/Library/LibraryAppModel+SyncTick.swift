@@ -59,7 +59,8 @@ extension LibraryAppModel {
     /// Starts or adjusts the tick to match the phone's cadence: 30 s while playing, a request is
     /// pending, or the app is in front; otherwise 5 minutes.
     func updateSyncTick() async {
-        let activeCadence = tickState.sceneActive || handoffState.reportedPlaying || media.values.contains { $0.isInFlight }
+        let activeCadence = tickState.sceneActive || handoffState.reportedPlaying
+            || media.values.contains { $0.isInFlight } || hasListenNextSyncWork
         let interval = activeCadence ? handoffTiming.observeInterval : SyncCadence.phoneIdleInterval
         if let tick = tickState.tick {
             await tick.setInterval(interval)
@@ -81,6 +82,7 @@ extension LibraryAppModel {
         case .timer, .event:
             await refresh(nextPlan(for: trigger))
         }
+        await syncListenNextRequests()
         await handoffState.interruptions?.syncTick()
     }
 

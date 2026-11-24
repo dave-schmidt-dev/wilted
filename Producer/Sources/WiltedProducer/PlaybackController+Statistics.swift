@@ -52,6 +52,13 @@ extension PlaybackController {
             throw PlaybackControllerError.noLoadedRevision
         }
         let livePosition = clamp(backend.currentTime)
+        if let requestID = listenNextRequestID {
+            positionSeconds = livePosition
+            isPlaying = backend.isPlaying || speechHeld
+            completed = false
+            listenNextPositionHandler?(requestID, livePosition)
+            return
+        }
         positionSeconds = recoverableFault == .playbackFailed(itemID)
             ? max(positionSeconds, livePosition) : livePosition
         isPlaying = backend.isPlaying || speechHeld
@@ -85,6 +92,13 @@ extension PlaybackController {
     func checkpointCompletedRevision(accountPlaybackToEnd: Bool) async throws {
         guard let revision = currentRevision, let itemID, let revisionID, let sessionID else {
             throw PlaybackControllerError.noLoadedRevision
+        }
+        if let requestID = listenNextRequestID {
+            positionSeconds = durationSeconds
+            completed = true
+            listenNextPositionHandler?(requestID, durationSeconds)
+            await listenNextCompletionHandler?(requestID)
+            return
         }
         let accountingEnd = accountPlaybackToEnd ? durationSeconds : clamp(backend.currentTime)
         backend.currentTime = durationSeconds

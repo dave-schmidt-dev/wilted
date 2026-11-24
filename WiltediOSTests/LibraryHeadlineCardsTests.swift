@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import WiltedDomain
 import WiltedLibrary
 import XCTest
@@ -6,6 +7,98 @@ import XCTest
 
 @MainActor
 final class LibraryHeadlineCardsTests: XCTestCase {
+    func testSharedListenNextControlRunsActionAndShowsProgressAndUndo() async throws {
+        await HostedAccessibility.prepare()
+        let story = try sampleStory()
+        var listened = 0
+        let listenControl = LibraryListenNextControl(
+            storyID: story.id, request: nil, receivedBytes: nil, statusText: nil, message: nil,
+            identifierPrefix: "test-headline",
+            onListenNext: { listened += 1 }, onUndo: { _ in }, onRetry: { _ in })
+        let listenHost = HostedView(listenControl)
+        let listenID = "test-headline-listen-next-\(story.id)"
+        XCTAssertEqual(listenHost.elements().filter { $0.identifier == listenID }.count, 1)
+        XCTAssertTrue(try XCTUnwrap(listenHost.element(listenID)).activate())
+        XCTAssertEqual(listened, 1)
+
+        let requestID = "listen-request-1"
+        let offer = try LibraryStoryAudioOffer(
+            requestID: requestID, storyID: story.id, requesterDeviceID: "phone",
+            voiceID: "voice-1", voiceRevision: "revision-1",
+            audioRevision: RevisionID(rawValue: "story-audio-1"),
+            contentHash: "sha256:\(String(repeating: "a", count: 64))",
+            byteCount: 100, mediaType: "audio/mp4", durationSeconds: 45)
+        let request = try LibraryListenNextRequestSnapshot(
+            requestID: requestID, story: story, requesterDeviceID: "phone", ownerToken: "owner-a",
+            operationGeneration: 1, anchorID: nil, createdAt: Date(timeIntervalSince1970: 1_700_000_001),
+            status: .ready, audioOffer: offer, voiceID: "voice-1", voiceRevision: "revision-1")
+        var undoneRequest: String?
+        let progressControl = LibraryListenNextControl(
+            storyID: story.id, request: request, receivedBytes: 42, statusText: "Up next", message: nil,
+            identifierPrefix: "test-headline", onListenNext: { XCTFail("ready request duplicated Listen next") },
+            onUndo: { undoneRequest = $0 }, onRetry: { _ in XCTFail("ready request offered Retry") })
+        let progressHost = HostedView(progressControl)
+
+        let status = try XCTUnwrap(progressHost.element("test-headline-listen-status-\(story.id)"))
+        XCTAssertEqual(status.label, "Downloading audio")
+        XCTAssertEqual(progressHost.element("test-headline-listen-progress-\(story.id)")?.value, "42%")
+        XCTAssertNil(progressHost.element("test-headline-listen-next-\(story.id)"))
+        XCTAssertTrue(try XCTUnwrap(progressHost.element("test-headline-listen-undo-\(story.id)")).activate())
+        XCTAssertEqual(undoneRequest, requestID)
+
+        let failedID = "listen-request-failed"
+        let failedRequest = try LibraryListenNextRequestSnapshot(
+            requestID: failedID, story: story, requesterDeviceID: "phone", ownerToken: "owner-a",
+            operationGeneration: 1, anchorID: nil, createdAt: Date(timeIntervalSince1970: 1_700_000_002),
+            status: .failed, failure: .narrationFailed)
+        var retriedRequest: String?
+        let retryControl = LibraryListenNextControl(
+            storyID: story.id, request: failedRequest, receivedBytes: nil, statusText: "Could not prepare",
+            message: "The article could not be narrated.", identifierPrefix: "test-headline",
+            onListenNext: { XCTFail("failed request duplicated Listen next") },
+            onUndo: { _ in XCTFail("failed request offered Undo") }, onRetry: { retriedRequest = $0 })
+        let retryHost = HostedView(retryControl)
+        XCTAssertNotNil(retryHost.element("test-headline-listen-status-\(story.id)"))
+        XCTAssertTrue(try XCTUnwrap(retryHost.element("test-headline-listen-retry-\(story.id)")).activate())
+        XCTAssertEqual(retriedRequest, failedID)
+    }
+
+    func testLarderAndHeadlineArchiveCardsShowOneListenNextActionPerStory() async throws {
+        await HostedAccessibility.prepare()
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let recent = try sampleStory(id: "recent-story", firstSeenAt: now, lastSeenAt: now)
+        let saved = try sampleStory(
+            id: "saved-story", firstSeenAt: now.addingTimeInterval(-10 * 24 * 60 * 60),
+            lastSeenAt: now.addingTimeInterval(-10 * 24 * 60 * 60),
+            savedAt: now.addingTimeInterval(-9 * 24 * 60 * 60))
+        let publisher = try LibraryHeadlinePublisher(
+            id: "feed-1", name: "Example News", isMuted: false, revision: 0)
+        let projection = try LibraryHeadlineProjection(
+            revision: 1, updatedAt: now, recent: [recent], saved: [saved], publishers: [publisher])
+        let model = LibraryAppModel(
+            transport: InMemoryLibraryTransport(
+                deviceID: "phone", server: InMemoryLibraryServer(writerDeviceID: "mac"),
+                verifiedOwnerToken: "owner-a"),
+            deviceID: "phone", now: { now })
+        model.headlinePhoneState.bindLocalOwner("owner-a", generation: 0, reviewHold: false)
+        model.headlinePhoneState.replaceProjection(projection, owner: "owner-a", generation: 0)
+        let host = HostedView(NavigationStack {
+            List { LibraryStoryCardsSection(state: model.headlinePhoneState, model: model) }
+        })
+
+        let recentListenID = "wilted-library-headline-listen-next-\(recent.id)"
+        XCTAssertEqual(host.elements().filter { $0.identifier == recentListenID }.count, 1)
+        XCTAssertTrue(host.scrollToBottom(), "the hosted Larder should expose its scroll view")
+        let archiveLinks = host.elements().filter { $0.label == "Recent headlines" }
+        XCTAssertEqual(archiveLinks.count, 1, "the user-facing archive link should be visible once")
+        guard let archiveLink = archiveLinks.first else { return }
+        XCTAssertTrue(archiveLink.activate(), "the visible Recent headlines link should navigate")
+        host.settle()
+
+        XCTAssertNotNil(host.element(recentListenID))
+        XCTAssertNotNil(host.element("wilted-library-headline-listen-next-\(saved.id)"))
+    }
+
     func testProjectionAndCommandsSurviveOfflineRelaunchWithoutChangingDecisionOutbox() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("wilted-headlines-\(UUID().uuidString)", isDirectory: true)

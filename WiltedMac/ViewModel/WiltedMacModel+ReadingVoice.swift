@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import WiltedLibrary
 import WiltedProducer
 
 private nonisolated(unsafe) var readingVoiceSelectionKey: UInt8 = 0
@@ -100,6 +101,16 @@ extension WiltedMacModel {
 
     func readingVoiceIsAvailable(_ voice: ApprovedReadingVoiceID) -> Bool {
         readingVoiceSelection.isAvailable(readingVoiceAvailability(for: voice))
+    }
+
+    /// The UI action fixes its queue anchor at the moment the listener presses Listen next.
+    func requestListenNext(_ story: LibraryHeadlineStory) {
+        let anchor = playback?.itemID
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do { try await listenNextRequest(story: story, anchorID: anchor) }
+            catch { /* The request presentation object carries the visible failure state. */ }
+        }
     }
 
     func openReadingVoiceSettings() {

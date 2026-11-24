@@ -176,9 +176,13 @@ extension PlaybackController {
             meterListening()
             return .alreadyPlaying
         }
+        rearmListenNextQueueForExplicitStart()
         try play()
         return .started
     }
+
+    /// Fences queued story audio when Pause is pressed after the backend already ended.
+    public func fenceListenNextQueueForExplicitPause() { holdListenNextQueue() }
 
     /// Stops the audio now and touches nothing durable: no store write, no
     /// speed or lifetime-statistics flush. A caller that must answer Pause at

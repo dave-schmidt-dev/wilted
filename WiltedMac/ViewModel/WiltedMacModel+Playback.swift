@@ -310,6 +310,14 @@ extension WiltedMacModel {
         controller.playbackDidFinishHandler = old.playbackDidFinishHandler
         controller.podcastCompletionHandler = old.podcastCompletionHandler
         controller.podcastNaturalCompletionHandlerFactory = old.podcastNaturalCompletionHandlerFactory
+        controller.listenNextRequestID = old.listenNextRequestID
+        controller.listenNextPositionHandler = old.listenNextPositionHandler
+        controller.listenNextCompletionHandler = old.listenNextCompletionHandler
+        controller.listenNextFailureHandler = old.listenNextFailureHandler
+        controller.listenNextNaturalBoundaryHandler = old.listenNextNaturalBoundaryHandler
+        controller.listenNextHoldHandler = old.listenNextHoldHandler
+        controller.listenNextRearmHandler = old.listenNextRearmHandler
+        controller.restoreListenNextHoldEpoch(old.listenNextHoldEpoch)
         controller.episodeEligibilityPredicate = old.episodeEligibilityPredicate
         controller.defaultRate = old.defaultRate
         controller.automaticPodcastQueueAdvancePredicate = old.automaticPodcastQueueAdvancePredicate
@@ -320,6 +328,12 @@ extension WiltedMacModel {
         old.playbackDidFinishHandler = nil
         old.podcastCompletionHandler = nil
         old.podcastNaturalCompletionHandlerFactory = nil
+        old.listenNextPositionHandler = nil
+        old.listenNextCompletionHandler = nil
+        old.listenNextFailureHandler = nil
+        old.listenNextNaturalBoundaryHandler = nil
+        old.listenNextHoldHandler = nil
+        old.listenNextRearmHandler = nil
         old.disableOutputLossPause()
         old.onOutputLostPause = nil
         playback = controller
