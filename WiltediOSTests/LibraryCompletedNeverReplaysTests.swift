@@ -13,6 +13,56 @@ private final class ReplayClock: @unchecked Sendable {
     func advance(_ seconds: TimeInterval) { lock.withLock { time += seconds } }
 }
 
+private struct OfflineCompletionTransport: LibraryTransport {
+    final class Switch: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        var offline: Bool { get { lock.withLock { value } } set { lock.withLock { value = newValue } } }
+    }
+
+    let inner: InMemoryLibraryTransport
+    let offlineSwitch: Switch
+
+    private func check() throws {
+        if offlineSwitch.offline { throw LibraryTransportError.transport("offline") }
+    }
+
+    func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
+    func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
+    func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
+        try check()
+        return try await inner.fetchChanges(since: token)
+    }
+    func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult {
+        try check()
+        return try await inner.push(changes: changes)
+    }
+    func send(intent: LibraryIntent) async throws {
+        try check()
+        try await inner.send(intent: intent)
+    }
+    func listIntents() async throws -> [LibraryIntent] {
+        try check()
+        return try await inner.listIntents()
+    }
+    func intentOutcomes() async throws -> [IntentOutcome] {
+        try check()
+        return try await inner.intentOutcomes()
+    }
+    func mediaOffers() async throws -> [LibraryMediaOffer] {
+        try check()
+        return try await inner.mediaOffers()
+    }
+    func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws {
+        try check()
+        try await inner.publish(record, as: channel)
+    }
+    func fetchDeviceRecords() async throws -> LibraryDeviceRecords {
+        try check()
+        return try await inner.fetchDeviceRecords()
+    }
+}
+
 /// An episode the listener finished on the phone (Mark completed, Remove from Larder, or played to its
 /// end) never starts again by itself: not when another episode ends, and not from the car's play button.
 /// The Mac's answer and the phone's copy of the library can both lag, and the app can be relaunched in
@@ -90,7 +140,9 @@ final class LibraryCompletedNeverReplaysTests: XCTestCase {
     }
 
     /// One run of the app: a new model and player over the same saved library, audio and local files.
-    private func launch(listOrder: LibraryListOrder = .mac) async -> Rig {
+    private func launch(
+        listOrder: LibraryListOrder = .mac, transport: (any LibraryTransport)? = nil
+    ) async -> Rig {
         let clock = clock
         let engine = AutoEngine()
         let player = LibraryPlayer(
@@ -99,7 +151,8 @@ final class LibraryCompletedNeverReplaysTests: XCTestCase {
         player.apply(LibraryPlaybackPreferences(
             defaultSpeed: 1.0, skipBackSeconds: 15, skipForwardSeconds: 30, autoPlayNext: true))
         let model = LibraryAppModel(
-            transport: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"),
+            transport: transport ?? InMemoryLibraryTransport(
+                deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"),
             store: FileLibraryStore(url: mirrorURL), deviceID: "phone", mediaCache: cache,
             handoffTiming: LibraryHandoffTiming(
                 observeInterval: SyncCadence.phoneObserveInterval,
@@ -242,6 +295,95 @@ final class LibraryCompletedNeverReplaysTests: XCTestCase {
         await relaunched.model.loadLocalState()
         XCTAssertTrue(relaunched.model.isFinishedHere(id("a")))
         XCTAssertEqual(relaunched.model.remoteResumeRow?.id, id("b"), "the car's play button starts the next one")
+    }
+
+    func testSeededOfflineVoiceCompletionSurvivesRelaunchAndDelayedMacAcknowledgement() async throws {
+        try await runOfflineVoiceCompletionSchedule(seed: 17)
+    }
+
+    func testSeededOfflineVoiceCompletionSurvivesDifferentEpisodeOrder() async throws {
+        try await runOfflineVoiceCompletionSchedule(seed: 29)
+    }
+
+    func testSeededOfflineVoiceCompletionSurvivesRelaunchAfterEachMark() async throws {
+        try await runOfflineVoiceCompletionSchedule(seed: 43)
+    }
+
+    private func runOfflineVoiceCompletionSchedule(seed: UInt64) async throws {
+        try await self.seed()
+        let offline = OfflineCompletionTransport.Switch()
+        let transport = OfflineCompletionTransport(
+            inner: InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner"),
+            offlineSwitch: offline)
+        let orders = [["a", "b", "c"], ["b", "c", "a"], ["c", "a", "b"]]
+        var order = orders[Int(seed % UInt64(orders.count))]
+        var random = seed
+        for index in order.indices {
+            random = random &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+            let remaining = order.count - index
+            let swap = index + Int(random % UInt64(remaining))
+            order.swapAt(index, swap)
+        }
+
+        var rig = await launch(transport: transport)
+        await rig.model.refresh()
+        for (step, raw) in order.enumerated() {
+            try await start(rig, raw)
+            offline.offline = true
+            let previousIntentIDs = rig.model.outboxContents.intentIDs
+            let response = await VoiceCommandRunner.run(
+                .markCompleted, on: LibraryVoiceTarget(model: rig.model, player: rig.player))
+            XCTAssertEqual(response, VoiceCommandRunner.queuedDialog, "seed=\(seed) step=\(step)")
+            XCTAssertTrue(rig.model.isFinishedHere(id(raw)), "voice decision takes effect while offline")
+            XCTAssertNil(rig.player.item, "completion stops the current episode")
+            let queued = rig.model.outboxContents
+            let pending = try XCTUnwrap(queued.intentIDs.subtracting(previousIntentIDs).first)
+            XCTAssertTrue(rig.model.isDurablyQueued(pending), "the voice request is saved before returning")
+
+            let relaunchNow = seed == 43 || step == 0
+            if relaunchNow {
+                rig = await launch(transport: transport)
+                await rig.model.loadLocalState()
+            }
+            XCTAssertTrue(rig.model.isFinishedHere(id(raw)), "seed=\(seed) survives cold relaunch")
+            XCTAssertTrue(rig.model.outboxContents.intentIDs.contains(pending),
+                          "seed=\(seed) keeps the offline voice request durable after relaunch")
+            let completed = Set(order.prefix(step + 1))
+            let next = ["a", "b", "c"].first { !completed.contains($0) }
+            XCTAssertEqual(rig.model.remoteResumeRow?.id, next.map(id), "car play advances past finished episodes")
+        }
+
+        offline.offline = false
+        await rig.model.refresh()
+        let delayed = try await mac.listIntents()
+        XCTAssertEqual(delayed.count, order.count, "each cold-relaunch-safe completion is sent once")
+        XCTAssertEqual(Set(delayed.map { $0.action.entryID.rawValue }), Set(order))
+
+        // No Mac outcome yet: after its display timeout, the old library row returns, but the
+        // phone's durable finished-here record must still keep every unasked start past it.
+        clock.advance(600)
+        await rig.model.refresh()
+        for raw in order {
+            for _ in 0..<5 where rig.model.mediaState(for: id(raw)) != .onPhone {
+                await rig.model.refresh()
+            }
+            XCTAssertEqual(rig.model.decisionStatus(for: id(raw)), .pendingOnMac)
+            assertStillListedAndDownloaded(rig, raw)
+        }
+        XCTAssertNil(rig.model.remoteResumeRow, "pending Mac decisions do not restart any finished episode")
+
+        for raw in order {
+            try await macAnswersApplied(to: raw)
+        }
+        await rig.model.refresh()
+        for raw in order {
+            XCTAssertEqual(rig.model.decisionStatus(for: id(raw)), .confirming,
+                           "the phone received the acknowledgement before the library update")
+            try await macRetires(raw)
+        }
+        await rig.model.refresh()
+        XCTAssertTrue(order.allSatisfy { raw in !rig.model.queued.contains { $0.id == id(raw) } })
+        XCTAssertNil(rig.model.remoteResumeRow, "all locally finished episodes are absent from unasked starts")
     }
 
     func testAnEpisodeRemovedFromTheLarderIsNotContinuedIntoWhileTheMacHasNotAnswered() async throws {

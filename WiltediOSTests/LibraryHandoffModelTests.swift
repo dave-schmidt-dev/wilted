@@ -9,7 +9,7 @@ import XCTest
 // MARK: - Doubles
 
 /// Shared controllable wall clock; the in-memory server's clock is kept equal to it.
-private final class HandoffClock: @unchecked Sendable {
+final class HandoffClock: @unchecked Sendable {
     private let lock = NSLock()
     private var time: TimeInterval = 1_000
     var now: Date { lock.withLock { Date(timeIntervalSince1970: time) } }
@@ -39,7 +39,7 @@ private actor TickSleeper {
     }
 }
 
-private final class HandoffFakeEngine: ListenerAudioEngine, LibraryRateAdjustable, @unchecked Sendable {
+final class HandoffFakeEngine: ListenerAudioEngine, LibraryRateAdjustable, @unchecked Sendable {
     private let lock = NSLock()
     private var _currentTime = 0.0
     private var _isPlaying = false
@@ -81,7 +81,7 @@ private final class HandoffFakeNowPlaying: ListenerNowPlaying, @unchecked Sendab
 }
 
 /// The in-memory transport with a switch that takes every playback-record read and write offline.
-private struct OfflineSwitchTransport: LibraryTransport {
+struct OfflineSwitchTransport: LibraryTransport {
     final class Switch: @unchecked Sendable {
         private let lock = NSLock()
         private var value = false
@@ -116,16 +116,16 @@ private struct OfflineSwitchTransport: LibraryTransport {
 
 @MainActor
 final class LibraryHandoffModelTests: XCTestCase {
-    private var scratch: URL!
-    private let clock = HandoffClock()
-    private let server = InMemoryLibraryServer(writerDeviceID: "mac")
-    private lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
-    private lazy var phoneTransport = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner")
+    var scratch: URL!
+    let clock = HandoffClock()
+    let server = InMemoryLibraryServer(writerDeviceID: "mac")
+    lazy var mac = InMemoryLibraryTransport(deviceID: "mac", server: server, verifiedOwnerToken: "fixture-owner")
+    lazy var phoneTransport = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner")
     private let sleeper = TickSleeper()
-    private let entryID = try! ItemID(rawValue: "item-a")
-    private let rev1 = try! RevisionID(rawValue: "rev-1")
-    private let rev2 = try! RevisionID(rawValue: "rev-2")
-    private let payload = Data((0..<50_000).map { UInt8($0 % 251) })
+    let entryID = try! ItemID(rawValue: "item-a")
+    let rev1 = try! RevisionID(rawValue: "rev-1")
+    let rev2 = try! RevisionID(rawValue: "rev-2")
+    let payload = Data((0..<50_000).map { UInt8($0 % 251) })
 
     override func setUp() async throws {
         scratch = FileManager.default.temporaryDirectory.appendingPathComponent("library-handoff-tests-\(UUID().uuidString)")
@@ -140,19 +140,19 @@ final class LibraryHandoffModelTests: XCTestCase {
 
     // MARK: fixtures
 
-    private struct Rig {
+    struct Rig {
         let model: LibraryAppModel
         let player: LibraryPlayer
         let engine: HandoffFakeEngine
         let cache: FileMediaCache
     }
 
-    private func setTime(_ value: TimeInterval) async {
+    func setTime(_ value: TimeInterval) async {
         clock.set(value)
         await server.setClock(Date(timeIntervalSince1970: value))
     }
 
-    private func hash(_ data: Data) -> String {
+    func hash(_ data: Data) -> String {
         MediaHash.prefix + SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
@@ -169,21 +169,33 @@ final class LibraryHandoffModelTests: XCTestCase {
     }
 
     /// A phone whose cache already holds `cachedRevision` (nil for an empty cache).
-    private func makeRig(cached cachedRevision: RevisionID? = nil, transport: (any LibraryTransport)? = nil) async throws -> Rig {
-        let entry = try LibraryEntry(
-            id: entryID, kind: .podcastEpisode, sourceID: entryID, title: "Episode", summary: "",
-            publishedAt: Date(timeIntervalSince1970: 0), durationSeconds: 3_600)
-        let slot = try QueueSlot(entryID: entryID, sortKey: 0)
-        let seeded = try await mac.push(changes: [
-            PendingLibraryChange(localSeq: 1, change: .entry(entry), baseVersion: 0),
-            PendingLibraryChange(localSeq: 2, change: .slot(slot), baseVersion: 0),
-        ])
-        XCTAssertTrue(seeded.failures.isEmpty)
+    func makeRig(
+        cached cachedRevision: RevisionID? = nil,
+        transport: (any LibraryTransport)? = nil,
+        ownPositionsURL: URL? = nil,
+        mirrorURL: URL? = nil,
+        seedLibrary: Bool = true,
+        bootstrap: Bool = true,
+        refresh: Bool = true
+    ) async throws -> Rig {
+        if seedLibrary {
+            let entry = try LibraryEntry(
+                id: entryID, kind: .podcastEpisode, sourceID: entryID, title: "Episode", summary: "",
+                publishedAt: Date(timeIntervalSince1970: 0), durationSeconds: 3_600)
+            let slot = try QueueSlot(entryID: entryID, sortKey: 0)
+            let seeded = try await mac.push(changes: [
+                PendingLibraryChange(localSeq: 1, change: .entry(entry), baseVersion: 0),
+                PendingLibraryChange(localSeq: 2, change: .slot(slot), baseVersion: 0),
+            ])
+            XCTAssertTrue(seeded.failures.isEmpty)
+        }
         let actualTransport = transport ?? phoneTransport
-        let mirror = FileLibraryStore(url: scratch.appendingPathComponent("mirror-" + UUID().uuidString + ".json"))
-        try await PreparedMediaFixture.bootstrap(mirror, transport: actualTransport)
+        let mirror = FileLibraryStore(url: mirrorURL ?? scratch.appendingPathComponent("mirror-" + UUID().uuidString + ".json"))
+        if bootstrap {
+            try await PreparedMediaFixture.bootstrap(mirror, transport: actualTransport)
+        }
         let cache = FileMediaCache(rootURL: scratch.appendingPathComponent("cache"))
-        if let cachedRevision {
+        if let cachedRevision, seedLibrary {
             let file = scratch.appendingPathComponent(UUID().uuidString)
             try payload.write(to: file)
             _ = try await PreparedMediaFixture.adopt(into: cache, verifiedFile: file, for: offer(cachedRevision), owner: "fixture-owner")
@@ -199,26 +211,31 @@ final class LibraryHandoffModelTests: XCTestCase {
             mediaTiming: LibraryMediaTiming(pollInterval: .milliseconds(5), offerTimeout: .seconds(5), watchdog: .seconds(30)),
             handoffTiming: LibraryHandoffTiming(
                 observeInterval: SyncCadence.phoneObserveInterval, sleep: { try await sleeper.sleep($0) }, settleSleep: { _ in }),
+            ownPositionsURL: ownPositionsURL,
             now: { clock.now }, timeZone: TimeZone(identifier: "UTC")!)
         model.attachPlayer(player)
-        await model.refresh()
+        if refresh {
+            await model.refresh()
+        } else {
+            await model.loadLocalState()
+        }
         return Rig(model: model, player: player, engine: engine, cache: cache)
     }
 
-    private func item(_ rig: Rig) async throws -> LibraryPlayer.Item {
+    func item(_ rig: Rig) async throws -> LibraryPlayer.Item {
         let entries = await rig.cache.cachedEntries()
         let cached = try XCTUnwrap(entries[entryID])
         return LibraryPlayer.Item(entryID: entryID, title: "Episode", showTitle: "Show", fileURL: cached.url)
     }
 
-    private func row() throws -> LibraryRow {
+    func row() throws -> LibraryRow {
         LibraryRow(
             id: entryID, title: "Episode", showTitle: "Show", durationText: nil, removal: .none,
             publishedAt: Date(timeIntervalSince1970: 0), removalText: nil, checkpointText: nil)
     }
 
     /// The Mac publishing its own playback record, as its handoff controller would.
-    private func macPublishes(epoch: Int, playing: Bool, position: Double, revision: RevisionID? = nil, at time: TimeInterval? = nil) async throws {
+    func macPublishes(epoch: Int, playing: Bool, position: Double, revision: RevisionID? = nil, at time: TimeInterval? = nil) async throws {
         if let time { await setTime(time) }
         let record = try DevicePlaybackPosition(
             deviceID: "mac", entryID: entryID, revision: revision ?? rev1, positionSeconds: position, rate: 1,
@@ -228,7 +245,7 @@ final class LibraryHandoffModelTests: XCTestCase {
     }
 
     /// The phone's published now-playing record, read as another device would.
-    private func phoneRecord() async throws -> DevicePlaybackPosition {
+    func phoneRecord() async throws -> DevicePlaybackPosition {
         let records = try await mac.fetchDeviceRecords()
         return try XCTUnwrap(records.nowPlaying.first { $0.record.deviceID == "phone" }?.record)
     }
@@ -563,7 +580,7 @@ final class LibraryHandoffModelTests: XCTestCase {
 
     /// The Mac's stored position for a paused episode, on the Progress channel only, as
     /// `HandoffCoordinator.publishStoredPositions` writes it.
-    private func macStoredPosition(_ position: Double, revision: RevisionID? = nil, epoch: Int = 0) async throws {
+    func macStoredPosition(_ position: Double, revision: RevisionID? = nil, epoch: Int = 0) async throws {
         let record = try DevicePlaybackPosition(
             deviceID: "mac", entryID: entryID, revision: revision ?? rev1, positionSeconds: position, rate: 1,
             isPlaying: false, epoch: epoch, publishedAt: clock.now)
@@ -615,180 +632,5 @@ final class LibraryHandoffModelTests: XCTestCase {
         try await macPublishes(epoch: 5, playing: false, position: 900, at: 1_020)
         await rig.model.refresh()
         XCTAssertEqual(rig.model.resumeStart(for: entryID, cachedRevision: rev1), 900)
-    }
-    // MARK: positions the Mac adopts
-
-    private func phoneProgress() async throws -> DevicePlaybackPosition? {
-        try await mac.fetchDeviceRecords().progress.first { $0.record.deviceID == "phone" }?.record
-    }
-
-    func testAPauseThatCouldNotBePublishedIsRepublishedOnTheNextSync() async throws {
-        let offline = OfflineSwitchTransport.Switch()
-        let rig = try await makeRig(cached: rev1, transport: OfflineSwitchTransport(inner: phoneTransport, offlineSwitch: offline))
-        rig.player.start(try await item(rig), at: 10)
-        await rig.model.waitForHandoff()
-        offline.offline = true
-        await setTime(1_030)
-        rig.engine.currentTime = 300
-        rig.player.seek(to: 300)
-        await rig.model.waitForHandoff()
-        rig.player.pause()
-        await rig.model.waitForHandoff()
-        let stale = try await phoneRecord()
-        XCTAssertTrue(stale.isPlaying, "the pause never reached the server")
-        XCTAssertLessThan(stale.positionSeconds, 300)
-
-        offline.offline = false
-        await setTime(1_040)
-        await rig.model.refresh()
-
-        let progress = try await phoneProgress()
-        XCTAssertEqual(progress?.isPlaying, false)
-        XCTAssertEqual(progress?.positionSeconds, 300)
-        XCTAssertEqual(progress?.revision, rev1)
-        XCTAssertEqual(rig.model.resumeStart(for: entryID, cachedRevision: rev1), 300)
-    }
-
-    func testAListenWithNoSessionAtAllIsPublishedOnceBackOnline() async throws {
-        let offline = OfflineSwitchTransport.Switch()
-        offline.offline = true
-        let rig = try await makeRig(cached: rev1, transport: OfflineSwitchTransport(inner: phoneTransport, offlineSwitch: offline))
-        rig.player.start(try await item(rig), at: 30)
-        await rig.model.waitForHandoff()
-        await setTime(1_060)
-        rig.engine.currentTime = 200
-        rig.player.refreshPosition()
-        await rig.model.waitForHandoff()
-        rig.player.pause()
-        await rig.model.waitForHandoff()
-        let nothing = try await phoneProgress()
-        XCTAssertNil(nothing, "takeover failed offline, so nothing was published")
-
-        offline.offline = false
-        await setTime(1_070)
-        await rig.model.refresh()
-
-        let progress = try await phoneProgress()
-        XCTAssertEqual(progress?.positionSeconds, 200)
-        XCTAssertEqual(progress?.isPlaying, false)
-        XCTAssertEqual(progress?.revision, rev1)
-        XCTAssertEqual(rig.model.resumeStart(for: entryID, cachedRevision: rev1), 200)
-    }
-
-    func testAnOfflineListenAfterAMacTakeoverIsPublishedAtTheMacsEpochSoTheMacAdoptsIt() async throws {
-        let offline = OfflineSwitchTransport.Switch()
-        let rig = try await makeRig(cached: rev1, transport: OfflineSwitchTransport(inner: phoneTransport, offlineSwitch: offline))
-        rig.player.start(try await item(rig), at: 10)   // the phone's session, epoch 1
-        await rig.model.waitForHandoff()
-        rig.player.pause()
-        await rig.model.waitForHandoff()
-        try await macPublishes(epoch: 2, playing: false, position: 600, at: 1_020)
-        await rig.model.refresh()
-
-        offline.offline = true
-        await setTime(1_030)
-        rig.player.start(try await item(rig), at: 700)
-        await rig.model.waitForHandoff()
-        await setTime(1_060)
-        rig.engine.currentTime = 900
-        rig.player.refreshPosition()
-        await rig.model.waitForHandoff()
-        rig.player.pause()
-        await rig.model.waitForHandoff()
-
-        XCTAssertEqual(rig.model.resumeStart(for: entryID, cachedRevision: rev1), 900, "offline, the phone's newer listen beats the Mac's older record")
-
-        offline.offline = false
-        await setTime(1_070)
-        await rig.model.refresh()
-
-        let progress = try await phoneProgress()
-        XCTAssertEqual(progress?.positionSeconds, 900)
-        XCTAssertGreaterThanOrEqual(progress?.epoch ?? 0, 2, "published at the entry's highest epoch")
-        let records = try await mac.fetchDeviceRecords()
-        let candidates = HandoffPositionImport.candidates(records: records, localDeviceID: "mac")
-        XCTAssertEqual(candidates.map(\.positionSeconds), [900], "the Mac would adopt the phone's listen")
-        XCTAssertEqual(rig.model.resumeStart(for: entryID, cachedRevision: rev1), 900)
-    }
-
-    func testAnOfflineListenAfterAnEarlierStopIsStillPublished() async throws {
-        let offline = OfflineSwitchTransport.Switch()
-        let rig = try await makeRig(cached: rev1, transport: OfflineSwitchTransport(inner: phoneTransport, offlineSwitch: offline))
-        rig.player.start(try await item(rig), at: 10)
-        await rig.model.waitForHandoff()
-        rig.player.stop()   // the session ends with the item gone
-        await rig.model.waitForHandoff()
-
-        offline.offline = true
-        await setTime(1_030)
-        rig.player.start(try await item(rig), at: 300)
-        await rig.model.waitForHandoff()
-        await setTime(1_060)
-        rig.engine.currentTime = 450
-        rig.player.refreshPosition()
-        await rig.model.waitForHandoff()
-        rig.player.pause()
-        await rig.model.waitForHandoff()
-
-        offline.offline = false
-        await setTime(1_070)
-        await rig.model.refresh()
-
-        let progress = try await phoneProgress()
-        XCTAssertEqual(progress?.positionSeconds, 450)
-        XCTAssertEqual(progress?.isPlaying, false)
-    }
-
-    func testAPublishedPauseIsNotRepublishedAndProgressStaysAtThePause() async throws {
-        let rig = try await makeRig(cached: rev1)
-        rig.player.start(try await item(rig), at: 10)
-        await rig.model.waitForHandoff()
-        await setTime(1_030)
-        rig.engine.currentTime = 400
-        rig.player.seek(to: 400)
-        await rig.model.waitForHandoff()
-        rig.player.pause()
-        await rig.model.waitForHandoff()
-        let before = try await mac.fetchDeviceRecords().progress.first { $0.record.deviceID == "phone" }
-
-        await setTime(1_100)
-        await rig.model.refresh()
-
-        let after = try await mac.fetchDeviceRecords().progress.first { $0.record.deviceID == "phone" }
-        XCTAssertEqual(after?.serverModifiedAt, before?.serverModifiedAt, "nothing pending, nothing written")
-        XCTAssertEqual(after?.record.positionSeconds, 400)
-    }
-
-    func testStartingBWhileAPlaysSavesAPosition() async throws {
-        let rig = try await makeRig(cached: rev1)
-        let itemA = try await item(rig)
-        let idB = try ItemID(rawValue: "item-b")
-        let entryB = try LibraryEntry(
-            id: idB, kind: .podcastEpisode, sourceID: idB, title: "B", summary: "",
-            publishedAt: Date(timeIntervalSince1970: 0), durationSeconds: 3_600)
-        _ = try await mac.push(changes: [
-            PendingLibraryChange(localSeq: 3, change: .entry(entryB), baseVersion: 1),
-            PendingLibraryChange(localSeq: 4, change: .slot(try QueueSlot(entryID: idB, sortKey: 1)), baseVersion: 1),
-        ])
-        let fileB = scratch.appendingPathComponent("b")
-        try payload.write(to: fileB)
-        let offerB = try PreparedMediaFixture.certified(LibraryMediaOffer(
-            entryID: idB, revisionID: rev1, contentHash: hash(payload), byteCount: Int64(payload.count),
-            mediaType: "audio/mp4", durationSeconds: 3_600))
-        _ = try await PreparedMediaFixture.adopt(into: rig.cache, verifiedFile: fileB, for: offerB, owner: "fixture-owner")
-        await rig.model.refresh()
-        let cachedEntries = await rig.cache.cachedEntries()
-        let cachedB = try XCTUnwrap(cachedEntries[idB])
-        let itemB = LibraryPlayer.Item(entryID: idB, title: "B", showTitle: "Show", fileURL: cachedB.url)
-
-        rig.player.start(itemA)
-        rig.engine.currentTime = 42
-        rig.player.refreshPosition()
-        await rig.model.waitForHandoff()
-
-        rig.player.start(itemB)
-        await rig.model.waitForHandoff()
-
-        XCTAssertEqual(rig.model.handoffState.ownPositions[itemA.entryID]?.record.positionSeconds, 42)
     }
 }

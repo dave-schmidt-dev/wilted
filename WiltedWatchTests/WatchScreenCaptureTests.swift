@@ -38,8 +38,7 @@ final class WatchScreenCaptureTests: XCTestCase {
         let model = WatchViewModel(now: { Date() }, commandSender: { sent.append($0) },
             pendingSleep: { seconds in
                 XCTAssertEqual(seconds, 3)
-                // Hold feedback through rendering; this injected sleep is cancelled below.
-                try await Task.sleep(for: .seconds(3600))
+                // The synchronous main-actor render finishes before the expiry task can run.
             })
         let snapshot = WatchSnapshot(
             nowPlaying: NowPlaying(episodeID: "fixture-current", title: "A quieter morning",
@@ -60,7 +59,6 @@ final class WatchScreenCaptureTests: XCTestCase {
         var failure: Error?
         do { try render(model) } catch { failure = error }
         let expiries = Array(model.pendingExpiryTasks.values)
-        model.receive(context: context)
         model.commandSender = nil
         for expiry in expiries { await expiry.value }
         XCTAssertTrue(model.pendingControls.isEmpty)
