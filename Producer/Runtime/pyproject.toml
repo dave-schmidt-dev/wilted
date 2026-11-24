@@ -10,7 +10,7 @@ requires-python = ">=3.12,<3.13"
 license = "MIT"
 dependencies = [
     "mlx-audio[tts]",
-    # Kokoro English g2p — mlx-audio 0.4.5 lazy-imports misaki/espeak but does NOT declare
+    # Kokoro English g2p — mlx-audio lazy-imports misaki/espeak but does NOT declare
     # them (the same gap speech-stack pins around). Without these, Kokoro TTS ImportErrors at
     # synthesis. Torch-free set matching pin set A (NOT misaki[en], whose extra pulls torch).
     "misaki==0.9.4",
@@ -46,17 +46,17 @@ override-dependencies = ["syrupy>=5.0.0"]
 no-binary-package = ["llama-cpp-python"]
 extra-build-variables = { llama-cpp-python = { CMAKE_ARGS = "-DGGML_METAL=on" } }
 
-# Speech-stack consolidation (Phase 4): converge the speech-critical packages on
-# pin set A (the ~/.venvs/speech version authority, S-INV-4). mlx/mlx-metal/mlx-lm are
-# transitive; constraints pin them without adding direct deps. Roll back = revert this
-# block + rebuild the venv (`uv sync`).
+# Speech-stack version authority (S-INV-4). Keep the installed speech-critical set
+# aligned with the sibling speech-stack project. mlx, mlx-metal, mlx-lm and mlx-vlm
+# are transitive or optional here; constraints pin them without adding runtime deps.
+# Re-lock and rebuild the checkout-local runtime with `uv sync --locked`.
 constraint-dependencies = [
-    "mlx==0.32.0",
-    "mlx-metal==0.32.0",
+    "mlx==0.32.4",
+    "mlx-metal==0.32.4",
     "parakeet-mlx==0.5.2",
-    "mlx-audio==0.4.5",
+    "mlx-audio==0.6.7",
     "mlx-lm==0.31.3",
-    "mlx-vlm==0.6.4",
+    "mlx-vlm==0.8.0",
     "numpy==2.4.4",
 ]
 

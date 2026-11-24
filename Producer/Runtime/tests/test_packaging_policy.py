@@ -6,6 +6,17 @@ import tomllib
 from pathlib import Path
 
 PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
+LOCKFILE = PYPROJECT.with_name("uv.lock")
+
+SPEECH_CRITICAL_PACKAGES = {
+    "mlx",
+    "mlx-metal",
+    "parakeet-mlx",
+    "mlx-audio",
+    "mlx-lm",
+    "mlx-vlm",
+    "numpy",
+}
 
 
 def _project() -> dict:
@@ -32,3 +43,32 @@ def test_llama_cpp_uses_source_build_metal_policy():
         index.get("name") != "llama-cpp-python-metal"
         for index in project["tool"].get("uv", {}).get("index", [])
     )
+
+
+def test_speech_stack_authority_pins_match_locked_versions():
+    project = _project()
+    constraints = {
+        name: version
+        for name, version in (
+            dependency.split("==", maxsplit=1)
+            for dependency in project["tool"]["uv"]["constraint-dependencies"]
+        )
+        if name in SPEECH_CRITICAL_PACKAGES
+    }
+    local_lock = {
+        package["name"]: package["version"]
+        for package in tomllib.loads(LOCKFILE.read_text())["package"]
+    }
+    authority_root = (
+        PYPROJECT.parent / project["tool"]["uv"]["sources"]["speech-stack"]["path"]
+    ).resolve(strict=True)
+    authority_lock = {
+        package["name"]: package["version"]
+        for package in tomllib.loads((authority_root / "uv.lock").read_text())["package"]
+        if package["name"] in SPEECH_CRITICAL_PACKAGES
+    }
+
+    assert set(constraints) == SPEECH_CRITICAL_PACKAGES
+    assert authority_lock.keys() == SPEECH_CRITICAL_PACKAGES
+    assert constraints == authority_lock
+    assert {name: local_lock.get(name) for name in SPEECH_CRITICAL_PACKAGES} == authority_lock
