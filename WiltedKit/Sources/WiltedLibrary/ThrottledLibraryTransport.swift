@@ -11,6 +11,7 @@ import WiltedDomain
 public struct ThrottledLibraryTransport: LibraryTransport {
     private let inner: any LibraryTransport
     public let gate: TransportGate
+    public var supportsHeadlineProjection: Bool { inner.supportsHeadlineProjection }
 
     public init(wrapping inner: any LibraryTransport, gate: TransportGate) {
         self.inner = inner
@@ -100,6 +101,14 @@ public struct ThrottledLibraryTransport: LibraryTransport {
 
     public func fetchBulletins() async throws -> LibraryBulletins? {
         try await gate.run(priority: .poll) { try await inner.fetchBulletins() }
+    }
+
+    public func publishHeadlineProjection(_ projection: LibraryHeadlineProjection) async throws {
+        try await gate.run(priority: .background) { try await inner.publishHeadlineProjection(projection) }
+    }
+
+    public func fetchHeadlineProjection() async throws -> LibraryHeadlineProjection? {
+        try await gate.run(priority: .poll) { try await inner.fetchHeadlineProjection() }
     }
 
     public func publishPublication(_ publication: LibraryPublication) async throws {

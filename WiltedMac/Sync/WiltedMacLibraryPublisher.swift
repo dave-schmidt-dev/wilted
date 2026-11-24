@@ -73,6 +73,9 @@ actor WiltedMacLibraryPublisher {
     private var publishedStats: LibraryStats?
     private let publicationStore: WiltedMacLibraryPublicationStore?
     private let approvedOwner: (@Sendable () async -> String?)?
+    private let headlineProjectionProvider: (@MainActor @Sendable () -> LibraryHeadlineProjection?)?
+    private var lastHeadlineProjection: LibraryHeadlineProjection?
+    private var hasLoadedHeadlineProjection = false
     private let deviceID: String
     private let operationID: @Sendable () -> String
     private var epoch: UInt64 = 0
@@ -107,6 +110,7 @@ actor WiltedMacLibraryPublisher {
         publicationStore: WiltedMacLibraryPublicationStore? = nil,
         deviceID: String = "mac",
         approvedOwner: (@Sendable () async -> String?)? = nil,
+        headlineProjectionProvider: (@MainActor @Sendable () -> LibraryHeadlineProjection?)? = nil,
         operationID: @escaping @Sendable () -> String = { UUID().uuidString }
     ) {
         self.relaysIntents = relaysIntents
@@ -119,6 +123,7 @@ actor WiltedMacLibraryPublisher {
         self.publicationStore = publicationStore
         self.deviceID = deviceID
         self.approvedOwner = approvedOwner
+        self.headlineProjectionProvider = headlineProjectionProvider
         self.operationID = operationID
     }
 
@@ -139,6 +144,7 @@ actor WiltedMacLibraryPublisher {
         let state = try await source.currentState()
         try await verify(context)
         try await publishState(state, context: context, into: &report)
+        try await syncHeadlineProjection(context: context)
         if includesStats { try await publishStats(context: context, into: &report) }
         if relaysIntents { try await relayIntents(context: context, into: &report) }
         try await verify(context)
@@ -158,6 +164,21 @@ actor WiltedMacLibraryPublisher {
     func fetchBulletins() async throws -> LibraryBulletins? {
         let context = try await captureContext()
         let value = try await transport.fetchBulletins()
+        try await verify(context)
+        return value
+    }
+
+    /// Publishes the Mac-owned story cards and Save/mute state under the library account hold.
+    func publishHeadlineProjection(_ projection: LibraryHeadlineProjection) async throws {
+        let context = try await captureContext()
+        try await transport.publishHeadlineProjection(projection)
+        try await verify(context)
+    }
+
+    /// Reads the latest complete story projection while the library account remains verified.
+    func fetchHeadlineProjection() async throws -> LibraryHeadlineProjection? {
+        let context = try await captureContext()
+        let value = try await transport.fetchHeadlineProjection()
         try await verify(context)
         return value
     }
@@ -198,12 +219,31 @@ actor WiltedMacLibraryPublisher {
         publishedBaselineGeneration &+= 1
         versions = [:]
         publishedStats = nil
+        lastHeadlineProjection = nil
+        hasLoadedHeadlineProjection = false
         deliveredIntentIDs = []
         cachedProjectionInputs = nil
         cachedReplicatedContent = nil
         cachedDiffInputs = nil
         cachedDiffBaselineGeneration = nil
         cachedDiff = nil
+    }
+
+    /// Reads the server once for a new owner, then writes only when the Mac's durable catalog changes.
+    private func syncHeadlineProjection(context: Context) async throws {
+        guard transport.supportsHeadlineProjection, let headlineProjectionProvider else { return }
+        let local = await headlineProjectionProvider()
+        try await verify(context)
+        guard let local else { return }
+        if !hasLoadedHeadlineProjection {
+            lastHeadlineProjection = try await transport.fetchHeadlineProjection()
+            try await verify(context)
+            hasLoadedHeadlineProjection = true
+        }
+        guard lastHeadlineProjection != local else { return }
+        try await transport.publishHeadlineProjection(local)
+        try await verify(context)
+        lastHeadlineProjection = local
     }
 
     // MARK: - State
@@ -391,7 +431,9 @@ actor WiltedMacLibraryPublisher {
 
     /// The phone intents this Mac answers beyond the media and decision actions, so a phone sends
     /// only what it sees listed. `addLink` lets the Mac classify a pasted address once.
-    static let supportedIntentActions = ["subscribe", "addArticle", "addLink", "adFeedback"]
+    static let supportedIntentActions = [
+        "subscribe", "addArticle", "addLink", "adFeedback", "setHeadlineSaved", "setHeadlinePublisherMuted"
+    ]
 
     // MARK: - Intents
 

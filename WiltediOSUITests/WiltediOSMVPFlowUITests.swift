@@ -16,6 +16,63 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         assertNoLiveTransport(in: app)
     }
 
+    /// The story remains readable in the idle Larder when headline speech is turned off.
+    func testLibraryRootShowsHeadlineCardAndReadLinkWhileSpeechIsOff() {
+        let app = launchLibraryRoot(.headlines)
+        XCTAssertTrue(app.staticTexts["Fixture story with a clear Read link"].waitForExistence(timeout: 10))
+        let metadata = app.descendants(matching: .any)["wilted-library-headline-metadata-fixture-headline-story"]
+        XCTAssertTrue(metadata.exists)
+        XCTAssertTrue(metadata.label.contains("Fixture Daily"), metadata.label)
+        XCTAssertTrue(app.descendants(matching: .any)["wilted-library-headline-read-fixture-headline-story"].exists)
+        XCTAssertTrue(app.buttons["wilted-library-headline-save-fixture-headline-story"].exists)
+        XCTAssertTrue(app.buttons["wilted-library-headline-mute-fixture-headline-story"].exists)
+        XCTAssertFalse(app.buttons["wilted-player-mini-toggle"].exists, "the card is visible while the player is idle")
+        assertNoLiveTransport(in: app)
+    }
+
+    /// The spoken item can differ from the newest catalog card; Now Playing names and links the actual item.
+    func testNowPlayingShowsTheSpokenStoryAmongTwoCandidatesAndKeepsItsReadLink() {
+        let app = launchLibraryRoot(.spokenHeadlines)
+        XCTAssertTrue(app.staticTexts["Newest headline in the Larder"].waitForExistence(timeout: 5))
+        let play = app.buttons["wilted-library-play-\(Self.firstEpisode)"]
+        XCTAssertTrue(play.waitForExistence(timeout: 5))
+        play.tap()
+        let expand = app.buttons["wilted-player-expand"]
+        XCTAssertTrue(expand.waitForExistence(timeout: 5))
+        expand.tap()
+        let state = app.descendants(matching: .any)["wilted-player-headline-state"]
+        let forward = app.buttons["wilted-player-forward"]
+        for _ in 0..<6 {
+            if state.exists && state.label == "Reading this story" { break }
+            forward.tap()
+        }
+        XCTAssertTrue(waitForLabel("Reading this story", on: state, timeout: 5))
+
+        let card = app.descendants(matching: .any)["wilted-player-headline-story-card"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        let title = app.staticTexts["wilted-player-headline-title"]
+        XCTAssertEqual(title.label, "The story being spoken")
+        XCTAssertEqual(app.staticTexts["wilted-player-headline-publisher"].label, "Example Dispatch")
+        let read = app.descendants(matching: .any)["wilted-player-headline-read-fixture-story-spoken"]
+        XCTAssertTrue(read.exists)
+        XCTAssertEqual(read.value as? String, "https://example.com/spoken-story")
+        XCTAssertEqual(state.label, "Reading this story")
+
+        forward.tap()
+        XCTAssertTrue(waitForLabel("Newest headline in the Larder", on: title, timeout: 5))
+        XCTAssertEqual(state.label, "Reading this story")
+        XCTAssertEqual(app.staticTexts["wilted-player-headline-publisher"].label, "Newer Daily")
+        let nextRead = app.descendants(matching: .any)["wilted-player-headline-read-fixture-story-newer"]
+        XCTAssertTrue(nextRead.waitForExistence(timeout: 5))
+        XCTAssertEqual(nextRead.value as? String, "https://example.com/newer-story")
+
+        forward.tap()
+        XCTAssertTrue(waitForLabel("Last story read", on: state, timeout: 5))
+        XCTAssertEqual(title.label, "Newest headline in the Larder")
+        XCTAssertEqual(nextRead.value as? String, "https://example.com/newer-story")
+        assertNoLiveTransport(in: app)
+    }
+
     /// PLAY-DELAY on the production root: while the held cache lookup runs, the mini-player already
     /// says the start is pending, and nothing is loaded; then the episode plays.
     func testLibraryRootDelayedStartShowsStartingPlaybackUntilTheLookupReturns() {
@@ -373,6 +430,8 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
 
     private enum RootScenario: String {
         case normal
+        case headlines
+        case spokenHeadlines = "spoken-headlines"
         case delayedStart = "delayed-start"
         case startError = "start-error"
         case throttled

@@ -66,6 +66,7 @@ final class WiltedMacLibraryAccountGate: @unchecked Sendable {
 struct WiltedMacAccountGatedLibraryTransport: LibraryTransport {
     let inner: any LibraryTransport
     let gate: WiltedMacLibraryAccountGate
+    var supportsHeadlineProjection: Bool { inner.supportsHeadlineProjection }
 
     /// Runs `operation` under the gate; used for calls made outside the protocol (discovery).
     func run<Result: Sendable>(_ operation: () async throws -> Result) async throws -> Result {
@@ -125,6 +126,12 @@ struct WiltedMacAccountGatedLibraryTransport: LibraryTransport {
         try await run { try await inner.publishBulletins(bulletins) }
     }
     func fetchBulletins() async throws -> LibraryBulletins? { try await run { try await inner.fetchBulletins() } }
+    func publishHeadlineProjection(_ projection: LibraryHeadlineProjection) async throws {
+        try await run { try await inner.publishHeadlineProjection(projection) }
+    }
+    func fetchHeadlineProjection() async throws -> LibraryHeadlineProjection? {
+        try await run { try await inner.fetchHeadlineProjection() }
+    }
     func publishPublication(_ publication: LibraryPublication) async throws {
         try await run { try await inner.publishPublication(publication) }
     }

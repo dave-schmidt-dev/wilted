@@ -213,6 +213,9 @@ public enum LibraryTransportError: Error, Equatable, Sendable {
 /// transport is the reference. Fetched and sent tokens are provisional until the caller
 /// commits them, only after the store has durably applied the result.
 public protocol LibraryTransport: Sendable {
+    /// True when this backend supports the isolated, Mac-owned headline catalog endpoints.
+    /// Backends that do not implement these endpoints leave ordinary library sync unchanged.
+    var supportsHeadlineProjection: Bool { get }
     /// Generation captured by in-flight work; adapters bump it when ownership changes so
     /// stale results cannot be committed.
     func operationGeneration() async -> UInt64
@@ -264,6 +267,10 @@ public protocol LibraryTransport: Sendable {
     func publishBulletins(_ bulletins: LibraryBulletins) async throws
     /// The Mac's last published bulletin channel, or nil before it has published one. Read by name.
     func fetchBulletins() async throws -> LibraryBulletins?
+    /// Mac only: publishes the bounded, paged story catalog and Mac-owned Save/mute state.
+    func publishHeadlineProjection(_ projection: LibraryHeadlineProjection) async throws
+    /// The most recent Mac-owned story projection, or nil before the Mac has published one.
+    func fetchHeadlineProjection() async throws -> LibraryHeadlineProjection?
     /// Writer only. Acknowledges the dedicated publication record before returning.
     func publishPublication(_ publication: LibraryPublication) async throws
     /// Observed author evidence only; not proof of the reader's displayed snapshot.
@@ -291,6 +298,7 @@ public protocol LibraryTransport: Sendable {
 }
 
 public extension LibraryTransport {
+    var supportsHeadlineProjection: Bool { false }
     func operationGeneration() async -> UInt64 { 0 }
     func verifiedOwnerToken() async -> String? { nil }
     func verifyOwner() async throws {}
@@ -335,6 +343,10 @@ public extension LibraryTransport {
         throw LibraryTransportError.transport("bulletins are not supported by this transport")
     }
     func fetchBulletins() async throws -> LibraryBulletins? { nil }
+    func publishHeadlineProjection(_ projection: LibraryHeadlineProjection) async throws {
+        throw LibraryTransportError.transport("headline projection is not supported by this transport")
+    }
+    func fetchHeadlineProjection() async throws -> LibraryHeadlineProjection? { nil }
     func publishPublication(_ publication: LibraryPublication) async throws {
         throw LibraryTransportError.transport("library publication is not supported by this transport")
     }

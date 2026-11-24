@@ -175,19 +175,22 @@ final class WiltedMacIntentApplier {
     private let ledger: WiltedMacIntentLedger
     private let book: WiltedMacIntentOutcomeBook
     private let transport: any LibraryTransport
+    private let headlineCatalog: WiltedMacHeadlineCatalogStore?
     private let now: @Sendable () -> Date
     private let onApplied: (@MainActor () -> Void)?
 
     /// `onApplied` runs after a decision changed the Mac's state, to trigger a republish.
     init(
         host: any WiltedMacDecisionHost, ledger: WiltedMacIntentLedger, book: WiltedMacIntentOutcomeBook,
-        transport: any LibraryTransport, now: @escaping @Sendable () -> Date = { Date() },
+        transport: any LibraryTransport, headlineCatalog: WiltedMacHeadlineCatalogStore? = nil,
+        now: @escaping @Sendable () -> Date = { Date() },
         onApplied: (@MainActor () -> Void)? = nil
     ) {
         self.host = host
         self.ledger = ledger
         self.book = book
         self.transport = transport
+        self.headlineCatalog = headlineCatalog
         self.now = now
         self.onApplied = onApplied
     }
@@ -195,6 +198,31 @@ final class WiltedMacIntentApplier {
     /// Applies one decision intent; other intents are ignored.
     func apply(_ intent: LibraryIntent) async throws {
         guard intent.action.isDecision else { return }
+        if Self.isHeadlineCommand(intent.action) {
+            if let saved = await book.entry(for: intent.id) {
+                if !saved.published { try await publish(saved.outcome) }
+                return
+            }
+            let at = now()
+            let outcome: IntentOutcome
+            if let headlineCatalog, let result = try headlineCatalog.apply(intent, at: at) {
+                switch result {
+                case .applied:
+                    outcome = try .applied(for: intent, at: at)
+                case .staleRevision:
+                    outcome = try .rejected(for: intent, reason: IntentOutcome.reasonStaleRevision, at: at)
+                case let .rejected(reason):
+                    outcome = try .rejected(for: intent, reason: reason, at: at)
+                }
+            } else {
+                outcome = try .rejected(for: intent, reason: IntentOutcome.reasonFailed, at: at)
+            }
+            try await book.save(outcome, published: false)
+            // Even a stale or rejected action should trigger a projection refresh on the phone.
+            onApplied?()
+            try await publish(outcome)
+            return
+        }
         if let saved = await book.entry(for: intent.id) {
             if !saved.published { try await publish(saved.outcome) }
             return
@@ -329,8 +357,16 @@ final class WiltedMacIntentApplier {
             return try result(await host.moveQueueEntry(from: index, to: index, resulting: host.decisionQueue))
         case .unsupported:
             return try rejected(IntentOutcome.reasonUnsupportedAction)
-        case .requestMedia, .mediaCached, .subscribe, .addArticle, .addLink, .adFeedback:
+        case .requestMedia, .mediaCached, .subscribe, .addArticle, .addLink, .adFeedback,
+             .setHeadlineSaved, .setHeadlinePublisherMuted:
             return try rejected(notApplicable)
+        }
+    }
+
+    private static func isHeadlineCommand(_ action: LibraryIntent.Action) -> Bool {
+        switch action {
+        case .setHeadlineSaved, .setHeadlinePublisherMuted: true
+        default: false
         }
     }
 

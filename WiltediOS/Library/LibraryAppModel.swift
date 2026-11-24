@@ -97,6 +97,8 @@ final class LibraryAppModel: ObservableObject {
     }
     /// What the full player says right after a feedback press, with its Undo; nil once it has gone.
     @Published var adFeedbackAcknowledgement: LibraryAdFeedbackAcknowledgement?
+    /// The Mac-authored headline projection and this phone's durable Save/mute commands.
+    let headlinePhoneState: LibraryHeadlinePhoneState
     /// Why the last add was not sent, in words; nil when it was.
     @Published var addNotice: String?
     /// The add actions the Mac says it applies (`supportedIntentActions`); nil until read.
@@ -238,6 +240,7 @@ final class LibraryAppModel: ObservableObject {
         ownPositionsURL: URL? = nil,
         outboxURL: URL? = nil,
         finishedHereURL: URL? = nil,
+        headlineStateURL: URL? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         timeZone: TimeZone = .current,
         throttleSleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
@@ -261,6 +264,7 @@ final class LibraryAppModel: ObservableObject {
         self.coordinator = HandoffCoordinator(
             transport: transport, deviceID: deviceID, clock: now, sleep: handoffTiming.settleSleep)
         self.preferences = preferences
+        self.headlinePhoneState = LibraryHeadlinePhoneState(url: headlineStateURL)
         handoffState.ownPositionStore = LibraryOwnPositionStore(url: ownPositionsURL)
         self.outboxState = LibraryOutboxState(outbox: LibraryIntentOutbox(url: outboxURL))
         self.finishedHereState = LibraryFinishedHereState(store: LibraryFinishedHereStore(url: finishedHereURL))
@@ -305,6 +309,10 @@ final class LibraryAppModel: ObservableObject {
         verifyOutboxOwner(saved.ownerToken)
         restoreDeviceLink(owner: saved.ownerToken)
         applyStoreMetadata(saved)
+        headlinePhoneState.bindLocalOwner(
+            saved.ownerToken,
+            generation: await transport.operationGeneration(),
+            reviewHold: saved.reviewHold || accountQuarantined)
         _ = await bindMediaOwner()
         displayContext = (await transport.operationGeneration(), saved.displayAdmissionRevision)
         let content = saved.content
@@ -377,6 +385,7 @@ final class LibraryAppModel: ObservableObject {
         store = fresh
         reconciler = LibraryReconciler(transport: transport, store: fresh)
         accountQuarantined = false
+        headlinePhoneState.reset(for: nil, generation: await transport.operationGeneration())
         queued = []
         readyOffers = []
         cachedDisplayIDs = []
@@ -441,7 +450,8 @@ final class LibraryAppModel: ObservableObject {
         var options: LibraryPollOptions = [.deviceRecords, .deviceLink]
         if plan.readsOffers { options.insert(.offers) }
         if plan.forcesOffers { options.insert(.forceOffers) }
-        if !decisions.isEmpty || hasAddAwaitingAnswer { options.insert(.outcomes) }
+        let headlineNeedsOutcome = headlinePhoneState.commands.contains { $0.delivery == .pending || $0.delivery == .sent }
+        if !decisions.isEmpty || hasAddAwaitingAnswer || headlineNeedsOutcome { options.insert(.outcomes) }
         let beforePoll = await roundStore.state()
         guard await current() else { return }
         await tellTransportKnownPeers(writer: beforePoll.ownerToken == nil ? nil : beforePoll.observedPublication?.writerDeviceID)
@@ -478,6 +488,10 @@ final class LibraryAppModel: ObservableObject {
         let saved = await roundStore.state()
         guard await current() else { return }
         applyStoreMetadata(saved)
+        headlinePhoneState.bindLocalOwner(
+            saved.ownerToken,
+            generation: generation,
+            reviewHold: saved.reviewHold || accountQuarantined)
         if let context = await bindMediaOwner() {
             guard await revokeRemovedQueueMedia(previous: priorQueue, current: Set(saved.content.queue.map(\.entryID)), content: saved.content, context: context) else { return }
         }
@@ -502,6 +516,10 @@ final class LibraryAppModel: ObservableObject {
         }
         await resolveDecisions(outcomes: polled?.outcomes ?? [])
         await resolveAdds(outcomes: polled?.outcomes ?? [])
+        await reconcileHeadlineProjection(
+            outcomes: polled?.outcomes ?? [], expectedOwner: saved.ownerToken,
+            generation: generation, isCurrent: { await current() })
+        await sendPendingHeadlineCommands()
         await sendDueAdFeedback()
         guard await current() else { return }
         if let failure {

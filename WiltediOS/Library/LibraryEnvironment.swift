@@ -54,6 +54,7 @@ enum LibraryEnvironment {
             ownPositionsURL: directory.appendingPathComponent("own-positions.json"),
             outboxURL: directory.appendingPathComponent("pending-intents.json"),
             finishedHereURL: directory.appendingPathComponent("finished-here.json"),
+            headlineStateURL: directory.appendingPathComponent("headline-state.json"),
             journal: journal)
         if isLiveAllowed { installDirectPath(on: model) }
         return model

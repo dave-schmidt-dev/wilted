@@ -34,6 +34,10 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         /// they were hearing. The Mac maps it onto the original episode and files it for review; the
         /// intent id is the feedback id. The Mac answers with an `IntentOutcome`.
         case adFeedback(entryID: ItemID, revisionID: RevisionID, kind: AdFeedbackKind, playedSeconds: Double)
+        /// Save or unsave a headline story using the revision last shown by the Mac.
+        case setHeadlineSaved(story: LibraryHeadlineStory, isSaved: Bool, basedOnRevision: Int64)
+        /// Mute or unmute a publisher using the revision last shown by the Mac.
+        case setHeadlinePublisherMuted(publisherID: String, isMuted: Bool, basedOnRevision: Int64)
         /// An action this build cannot decode (a newer phone sent it). Decode-side only: the
         /// transport builds it so the Mac can answer `unsupportedAction`, and `LibraryIntent`
         /// refuses to encode it, so it is never written back as a valid action.
@@ -54,6 +58,10 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
                  let .markDone(entryID), let .removeFromLarder(entryID), let .restore(entryID), let .reorder(entryID, _),
                  let .adFeedback(entryID, _, _, _):
                 return entryID
+            case let .setHeadlineSaved(story, _, _):
+                return (try? ItemID(rawValue: story.id)) ?? Self.invalidURLEntryID
+            case .setHeadlinePublisherMuted:
+                return Self.invalidURLEntryID
             case .unsupported:
                 return Self.invalidURLEntryID
             }
@@ -62,7 +70,8 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         /// True for the decision actions the Mac answers with an `IntentOutcome`.
         public var isDecision: Bool {
             switch self {
-            case .keep, .skip, .markDone, .removeFromLarder, .restore, .reorder, .subscribe, .addArticle, .addLink, .adFeedback: return true
+            case .keep, .skip, .markDone, .removeFromLarder, .restore, .reorder, .subscribe, .addArticle, .addLink,
+                 .adFeedback, .setHeadlineSaved, .setHeadlinePublisherMuted: return true
             case .requestMedia, .mediaCached: return false
             case .unsupported: return true
             }
@@ -93,6 +102,14 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         }
         if case let .adFeedback(_, _, _, playedSeconds) = action, !(playedSeconds.isFinite && playedSeconds >= 0) {
             throw DomainError.invalidValue(field: "playedSeconds", reason: "must be finite and non-negative")
+        }
+        switch action {
+        case let .setHeadlineSaved(_, _, revision), let .setHeadlinePublisherMuted(_, _, revision):
+            guard revision >= 0 else {
+                throw DomainError.invalidValue(field: "basedOnRevision", reason: "must be non-negative")
+            }
+        default:
+            break
         }
         if let url = action.addURL {
             guard let canonical = try? ItemID.canonicalURL(url) else {
@@ -184,6 +201,37 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
             action: .adFeedback(entryID: entryID, revisionID: revisionID, kind: kind, playedSeconds: playedSeconds))
     }
 
+    /// Changes one story's saved state against the revision the follower last observed.
+    public static func setHeadlineSaved(
+        story: LibraryHeadlineStory,
+        isSaved: Bool,
+        basedOnRevision: Int64,
+        deviceID: String,
+        createdAt: Date = Date(),
+        id: String = UUID().uuidString
+    ) throws -> LibraryIntent {
+        try LibraryIntent(
+            id: id, deviceID: deviceID, createdAt: createdAt,
+            action: .setHeadlineSaved(story: story, isSaved: isSaved, basedOnRevision: basedOnRevision))
+    }
+
+    /// Changes one publisher's mute state against the revision the follower last observed.
+    public static func setHeadlinePublisherMuted(
+        publisherID: String,
+        isMuted: Bool,
+        basedOnRevision: Int64,
+        deviceID: String,
+        createdAt: Date = Date(),
+        id: String = UUID().uuidString
+    ) throws -> LibraryIntent {
+        guard !publisherID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, publisherID.count <= 512 else {
+            throw DomainError.invalidValue(field: "publisherID", reason: "must contain 1...512 characters")
+        }
+        return try LibraryIntent(
+            id: id, deviceID: deviceID, createdAt: createdAt,
+            action: .setHeadlinePublisherMuted(publisherID: publisherID, isMuted: isMuted, basedOnRevision: basedOnRevision))
+    }
+
     /// The stand-in for an intent whose action this build cannot decode, built from the fields
     /// that did decode. It carries no usable action and cannot be encoded.
     public static func unsupported(id: String, deviceID: String, createdAt: Date) throws -> LibraryIntent {
@@ -227,6 +275,8 @@ public struct IntentOutcome: Codable, Sendable, Equatable {
     public static let reasonFailed = "failed"
     /// The intent's action is one this Mac build does not know.
     public static let reasonUnsupportedAction = "unsupportedAction"
+    /// The target's state changed after a follower made an offline edit.
+    public static let reasonStaleRevision = "staleRevision"
 
     public let intentID: String
     /// The device that sent the intent, so it finds its outcomes by its own name.
@@ -284,7 +334,10 @@ public enum IntentRetention {
     /// Ad feedback never expires: it records what the listener heard, which stays true however
     /// long the phone was offline.
     public static func isExpired(_ intent: LibraryIntent, now: Date) -> Bool {
-        if case .adFeedback = intent.action { return false }
+        switch intent.action {
+        case .adFeedback, .setHeadlineSaved, .setHeadlinePublisherMuted: return false
+        default: break
+        }
         return now.timeIntervalSince(intent.createdAt) > maximumAge
     }
 

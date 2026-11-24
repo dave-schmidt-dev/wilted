@@ -1,6 +1,9 @@
 import AppKit
 import SwiftUI
 import WiltedDomain
+#if canImport(WiltedProducer)
+import WiltedProducer
+#endif
 
 // MARK: - Reports
 
@@ -18,6 +21,7 @@ struct WiltedMacReportsCard: View {
     @State private var coordinateProblem = false
     @State private var showsDetails: Bool
     @State private var showsHeadlineSources = false
+    @State private var showsHeadlineHistory = false
     @FocusState private var focusedLocationField: LocationField?
     private let readinessOverride: BulletinReadiness?
 
@@ -51,6 +55,22 @@ struct WiltedMacReportsCard: View {
                     readinessSection
                 }
                 #endif
+                DisclosureGroup(isExpanded: $showsHeadlineHistory) {
+                    let catalog = model.headlineCatalogState
+                    WiltedHeadlinesList(
+                        recent: catalog.projection?.recent ?? [], saved: catalog.projection?.saved ?? [],
+                        publishers: catalog.projection?.publishers ?? [],
+                        actionInProgress: catalog.isActionInProgress, actionMessage: catalog.actionMessage,
+                        projectionMessage: catalog.projectionMessage,
+                        setSaved: { catalog.setSaved($0, isSaved: $1) },
+                        setMuted: { catalog.setMuted($0, isMuted: $1) })
+                        .task { catalog.refresh() }
+                } label: {
+                    Text("Recent and saved stories")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                }
+                .accessibilityIdentifier("wilted-reports-headline-history")
                 DisclosureGroup(isExpanded: $showsDetails) {
                     VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                         if let line = Self.interruptionsOffNote(interruptionsEnabled: settings.interruptionsEnabled) {
@@ -59,9 +79,11 @@ struct WiltedMacReportsCard: View {
                         Toggle("Weather alerts", isOn: reportsBinding(\.alertsEnabled))
                             .disabled(!settings.interruptionsEnabled)
                             .accessibilityIdentifier("wilted-reports-alerts")
-                        Toggle("Headlines", isOn: reportsBinding(\.headlinesEnabled))
-                            .disabled(!settings.interruptionsEnabled)
+                        Toggle("Read headlines aloud", isOn: reportsBinding(\.headlinesEnabled))
                             .accessibilityIdentifier("wilted-reports-headlines")
+                        #if canImport(WiltedProducer)
+                        readingVoiceSection
+                        #endif
                         topicsSection
                             .padding(.leading, WiltedTheme.Spacing.large)
                             .disabled(!settings.reportEnabled && !(settings.interruptionsEnabled && settings.headlinesEnabled))
@@ -135,6 +157,26 @@ struct WiltedMacReportsCard: View {
     }
 
     #if canImport(WiltedProducer)
+    @ViewBuilder private var readingVoiceSection: some View {
+        Picker("Story voice", selection: Binding(
+            get: { model.selectedReadingVoiceID ?? "" },
+            set: { model.selectReadingVoice($0.isEmpty ? nil : $0) })) {
+                Text("Choose a voice").tag("")
+                ForEach(ApprovedReadingVoiceID.allCases, id: \.rawValue) { voice in
+                    Text("\(voice.displayName) — \(model.readingVoiceAvailabilityText(for: voice))")
+                        .tag(voice.rawValue)
+                        .disabled(!model.readingVoiceIsAvailable(voice))
+                }
+            }
+            .pickerStyle(.menu)
+            .accessibilityIdentifier("wilted-reports-reading-voice")
+        Text(model.readingVoiceSelection.selectedStatus)
+            .wiltedFont(.utility)
+            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("wilted-reports-reading-voice-status")
+    }
+
     @ViewBuilder private var readinessSection: some View {
         let hub = model.bulletinHub
         let readiness = readinessOverride ?? hub.readiness
@@ -399,9 +441,9 @@ struct WiltedMacReportsCard: View {
         }
     }
 
-    /// Why the alerts, headlines and their steppers are disabled while interruptions are off.
+    /// Why weather alerts and speech controls are inactive while interruptions are off.
     static func interruptionsOffNote(interruptionsEnabled: Bool) -> String? {
-        interruptionsEnabled ? nil : "Turn on Read bulletins while playing to use alerts and headlines."
+        interruptionsEnabled ? nil : "Turn on Read bulletins while playing to use weather alerts and spoken headlines."
     }
 
     static func detailText(_ detail: WiltedLocationDetail) -> String {

@@ -107,6 +107,8 @@ extension CloudKitLibraryTransport {
                     peers.note(device: index.deviceID)
                 case .stats, .bulletins, .deviceLink:
                     serverRecords[name] = record
+                case .headlineProjectionIndex, .headlineProjectionPage:
+                    serverRecords[name] = record
                 case let .deviceDirectory(directory):
                     serverRecords[name] = record
                     directory.devices.forEach { peers.note(device: $0.deviceID) }

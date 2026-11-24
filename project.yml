@@ -41,6 +41,8 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - path: WiltedMac
+      - path: Producer/Runtime/src/wilted/article_voice.py
+        buildPhase: resources
       - path: Shared
         optional: true
     dependencies:

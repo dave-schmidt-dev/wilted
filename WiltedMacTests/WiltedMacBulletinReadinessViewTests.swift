@@ -65,6 +65,7 @@ final class WiltedMacBulletinReadinessViewTests: XCTestCase {
             }
         }
         await hub.refreshNewsSourceReadiness()
+        await waitForNewsReadiness(hub)
         XCTAssertEqual(hub.readiness.lines, [.news, .locationDenied],
                        "denied permission without saved coordinates needs a plain next step")
 
@@ -76,6 +77,7 @@ final class WiltedMacBulletinReadinessViewTests: XCTestCase {
         }
 
         await hub.refreshNewsSourceReadiness()
+        await waitForNewsReadiness(hub)
         XCTAssertEqual(hub.readiness.lines, [.news], "a podcast feed cannot supply headlines")
 
         let store = try XCTUnwrap(model.store)
@@ -86,10 +88,12 @@ final class WiltedMacBulletinReadinessViewTests: XCTestCase {
         try await store.save(articleFeed: feed)
         try await store.save(subscription: PodcastSubscription(feedID: feed.itemID, subscribedAt: createdAt))
         await hub.refreshNewsSourceReadiness()
+        await waitForNewsReadiness(hub)
         XCTAssertEqual(hub.readiness.lines, [.news], "an article feed must be marked as News")
 
         try await store.save(isNews: true, feedID: feed.itemID)
         await hub.refreshNewsSourceReadiness()
+        await waitForNewsReadiness(hub)
         XCTAssertEqual(hub.readiness.lines, [.ready])
 
         let card = WiltedMacReportsCard(model: model, location: location)
@@ -103,6 +107,12 @@ final class WiltedMacBulletinReadinessViewTests: XCTestCase {
         XCTAssertFalse(text.contains("Weather alerts need a location."),
                        "saved coordinates remain usable when permission is denied")
         await model.close()
+    }
+
+    private func waitForNewsReadiness(_ hub: WiltedMacBulletinHub) async {
+        await WiltedMacHeadless.eventually("headline feed readiness") {
+            hub.hasCheckedNewsSource && !hub.isCheckingNewsSource
+        }
     }
 
     func testRetryButtonImmediatelyClearsPausedStateWithFakeRoute() async throws {

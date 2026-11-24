@@ -104,6 +104,26 @@ final class LibraryIntentTests: XCTestCase {
             #"{"addLink":{"url":"https://example.com/story"}}"#)
     }
 
+    func testHeadlineCommandsRoundTripAndUseMacFieldRevisions() throws {
+        let story = try LibraryHeadlineStory(
+            id: "story-a", title: "A story", publisherID: "feed-a", publisherName: "Example",
+            link: URL(string: "https://example.com/story"), publishedAt: created,
+            firstSeenAt: created, lastSeenAt: created)
+        let save = try LibraryIntent.setHeadlineSaved(
+            story: story, isSaved: true, basedOnRevision: 2, deviceID: "phone", createdAt: created, id: "save-a")
+        let mute = try LibraryIntent.setHeadlinePublisherMuted(
+            publisherID: "feed-a", isMuted: true, basedOnRevision: 5, deviceID: "phone", createdAt: created, id: "mute-a")
+        for intent in [save, mute] {
+            XCTAssertEqual(try JSONDecoder().decode(LibraryIntent.self, from: JSONEncoder().encode(intent)), intent)
+            XCTAssertTrue(intent.action.isDecision)
+            XCTAssertFalse(IntentRetention.isExpired(intent, now: Date(timeIntervalSince1970: 1_000_000_000)))
+        }
+        XCTAssertThrowsError(try LibraryIntent.setHeadlinePublisherMuted(
+            publisherID: "", isMuted: true, basedOnRevision: 0, deviceID: "phone"))
+        XCTAssertThrowsError(try LibraryIntent.setHeadlineSaved(
+            story: story, isSaved: true, basedOnRevision: -1, deviceID: "phone"))
+    }
+
     func testAddIntentsRejectNonHTTPSAndCredentialedURLsAtInitAndDecode() throws {
         let bad = ["http://example.com/feed.xml", "ftp://example.com/f", "https://user:pw@example.com/f",
                    "https://user@example.com/f", "https:///nohost"]

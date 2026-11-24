@@ -26,6 +26,10 @@ enum LibraryUITestScenario: String, Sendable {
     /// The pixel scenario plus a Morning report row. Once the player plays, a stub speaker that never
     /// finishes is handed a headline, so Now Playing holds in the bulletin state without any audio.
     case pixelInterruptions = "pixel-interruptions"
+    /// A visible Mac story card while headline speech is disabled and the player is idle.
+    case headlines
+    /// Two mixed headlines: the older first candidate is spoken while the newer catalog card stays visible.
+    case spokenHeadlines = "spoken-headlines"
     /// A real held phone mirror and downloads; the fixture Mac now has an empty queue.
     case heldAccount = "held-account"
 }
@@ -141,7 +145,7 @@ enum LibraryUITestFixture {
         private let defaultsSuite: String
         private var seedTask: Task<Void, Never>?
         private let defaults: UserDefaults
-        /// The `pixelInterruptions` controller, kept alive for the life of the process.
+        /// Fixture interruption controller, kept alive for the life of the process.
         private var interruptions: LibraryInterruptionController?
 
         init(scenario: LibraryUITestScenario) {
@@ -151,6 +155,9 @@ enum LibraryUITestFixture {
             defaultsSuite = LibraryUITestFixture.suiteName + "-" + UUID().uuidString
             let defaults = UserDefaults(suiteName: defaultsSuite)!
             self.defaults = defaults
+            if scenario == .headlines {
+                defaults.set(false, forKey: LibraryInterruptionPreferences.speakKey)
+            }
             // The fixture's Mac has already linked the phone, so every scenario starts with downloads on offer.
             defaults.set(try? JSONEncoder().encode(LibrarySavedMacLink(deviceID: "phone", ownerToken: "fixture-owner")),
                          forKey: LibraryAppModel.savedMacLinkKey)
@@ -216,30 +223,59 @@ enum LibraryUITestFixture {
             ]
         }
 
-        /// `pixelInterruptions` only: hands the player's interruption controller a headline once playback
-        /// runs, spoken through a stub speaker that never finishes (no audio; the watchdog is a day away).
+        /// Hands the player's interruption controller fixture headlines once playback runs.
+        /// The spoken-headlines scenario waits at a real transcript break for its UI test to advance.
         func speakFixtureBulletin() async {
-            guard scenario == .pixelInterruptions, interruptions == nil else { return }
+            guard (scenario == .pixelInterruptions || scenario == .spokenHeadlines), interruptions == nil else { return }
             do {
-                let clock = LibraryUITestFixture.pixelClock
-                let headline = try Bulletin(
-                    id: "fixture-headline", kind: .headline, text: "A fixture headline, never spoken aloud.",
-                    severity: .extreme, issuedAt: clock, expiresAt: clock.addingTimeInterval(86_400))
+                let clock = scenario.isPixel ? LibraryUITestFixture.pixelClock : Date()
+                let headlines: [Bulletin]
+                if scenario == .spokenHeadlines {
+                    let spokenAt = clock.addingTimeInterval(-3_600)
+                    let spoken = try Bulletin(
+                        id: "headline:fixture-story-spoken", kind: .headline,
+                        text: "Example Dispatch: The story being spoken",
+                        severity: .unknown, issuedAt: spokenAt, expiresAt: clock.addingTimeInterval(86_400),
+                        storyID: "fixture-story-spoken", publisherID: "fixture-publisher-spoken",
+                        publisherName: "Example Dispatch", headline: "The story being spoken",
+                        link: URL(string: "https://example.com/spoken-story"), publishedAt: spokenAt)
+                    let newer = try Bulletin(
+                        id: "headline:fixture-story-newer", kind: .headline,
+                        text: "Newer Daily: Newest headline in the Larder",
+                        severity: .unknown, issuedAt: clock, expiresAt: clock.addingTimeInterval(86_400),
+                        storyID: "fixture-story-newer", publisherID: "fixture-publisher-newer",
+                        publisherName: "Newer Daily", headline: "Newest headline in the Larder",
+                        link: URL(string: "https://example.com/newer-story"), publishedAt: clock)
+                    headlines = [spoken, newer]
+                } else {
+                    headlines = [try Bulletin(
+                        id: "fixture-headline", kind: .headline, text: "A fixture headline, never spoken aloud.",
+                        severity: .extreme, issuedAt: clock, expiresAt: clock.addingTimeInterval(86_400))]
+                }
                 let channel = try LibraryBulletins(
-                    alertsEnabled: false, headlinesEnabled: true, headlines: [headline], updatedAt: clock)
+                    alertsEnabled: false, headlinesEnabled: true, headlines: headlines, updatedAt: clock)
                 let cache = cache
+                let isSpokenHeadlineScenario = self.scenario == .spokenHeadlines
+                let speaker = LibraryUITestSpeaker()
                 let controller = LibraryInterruptionController(
                     player: player,
                     dependencies: .init(
-                        speaker: LibraryUITestSpeaker(), preferences: LibraryInterruptionPreferences(defaults: defaults),
+                        speaker: speaker, preferences: LibraryInterruptionPreferences(defaults: defaults),
                         fetchBulletins: { channel }, makeMonitor: { _ in LibraryUITestAlertMonitor() }, location: nil,
+                        cues: { _ in
+                            isSpokenHeadlineScenario
+                                ? [LibraryTranscriptCue(start: 0, end: 120, text: "Fixture transcript cue.")]
+                                : []
+                        },
                         revision: { await cache.cachedEntries()[$0]?.revisionID }, now: { clock },
                         isForeground: { true }, maximumSpeech: .seconds(86_400)))
                 interruptions = controller
+                model.handoffState.interruptions = controller
                 // The revision lookup is asynchronous; ask again until the bulletin is being spoken.
                 for _ in 0..<50 {
                     await controller.syncTick()
                     if case .speaking = controller.state { return }
+                    if scenario == .spokenHeadlines, case .waiting = controller.state { return }
                     try? await Task.sleep(for: .milliseconds(200))
                 }
                 assertionFailure("Fixture bulletin was never spoken")
@@ -319,6 +355,42 @@ enum LibraryUITestFixture {
                 }
                 let installed = await LibraryReconciler(transport: phone, store: mirror).synchronize()
                 if case let .failure(error) = installed { throw error }
+                if scenario == .headlines || scenario == .spokenHeadlines {
+                    let storyTime = Date()
+                    let stories: [LibraryHeadlineStory]
+                    if scenario == .spokenHeadlines {
+                        let spokenAt = storyTime.addingTimeInterval(-3_600)
+                        let spoken = try LibraryHeadlineStory(
+                            id: "fixture-story-spoken", title: "The story being spoken",
+                            publisherID: "fixture-publisher-spoken", publisherName: "Example Dispatch",
+                            link: URL(string: "https://example.com/spoken-story"), publishedAt: spokenAt,
+                            firstSeenAt: spokenAt, lastSeenAt: storyTime)
+                        let newer = try LibraryHeadlineStory(
+                            id: "fixture-story-newer", title: "Newest headline in the Larder",
+                            publisherID: "fixture-publisher-newer", publisherName: "Newer Daily",
+                            link: URL(string: "https://example.com/newer-story"), publishedAt: storyTime,
+                            firstSeenAt: storyTime, lastSeenAt: storyTime)
+                        stories = [newer, spoken]
+                    } else {
+                        stories = [try LibraryHeadlineStory(
+                            id: "fixture-headline-story", title: "Fixture story with a clear Read link",
+                            publisherID: "fixture-headline-publisher", publisherName: "Fixture Daily",
+                            link: URL(string: "https://example.com/fixture-story"), publishedAt: storyTime,
+                            firstSeenAt: storyTime, lastSeenAt: storyTime)]
+                    }
+                    let publishers = try stories.map {
+                        try LibraryHeadlinePublisher(id: $0.publisherID, name: $0.publisherName, isMuted: false, revision: 0)
+                    }
+                    let projection = try LibraryHeadlineProjection(
+                        revision: 1, updatedAt: storyTime, recent: stories, saved: [], publishers: publishers)
+                    let local = await mirror.state()
+                    guard let owner = local.ownerToken else {
+                        throw LibraryTransportError.ownershipViolation("Fixture headline owner was not established")
+                    }
+                    let generation = await model.transport.operationGeneration()
+                    model.headlinePhoneState.bindLocalOwner(owner, generation: generation, reviewHold: local.reviewHold)
+                    model.headlinePhoneState.replaceProjection(projection, owner: owner, generation: generation)
+                }
                 if let heldStore {
                     let saved = await heldStore.state()
                     try await heldStore.recordDisplayOffers(admittedOffers, transport: phone,

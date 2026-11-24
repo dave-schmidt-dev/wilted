@@ -1,6 +1,7 @@
 """Worker module split from wilted_pipeline.py."""
 from __future__ import annotations
 import contextlib
+from collections.abc import Callable
 import difflib
 import errno
 import fcntl
@@ -29,6 +30,14 @@ GPU_LOCK_PROGRESS_INTERVAL_S = 1.0
 
 GPU_LOCK_ACQUISITION_TIMEOUT_S = 30 * 60.0
 
+ProgressCallback = Callable[[str, str], None]
+
+def _report_gpu_progress(progress: ProgressCallback | None, stage: str, detail: str) -> None:
+    if progress is None:
+        _worker_reporting.progress(stage, detail)
+    else:
+        progress(stage, detail)
+
 def _remaining_admission_budget(deadline: float) -> float:
     """Return the remaining shared lock/RPC budget or fail at its one deadline."""
     remaining = deadline - time.monotonic()
@@ -36,7 +45,7 @@ def _remaining_admission_budget(deadline: float) -> float:
         raise TimeoutError("timed out waiting for exclusive GPU model admission")
     return remaining
 
-def _speech_rpc_with_progress(operation, deadline: float, detail: str):
+def _speech_rpc_with_progress(operation, deadline: float, detail: str, progress: ProgressCallback | None = None):
     """Run one bounded synchronous daemon RPC with periodic progress."""
     outcome = {}
     done = threading.Event()
@@ -57,14 +66,14 @@ def _speech_rpc_with_progress(operation, deadline: float, detail: str):
             break
         now = time.monotonic()
         if now >= next_heartbeat:
-            _worker_reporting.progress("ads.model.wait", f"{detail}; {remaining:.1f}s remain")
+            _report_gpu_progress(progress, "ads.model.wait", f"{detail}; {remaining:.1f}s remain")
             next_heartbeat = now + GPU_LOCK_PROGRESS_INTERVAL_S
     if "error" in outcome:
         raise outcome["error"]
     return outcome.get("result")
 
 @contextlib.contextmanager
-def _canonical_gpu_flock(deadline: float):
+def _canonical_gpu_flock(deadline: float, progress: ProgressCallback | None = None):
     """Acquire speech-stack's canonical flock without a silent blocking wait."""
     from speech_stack.daemon import host as speech_host
 
@@ -82,7 +91,9 @@ def _canonical_gpu_flock(deadline: float):
             remaining = _remaining_admission_budget(deadline)
             now = time.monotonic()
             if now >= next_heartbeat:
-                _worker_reporting.progress("ads.model.wait", f"waiting for shared GPU inference lock; {remaining:.1f}s remain")
+                _report_gpu_progress(
+                    progress, "ads.model.wait", f"waiting for shared GPU inference lock; {remaining:.1f}s remain"
+                )
                 next_heartbeat = now + GPU_LOCK_PROGRESS_INTERVAL_S
             time.sleep(min(STT_EVICTION_BARRIER_POLL_INTERVAL_S, remaining))
         try:
@@ -104,7 +115,9 @@ def _validate_daemon_admission_snapshot(snapshot) -> tuple[int, int]:
     return resident_models, in_flight
 
 @contextlib.contextmanager
-def prepare_ad_model_lock(_model: str, *, aligned_stt: bool):
+def prepare_ad_model_lock(
+    _model: str, *, aligned_stt: bool, progress: ProgressCallback | None = None
+):
     """Hold the canonical GPU flock after broker residency and work drain."""
     from speech_stack import client as speech_client
 
@@ -116,38 +129,42 @@ def prepare_ad_model_lock(_model: str, *, aligned_stt: bool):
     lock_deadline = time.monotonic() + GPU_LOCK_ACQUISITION_TIMEOUT_S
     barrier_deadline = None
     source = "aligned STT" if aligned_stt else "published transcript"
-    _worker_reporting.progress("ads.model.wait", f"waiting for exclusive GPU admission after {source}")
+    _report_gpu_progress(progress, "ads.model.wait", f"waiting for exclusive GPU admission after {source}")
     lock_stack = None
     try:
         while True:
             lock_stack = contextlib.ExitStack()
             try:
-                lock_stack.enter_context(_canonical_gpu_flock(lock_deadline))
+                lock_stack.enter_context(_canonical_gpu_flock(lock_deadline, progress))
                 if barrier_deadline is None:
                     barrier_deadline = time.monotonic() + STT_EVICTION_BARRIER_TIMEOUT_S
                 snapshot = _speech_rpc_with_progress(
                     lambda timeout: speech_client.status(timeout=timeout),
                     barrier_deadline,
                     "waiting for speech daemon status",
+                    progress,
                 )
                 resident_models, in_flight = _validate_daemon_admission_snapshot(snapshot)
             except speech_client.DaemonUnavailable:
-                _worker_reporting.progress("ads.model.wait", "speech daemon unavailable; canonical GPU lock is exclusive")
+                _report_gpu_progress(
+                    progress, "ads.model.wait", "speech daemon unavailable; canonical GPU lock is exclusive"
+                )
                 break
             except Exception:
                 lock_stack.close()
                 raise
 
             if resident_models == 0 and in_flight == 1:
-                _worker_reporting.progress("ads.model.wait", "GPU admission is exclusive")
+                _report_gpu_progress(progress, "ads.model.wait", "GPU admission is exclusive")
                 break
 
-            _worker_reporting.progress(
+            _report_gpu_progress(
+                progress,
                 "ads.model.release",
                 f"releasing GPU lock to drain {resident_models} resident models and {in_flight - 1} other requests",
             )
             lock_stack.close()
-            _worker_reporting.progress("ads.model.drain", "evicting resident speech models and waiting on FIFO barrier")
+            _report_gpu_progress(progress, "ads.model.drain", "evicting resident speech models and waiting on FIFO barrier")
             try:
                 if resident_models:
                     for task in ("stt", "tts"):
@@ -155,6 +172,7 @@ def prepare_ad_model_lock(_model: str, *, aligned_stt: bool):
                             lambda timeout, task=task: speech_client.evict(task, timeout=timeout),
                             barrier_deadline,
                             f"waiting to evict resident {task} model",
+                            progress,
                         )
                 _speech_rpc_with_progress(
                     lambda timeout: speech_client.selftest(
@@ -164,10 +182,11 @@ def prepare_ad_model_lock(_model: str, *, aligned_stt: bool):
                     ),
                     barrier_deadline,
                     "waiting for speech daemon FIFO drain",
+                    progress,
                 )
             except speech_client.DaemonUnavailable:
-                _worker_reporting.progress("ads.model.drain", "speech daemon stopped during drain; retrying canonical lock")
-            _worker_reporting.progress("ads.model.retry", "retrying exclusive GPU admission")
+                _report_gpu_progress(progress, "ads.model.drain", "speech daemon stopped during drain; retrying canonical lock")
+            _report_gpu_progress(progress, "ads.model.retry", "retrying exclusive GPU admission")
     except WorkerError:
         raise
     except Exception as error:  # noqa: BLE001 - never load GGUF without proving exclusive admission

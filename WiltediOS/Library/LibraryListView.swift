@@ -163,6 +163,7 @@ struct LibraryListView: View {
             if model.showsMacLinkNotice {
                 Section { LibraryMacLinkNotice(deviceKind: model.deviceKind) }
             }
+            LibraryStoryCardsSection(state: model.headlinePhoneState, model: model)
             if rows.isEmpty {
                 emptyState
             } else {

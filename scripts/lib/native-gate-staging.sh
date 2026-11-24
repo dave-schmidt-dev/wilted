@@ -30,6 +30,8 @@ prepare_integration_root() {
   cp -R "$repo_root/WiltedKit/Sources" "$repo_root/WiltedKit/Tests" "$integration_root/WiltedKit/"
   cp "$repo_root/Producer/Package.swift" "$integration_root/Producer/Package.swift"
   cp -R "$repo_root/Producer/Sources" "$repo_root/Producer/Tests" "$integration_root/Producer/"
+  mkdir -p "$integration_root/Producer/Runtime/src/wilted"
+  cp "$repo_root/Producer/Runtime/src/wilted/article_voice.py" "$integration_root/Producer/Runtime/src/wilted/"
   cp "$repo_root/CloudSync/Package.swift" "$integration_root/CloudSync/Package.swift"
   cp -R "$repo_root/CloudSync/Sources" "$repo_root/CloudSync/Tests" "$integration_root/CloudSync/"
   cp "$repo_root/Playback/Package.swift" "$integration_root/Playback/Package.swift"

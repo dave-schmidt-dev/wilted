@@ -131,7 +131,8 @@ struct InterruptionRig {
 @MainActor
 func makeInterruptionRig(
     channel: LibraryBulletins?, defaults: UserDefaults, tick: Duration = .seconds(3600),
-    foreground: Bool = true
+    foreground: Bool = true,
+    cues: @escaping (ItemID) -> [LibraryTranscriptCue] = { _ in [] }
 ) -> InterruptionRig {
     let engine = InterruptionEngine(), session = InterruptionSession(), nowPlaying = InterruptionNowPlaying()
     let remote = InterruptionRemote(), events = InterruptionEvents(), speaker = StubSpeaker()
@@ -151,6 +152,7 @@ func makeInterruptionRig(
             fetchBulletins: { channel },
             makeMonitor: { _ in made += 1; return monitor },
             location: LibraryLocationProvider(manager: location),
+            cues: cues,
             revision: { _ in revision },
             isForeground: { foreground },
             sleep: { _ in try await Task.sleep(for: .seconds(3600)) }))
@@ -229,6 +231,49 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
         XCTAssertEqual(rig.nowPlaying.infos.last?.title, "Episode One")
     }
 
+    func testNowPlayingHeadlineTracksTheSpokenCandidateAndRetainsItAfterSpeech() async throws {
+        let now = Date()
+        let earlier = try Bulletin(
+            id: "headline:older-story", kind: .headline, text: "Example Dispatch: The older story",
+            severity: .unknown, issuedAt: now.addingTimeInterval(-3_600), expiresAt: now.addingTimeInterval(3_600),
+            storyID: "older-story", publisherID: "example-dispatch", publisherName: "Example Dispatch",
+            headline: "The older story", link: URL(string: "https://example.com/older-story"),
+            publishedAt: now.addingTimeInterval(-3_600))
+        let newer = try Bulletin(
+            id: "headline:newer-story", kind: .headline, text: "Newer Daily: The newer story",
+            severity: .unknown, issuedAt: now, expiresAt: now.addingTimeInterval(3_600),
+            storyID: "newer-story", publisherID: "newer-daily", publisherName: "Newer Daily",
+            headline: "The newer story", link: URL(string: "https://example.com/newer-story"), publishedAt: now)
+        // The newer candidate remains in the channel, but the first normal headline is the one read.
+        let channel = try LibraryBulletins(
+            alertsEnabled: false, headlinesEnabled: true, headlines: [earlier, newer], updatedAt: now)
+        let rig = makeInterruptionRig(
+            channel: channel, defaults: defaults,
+            cues: { _ in [LibraryTranscriptCue(start: 42, end: 43, text: "A known safe transcript break.")] })
+        await rig.play(at: 42)
+        await rig.controller.syncTick()
+
+        guard case .waiting = rig.controller.state else {
+            XCTFail("A normal-severity headline should wait for the transcript break.")
+            return
+        }
+        XCTAssertNil(rig.controller.nowPlayingHeadline)
+        rig.player.skipForward()
+        XCTAssertEqual(rig.speaker.spoken, ["Example Dispatch: The older story"])
+        XCTAssertEqual(rig.controller.activeSpokenHeadline?.headline, "The older story")
+        XCTAssertEqual(rig.controller.activeSpokenHeadline?.publisherName, "Example Dispatch")
+        XCTAssertEqual(rig.controller.activeSpokenHeadline?.link?.absoluteString, "https://example.com/older-story")
+        XCTAssertEqual(rig.controller.nowPlayingHeadline?.storyID, "older-story")
+
+        rig.speaker.completeSpeech()
+
+        XCTAssertNil(rig.controller.activeSpokenHeadline)
+        XCTAssertEqual(rig.controller.lastSpokenHeadline?.storyID, "older-story")
+        XCTAssertEqual(rig.controller.nowPlayingHeadline?.headline, "The older story")
+        XCTAssertEqual(rig.controller.nowPlayingHeadline?.publisherName, "Example Dispatch")
+        XCTAssertEqual(rig.controller.nowPlayingHeadline?.link?.absoluteString, "https://example.com/older-story")
+    }
+
     func testFinishedSpeechRestoresAndResumes() async {
         let rig = makeInterruptionRig(channel: headlineChannel(), defaults: defaults)
         await rig.play(at: 42)
@@ -276,6 +321,7 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
         XCTAssertEqual(rig.player.status, .playing)
         XCTAssertTrue(rig.engine.isPlaying)
         XCTAssertEqual(rig.player.position, 42)
+        XCTAssertNil(rig.controller.nowPlayingHeadline, "a failed speech start is not shown as a story read")
     }
 
     func testStatusStaysPlayingAndListeningDoesNotGrowDuringSpeechWithTheRealTimer() async throws {

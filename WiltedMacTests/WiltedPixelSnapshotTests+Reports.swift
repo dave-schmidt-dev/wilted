@@ -7,6 +7,14 @@ import XCTest
 @testable import WiltedMac
 
 extension WiltedPixelSnapshotTests {
+    private func settledReadiness(_ hub: WiltedMacBulletinHub) async -> BulletinReadiness {
+        await hub.refreshNewsSourceReadiness()
+        await WiltedMacHeadless.eventually("headline feed readiness") {
+            hub.hasCheckedNewsSource && !hub.isCheckingNewsSource
+        }
+        return hub.readiness
+    }
+
     private func snapshotDeviceAnnouncementDate() -> Date {
         var components = DateComponents()
         components.year = 2020
@@ -207,10 +215,12 @@ extension WiltedPixelSnapshotTests {
                     $0.nwsContact = "listener@example.test"
                 }
             }
+            let readiness = await settledReadiness(model.bulletinHub)
             let location = WiltedLocationProvider(
                 manager: PixelFakeLocationManager(), wifi: PixelFakeWiFi(),
                 typedCoordinates: model.automationSettings.typedCoordinates)
-            let content = WiltedMacReportsCard(model: model, location: location, startsExpanded: true)
+            let content = WiltedMacReportsCard(
+                model: model, location: location, startsExpanded: true, readinessOverride: readiness)
                 .padding(WiltedTheme.Spacing.large)
                 .environment(\.wiltedTextScale, model.textScale)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -258,11 +268,12 @@ extension WiltedPixelSnapshotTests {
                     $0.nwsContact = "listener@example.test"
                 }
             }
-            await hub.refreshNewsSourceReadiness()
-            XCTAssertEqual(hub.readiness.lines, state == "ready" ? [.ready] : [.news])
+            let readiness = await settledReadiness(hub)
+            XCTAssertEqual(readiness.lines, state == "ready" ? [.ready] : [.news])
 
             for appearance in WiltedAppearance.allCases {
-                let content = WiltedMacReportsCard(model: model, location: location)
+                let content = WiltedMacReportsCard(
+                    model: model, location: location, readinessOverride: readiness)
                     .padding(WiltedTheme.Spacing.large)
                     .environment(\.wiltedTextScale, model.textScale)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

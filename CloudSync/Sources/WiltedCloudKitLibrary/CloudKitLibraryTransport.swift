@@ -13,6 +13,8 @@ import WiltedLibrary
 /// or the state missing (a Development reset) the state is discarded and the library is
 /// refetched from nothing. Account changes are quarantined through `CloudKitAccountOwnership`.
 public actor CloudKitLibraryTransport: LibraryTransport {
+    let headlineProjectionGate = CloudKitHeadlineProjectionGate()
+    public nonisolated let supportsHeadlineProjection = true
     public nonisolated let accountChanges: AsyncStream<CloudKitAccountChangeSignal>
     public nonisolated let deviceID: String
     public nonisolated let isLibraryWriter: Bool

@@ -74,6 +74,39 @@ final class LibraryRecordMapperTests: XCTestCase {
         }
     }
 
+    func testHeadlineProjectionIndexAndExpiredIdentityPagesRoundTrip() throws {
+        let generationID = UUID().uuidString
+        let story = try LibraryHeadlineStory(
+            id: "story-1", title: "Story", publisherID: "feed-1", publisherName: "Example",
+            link: URL(string: "http://example.com/story"), publishedAt: Date(timeIntervalSince1970: 10),
+            firstSeenAt: Date(timeIntervalSince1970: 10), lastSeenAt: Date(timeIntervalSince1970: 10))
+        let recent = try LibraryHeadlineProjectionPage(
+            generationID: generationID, kind: .recent, pageIndex: 0, stories: [story])
+        let expiredIdentity = try LibraryHeadlineStoryIdentity(
+            id: "story-old", publisherID: "feed-1", link: URL(string: "https://example.com/old"), savedRevision: 2)
+        let expired = try LibraryHeadlineProjectionPage(
+            generationID: generationID, kind: .expired, pageIndex: 0, storyIdentities: [expiredIdentity])
+        let index = try LibraryHeadlineProjectionIndex(
+            generationID: generationID, revision: 3, updatedAt: Date(timeIntervalSince1970: 12),
+            recentPageCount: 1, savedPageCount: 0, publisherPageCount: 0, expiredPageCount: 1,
+            stagedGenerations: [LibraryHeadlineProjectionGeneration(
+                id: String(repeating: "a", count: 32), recentPageCount: 1, savedPageCount: 0,
+                publisherPageCount: 0, expiredPageCount: 1)])
+
+        let indexRecord = try mapper.record(headlineProjectionIndex: index)
+        let recentRecord = try mapper.record(headlineProjectionPage: recent)
+        let expiredRecord = try mapper.record(headlineProjectionPage: expired)
+        assertShape(indexRecord, type: .headlineProjectionIndex)
+        assertShape(recentRecord, type: .headlineProjectionPage)
+        assertShape(expiredRecord, type: .headlineProjectionPage)
+        XCTAssertEqual(try mapper.decode(indexRecord), .headlineProjectionIndex(index))
+        XCTAssertEqual(try mapper.decode(recentRecord), .headlineProjectionPage(recent))
+        XCTAssertEqual(try mapper.decode(expiredRecord), .headlineProjectionPage(expired))
+
+        let payload = try XCTUnwrap(expiredRecord[LibraryRecordMapper.payloadField] as? Data)
+        XCTAssertLessThan(payload.count, 64 * 1_024, "compact expiry identities keep each CloudKit page bounded")
+    }
+
     func testDeviceRecordsRoundTripAndNamesEmbedTheDeviceID() throws {
         let position = try makePosition()
         let now = try mapper.record(playback: position, channel: .nowPlaying)

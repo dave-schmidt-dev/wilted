@@ -62,6 +62,38 @@ struct WiltedMacPlayerContent: View {
         .accessibilityIdentifier("wilted-player-chapters")
     }
 
+    /// Prefer the headline being spoken, then the last story actually read, then the newest card.
+    /// This keeps the article link aligned with the voice announcement and leaves that card selected.
+    private var featuredHeadlineStory: LibraryHeadlineStory? {
+        Self.selectHeadlineCard(
+            speaking: model.speakingBulletin,
+            lastSpokenStoryID: model.bulletinHub.featuredHeadlineStoryID,
+            projection: model.headlineCatalogState.projection)
+    }
+
+    /// Chooses the exact announced story before any newer feed candidate reaches the card.
+    static func selectHeadlineCard(
+        speaking bulletin: Bulletin?, lastSpokenStoryID: String?, projection: LibraryHeadlineProjection?
+    ) -> LibraryHeadlineStory? {
+        let stories = (projection?.recent ?? []) + (projection?.saved ?? [])
+        if let bulletin, bulletin.kind == .headline {
+            let storyID = bulletin.headlineStoryID
+            if let story = stories.first(where: { $0.id == storyID }) { return story }
+            if let storyID, let publisherID = bulletin.publisherID,
+               let publisherName = bulletin.publisherName, let title = bulletin.headline {
+                let seenAt = bulletin.publishedAt ?? bulletin.issuedAt
+                if let snapshot = try? LibraryHeadlineStory(
+                    id: storyID, title: title, publisherID: publisherID, publisherName: publisherName,
+                    link: bulletin.link, publishedAt: bulletin.publishedAt,
+                    firstSeenAt: seenAt, lastSeenAt: bulletin.issuedAt) {
+                    return snapshot
+                }
+            }
+        }
+        if let id = lastSpokenStoryID, let story = stories.first(where: { $0.id == id }) { return story }
+        return projection?.recent.first ?? projection?.saved.first
+    }
+
     var body: some View {
         VStack(spacing: WiltedTheme.Spacing.small) {
             if layout == .fullWindow {
@@ -82,9 +114,28 @@ struct WiltedMacPlayerContent: View {
             }
             if model.hasCurrentPlayback {
                 #if canImport(WiltedProducer)
-                if let bulletin = model.speakingBulletin {
+                if let bulletin = model.speakingBulletin, bulletin.kind == .alert {
                     WiltedMacBulletinBanner(text: bulletin.text, isAlert: bulletin.kind == .alert) {
                         model.skipSpokenBulletin()
+                    }
+                }
+                if let story = featuredHeadlineStory {
+                    let catalog = model.headlineCatalogState
+                    let isMuted = catalog.projection?.publishers.contains {
+                        $0.id == story.publisherID && $0.isMuted
+                    } ?? false
+                    WiltedHeadlineStoryCard(
+                        story: story,
+                        isMuted: isMuted,
+                        actionInProgress: catalog.isActionInProgress,
+                        setSaved: { catalog.setSaved(story, isSaved: $0) },
+                        setMuted: { catalog.setMuted(story, isMuted: $0) },
+                        isSpeakingHeadline: model.speakingBulletin?.kind == .headline,
+                        stopReading: model.skipSpokenBulletin)
+                    if let message = catalog.actionMessage {
+                        Text(message)
+                            .wiltedFont(.utility)
+                            .accessibilityIdentifier("wilted-headline-action-status")
                     }
                 }
                 #endif

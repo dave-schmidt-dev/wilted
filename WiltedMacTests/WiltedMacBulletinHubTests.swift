@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 @testable import WiltedMac
 import WiltedDomain
+import WiltedLibrary
 import WiltedProducer
 import WiltedWeather
 
@@ -24,6 +25,28 @@ final class HubFakeWiFi: WiltedWiFiPowerReading {
 @MainActor
 private final class HubSilentSpeaker: BulletinSpeaking {
     func speak(_ text: String, playbackVolume: Float, finished: @escaping @MainActor () -> Void) -> Bool { false }
+    func stop() {}
+}
+
+@MainActor
+private final class HubStartingSpeaker: BulletinSpeaking {
+    private(set) var texts: [String] = []
+    private var completion: (@MainActor () -> Void)?
+
+    func speak(_ text: String, playbackVolume: Float, finished: @escaping @MainActor () -> Void) -> Bool {
+        texts.append(text)
+        completion = finished
+        return true
+    }
+
+    func stop() { completion = nil }
+    func finish() { completion?(); completion = nil }
+}
+
+@MainActor
+private final class HubStableRoute: MacAudioRouteSource {
+    func start(changed: @escaping @MainActor () -> Void) -> Bool { true }
+    func currentRoute() -> MacAudioRoute? { MacAudioRoute(device: 1) }
     func stop() {}
 }
 
@@ -51,14 +74,15 @@ final class WiltedMacBulletinHubTests: XCTestCase {
         let source: HubCountingSource
     }
 
-    private func makeRig() async throws -> Rig {
+    private func makeRig(speaker: any BulletinSpeaking = HubSilentSpeaker()) async throws -> Rig {
         let library = try await AccountingLibrary.make(in: wiltedTemporaryDirectory("bulletin-hub"))
         let model = library.model
         _ = library.installScriptedPlayback(on: model)
         let source = HubCountingSource()
         let provider = WiltedLocationProvider(manager: HubFakeLocationManager(), wifi: HubFakeWiFi())
         let hub = WiltedMacBulletinHub(
-            model: model, location: provider, makeSpeaker: { HubSilentSpeaker() }, makeAlertSource: { _ in source })
+            model: model, location: provider, makeSpeaker: { speaker },
+            makeRouteSource: { HubStableRoute() }, makeAlertSource: { _ in source })
         model.installBulletinHubForTesting(hub)
         return Rig(library: library, model: model, hub: hub, source: source)
     }
@@ -126,6 +150,26 @@ final class WiltedMacBulletinHubTests: XCTestCase {
         XCTAssertFalse(rig.hub.interruptionsAreAttached)
         XCTAssertFalse(rig.hub.alertMonitorIsRunning)
         XCTAssertFalse(rig.model.playback?.interruptionsEnabled ?? true)
+    }
+
+    func testLegacyHeadlineBulletinIDStillBecomesTheFeaturedStory() async throws {
+        let speaker = HubStartingSpeaker()
+        let rig = try await makeRig(speaker: speaker)
+        set(rig.model, interruptions: true)
+        rig.model.playEpisode(rig.library.episodes[0])
+        await rig.model.waitForPlaybackOperationForTesting()
+        rig.hub.reconcile()
+        XCTAssertTrue(rig.hub.interruptionsAreAttached)
+
+        let now = Date()
+        let legacy = try Bulletin(
+            id: "headline:legacy-story", kind: .headline, text: "Example News. Legacy story",
+            issuedAt: now, expiresAt: now.addingTimeInterval(3_600))
+        rig.model.playback?.deliverBulletin(legacy)
+
+        XCTAssertEqual(speaker.texts, [legacy.text])
+        XCTAssertEqual(rig.hub.featuredHeadlineStoryID, "legacy-story")
+        speaker.finish()
     }
 
     func testAMorningReportShowsUnderAllOnlyInTheLarderKindFilter() {

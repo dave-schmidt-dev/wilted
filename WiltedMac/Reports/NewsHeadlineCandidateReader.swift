@@ -36,7 +36,8 @@ enum NewsHeadlineCandidateReader {
                 for item in document.items.prefix(maximumCandidatesPerFeed) {
                     guard let id = try? item.id(feedURL: feed.canonicalURL) else { continue }
                     candidates.append(NewsHeadlineCandidate(
-                        id: id.rawValue, feedTitle: feed.title, title: item.title, publishedAt: item.publishedAt,
+                        id: id.rawValue, feedTitle: feed.title, feedID: feed.itemID.rawValue,
+                        title: item.title, publishedAt: item.publishedAt,
                         link: item.link, categories: item.categories))
                 }
             } catch is CancellationError {

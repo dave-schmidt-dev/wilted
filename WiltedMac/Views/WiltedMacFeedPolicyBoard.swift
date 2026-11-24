@@ -300,6 +300,8 @@ final class WiltedMacFeedPolicyBoard {
                 if stored == true { newsFeedIDs.insert(feedID) } else { newsFeedIDs.remove(feedID) }
             }
         }
+        guard newsEdits[feedID] == edit else { return }
+        await model.bulletinHub.refreshNewsSourceReadiness()
     }
 
     // MARK: Own promotion

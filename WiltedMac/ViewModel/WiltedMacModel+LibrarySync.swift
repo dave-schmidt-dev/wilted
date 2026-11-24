@@ -51,6 +51,10 @@ actor WiltedMacLibraryIntentSink: LibraryIntentSink {
             try await record(intent, describing: "unclassified add-link intent")
         case let .adFeedback(entryID, _, kind, _):
             try await record(intent, describing: "\(kind.rawValue) feedback for \(entryID.rawValue)")
+        case let .setHeadlineSaved(story, isSaved, _):
+            try await record(intent, describing: "headline save state for \(story.id): \(isSaved)")
+        case let .setHeadlinePublisherMuted(publisherID, isMuted, _):
+            try await record(intent, describing: "headline publisher mute state for \(publisherID): \(isMuted)")
         case .unsupported:
             try await record(intent, describing: "unsupported action")
         }
@@ -170,6 +174,7 @@ extension WiltedMacModel {
             host: self, ledger: inbound.ledger,
             book: WiltedMacIntentOutcomeBook(fileURL: syncDirectory.appendingPathComponent("intent-outcomes.json")),
             transport: resolvedTransport,
+            headlineCatalog: headlineCatalogStore,
             onApplied: { [weak self] in self?.librarySyncController?.requestPublish() }
         )
         let sink = WiltedMacLibraryIntentSink(consumer: mediaRequestConsumer ?? { intent in
@@ -182,7 +187,11 @@ extension WiltedMacModel {
             // The sync round reads intents once for everything; the publisher does not read them again.
             relaysIntents: false,
             publicationStore: account == nil ? nil : .store(store), deviceID: deviceID,
-            approvedOwner: { [weak account] in await account?.approvedPublicationOwner }
+            approvedOwner: { [weak account] in await account?.approvedPublicationOwner },
+            headlineProjectionProvider: { [weak self] in
+                guard let self else { return nil }
+                return try? self.headlineCatalogStore.projection(at: Date())
+            }
         )
         let controller = WiltedMacLibrarySyncController(
             model: self, publisher: publisher, sink: sink, debounce: debounce

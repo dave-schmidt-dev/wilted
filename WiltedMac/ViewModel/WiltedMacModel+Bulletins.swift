@@ -28,6 +28,7 @@ final class WiltedMacBulletinHub {
     /// Whether the channel last published (or read back) had a switch on. Survives relaunch, so a
     /// Mac that was quit with interruptions on and failed to publish the off state still retries it.
     static let activePreferenceKey = "wilted.bulletins.publishedActive"
+    private static let featuredHeadlinePreferenceKey = "wilted.bulletins.featuredHeadlineStoryID"
 
     /// The latest poll result, for Settings.
     private(set) var status = BulletinProducerStatus()
@@ -36,7 +37,12 @@ final class WiltedMacBulletinHub {
     private(set) var hasNewsSource = false
     private(set) var hasCheckedNewsSource = false
     private(set) var isCheckingNewsSource = false
+    /// The last headline actually started by this Mac's speaker. The player keeps its matching
+    /// story card selected after speech ends, even when a newer feed item arrives.
+    private(set) var featuredHeadlineStoryID: String?
     @ObservationIgnored private var newsReadinessRequest = 0
+    @ObservationIgnored private weak var newsReadinessStore: LocalLibraryStore?
+    @ObservationIgnored private var knownNewsFeedIDs: Set<String> = []
     @ObservationIgnored private var testBulletinSpeaker: (any BulletinSpeaking)?
 
     @ObservationIgnored private let heardHistory: HeardHeadlineHistory
@@ -74,6 +80,7 @@ final class WiltedMacBulletinHub {
         self.heardHistory = HeardHeadlineHistory(defaults: model.preferences, now: now())
         self.retrySleep = retrySleep
         self.model = model
+        featuredHeadlineStoryID = model.preferences.string(forKey: Self.featuredHeadlinePreferenceKey)
         ownedLocation = location
         self.makeRouteSource = makeRouteSource
         self.makeSpeaker = makeSpeaker
@@ -128,6 +135,8 @@ final class WiltedMacBulletinHub {
             hasNewsSource = false
             hasCheckedNewsSource = false
             isCheckingNewsSource = false
+            newsReadinessStore = nil
+            knownNewsFeedIDs = []
             return
         }
         isCheckingNewsSource = true
@@ -136,10 +145,16 @@ final class WiltedMacBulletinHub {
         }
         do {
             let feeds = try await NewsHeadlineCandidateReader.headlineFeeds(in: store)
-            let foundNewsSource = !feeds.isEmpty
+            let feedIDs = Set(feeds.map { $0.itemID.rawValue })
             guard request == newsReadinessRequest, model.store === store else { return }
-            hasNewsSource = foundNewsSource
+            let sourceListChanged = knownNewsFeedIDs != feedIDs
+            knownNewsFeedIDs = feedIDs
+            newsReadinessStore = store
+            hasNewsSource = !feedIDs.isEmpty
             hasCheckedNewsSource = true
+            let wasProducerRunning = producer != nil
+            reconcile()
+            if sourceListChanged, wasProducerRunning, let producer { Task { await producer.sourcesChanged() } }
         } catch {
             guard request == newsReadinessRequest else { return }
             hasCheckedNewsSource = false
@@ -179,13 +194,15 @@ final class WiltedMacBulletinHub {
         guard let model else { return }
         let settings = model.automationSettings
         let canRun = self.canRun
+        if canRun { scheduleNewsSourceReadinessRefreshIfNeeded() }
         // The morning report needs a location too, even with interruptions off.
         if canRun, settings.interruptionsEnabled || settings.reportEnabled {
             let provider = location
             provider.typedCoordinates = settings.typedCoordinates
             provider.start()
         }
-        let wanted = canRun && (settings.interruptionsEnabled || model.preferences.bool(forKey: Self.activePreferenceKey))
+        let wanted = canRun && (settings.interruptionsEnabled || hasNewsSource
+            || model.preferences.bool(forKey: Self.activePreferenceKey))
         if wanted {
             if let producer {
                 Task { await producer.settingsChanged() }
@@ -200,6 +217,19 @@ final class WiltedMacBulletinHub {
             status = BulletinProducerStatus()
         }
         reconcileInterruptions(canRun: canRun, settings: settings, retryDue: false)
+    }
+
+    /// Rechecks the conditions when the scheduled task runs, since an explicit read may finish
+    /// after this task is queued but before it starts.
+    private func scheduleNewsSourceReadinessRefreshIfNeeded() {
+        guard let model, canRun, let store = model.store,
+              (!hasCheckedNewsSource || newsReadinessStore !== store), !isCheckingNewsSource else { return }
+        Task { @MainActor [weak self] in
+            guard let self, let model = self.model, self.canRun, let store = model.store,
+                  (!self.hasCheckedNewsSource || self.newsReadinessStore !== store),
+                  !self.isCheckingNewsSource else { return }
+            await self.refreshNewsSourceReadiness()
+        }
     }
 
     private func makeProducer() -> BulletinProducer {
@@ -218,18 +248,27 @@ final class WiltedMacBulletinHub {
                 guard let self else { throw CancellationError() }
                 try await self.publisher().publishBulletins(bulletins)
                 await self.channelUpdated(bulletins)
+            },
+            onCandidates: { [weak self] candidates in
+                guard let self else { throw CancellationError() }
+                try await MainActor.run {
+                    guard let model = self.model else { throw CancellationError() }
+                    try model.headlineCatalogState.mergeCandidates(candidates, at: self.now())
+                }
             })
     }
 
     func makeProducer(
         newsItems: @escaping @Sendable () async throws -> [NewsHeadlineCandidate],
         fetchPublished: @escaping @Sendable () async throws -> LibraryBulletins?,
-        publish: @escaping @Sendable (LibraryBulletins) async throws -> Void
+        publish: @escaping @Sendable (LibraryBulletins) async throws -> Void,
+        onCandidates: @escaping @Sendable ([NewsHeadlineCandidate]) async throws -> Void = { _ in }
     ) -> BulletinProducer {
         BulletinProducer(
             settings: { [weak self] in
                 await MainActor.run { self?.currentSettings ?? Self.allOff }
-            }, newsItems: newsItems, fetchPublished: fetchPublished, publish: publish,
+            }, newsItems: newsItems, onCandidates: onCandidates,
+            fetchPublished: fetchPublished, publish: publish,
             onStatus: { [weak self] status in
                 Task { @MainActor in self?.apply(status) }
             }, now: now, heardHeadlines: { [heardHistory, now] in
@@ -246,6 +285,7 @@ final class WiltedMacBulletinHub {
         return BulletinProducerSettings(
             interruptionsEnabled: settings.interruptionsEnabled, alertsEnabled: settings.alertsEnabled,
             headlinesEnabled: settings.headlinesEnabled, headlineMinimumGapMinutes: settings.headlineMinimumGapMinutes,
+            publishedActive: model.preferences.bool(forKey: Self.activePreferenceKey),
             topics: HeadlineTopicFilter(skipSports: settings.skipSportsHeadlines, words: settings.skippedHeadlineWords))
     }
 
@@ -262,7 +302,20 @@ final class WiltedMacBulletinHub {
     /// poll fails only when every feed did.
     private func newsCandidates() async throws -> [NewsHeadlineCandidate] {
         guard let model, let store = model.store else { throw CancellationError() }
-        return try await NewsHeadlineCandidateReader.read(in: store, using: model.podcastFeedClient).candidates
+        let candidates = try await NewsHeadlineCandidateReader.read(in: store, using: model.podcastFeedClient).candidates
+        let projection = try model.headlineCatalogStore.projection(at: now())
+        let mutedPublisherIDs = Set(projection.publishers.filter(\.isMuted).map(\.id))
+        return candidates.filter { candidate in
+            guard let publisherID = candidate.feedID else { return true }
+            return !mutedPublisherIDs.contains(publisherID)
+        }
+    }
+
+    func publisherMuteChanged(_ publisherID: String) {
+        headlines.removeAll { $0.publisherID == publisherID }
+        syncPlayer()
+        guard let producer else { return }
+        Task { await producer.publisherMuted(publisherID) }
     }
 
     // MARK: - Spoken interruptions
@@ -290,8 +343,11 @@ final class WiltedMacBulletinHub {
                     return heardHistory.snapshot(at: time).allows(
                         id: headline.id, title: BulletinProducer.headlineTitle(of: headline.text), at: time)
                 },
-                didStartHeadline: { [heardHistory, now] headline in
+                didStartHeadline: { [weak self, heardHistory, now] headline in
                     heardHistory.record(id: headline.id, title: BulletinProducer.headlineTitle(of: headline.text), at: now())
+                    guard let self, let storyID = headline.headlineStoryID else { return }
+                    self.featuredHeadlineStoryID = storyID
+                    self.model?.preferences.set(storyID, forKey: Self.featuredHeadlinePreferenceKey)
                 },
                 now: now, protectionFailed: { [weak self] in
                     self?.protectionFailed(at: source.failureStep ?? .defaultOutputRead)
@@ -425,6 +481,8 @@ final class WiltedMacBulletinHub {
     /// The channel was published, or read back at start.
     func channelUpdated(_ channel: LibraryBulletins?) {
         headlines = channel.map { $0.headlinesEnabled ? $0.headlines : [] } ?? []
+        let active = channel.map { $0.alertsEnabled || $0.headlinesEnabled } ?? false
+        model?.preferences.set(active, forKey: Self.activePreferenceKey)
         syncPlayer()
     }
 
@@ -470,8 +528,7 @@ extension WiltedMacModel {
         return hub
     }
 
-    /// Called when the store opens or closes and when the settings change. Does nothing, and
-    /// creates nothing, for a Mac that has never used interruptions.
+    /// Called when the store opens or closes and when the settings change.
     /// The bulletin being spoken now, for the player's banner.
     var speakingBulletin: Bulletin? { playback?.speakingBulletin }
 
@@ -488,7 +545,7 @@ extension WiltedMacModel {
 
     func bulletinLifecycleChanged() {
         let existing = objc_getAssociatedObject(self, &bulletinHubKey) as? WiltedMacBulletinHub
-        guard existing != nil || automationSettings.interruptionsEnabled || automationSettings.reportEnabled
+        guard existing != nil || store != nil || automationSettings.interruptionsEnabled || automationSettings.reportEnabled
             || preferences.bool(forKey: WiltedMacBulletinHub.activePreferenceKey) else { return }
         (existing ?? bulletinHub).reconcile()
     }

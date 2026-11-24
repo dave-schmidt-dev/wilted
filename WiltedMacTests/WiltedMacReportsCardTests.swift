@@ -74,7 +74,7 @@ final class WiltedMacReportsCardTests: XCTestCase {
 
     func testInterruptionsOffNoteExplainsWhyTheControlsAreDisabled() {
         XCTAssertEqual(WiltedMacReportsCard.interruptionsOffNote(interruptionsEnabled: false),
-                       "Turn on Read bulletins while playing to use alerts and headlines.")
+                       "Turn on Read bulletins while playing to use weather alerts and spoken headlines.")
         XCTAssertNil(WiltedMacReportsCard.interruptionsOffNote(interruptionsEnabled: true))
     }
 

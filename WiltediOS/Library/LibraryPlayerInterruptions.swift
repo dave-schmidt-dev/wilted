@@ -162,6 +162,11 @@ final class LibraryInterruptionController: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var channel: LibraryBulletins?
     var observedChannel: LibraryBulletins? { channel }
+    /// The story currently being read, when any.
+    @Published private(set) var activeSpokenHeadline: Bulletin?
+    /// The most recently read story remains available after its speech ends.
+    @Published private(set) var lastSpokenHeadline: Bulletin?
+    var nowPlayingHeadline: Bulletin? { activeSpokenHeadline ?? lastSpokenHeadline }
     private(set) var hasCheckedChannel = false
     private(set) var channelCheckFailed = false
     private var alerts: [String: Bulletin] = [:]
@@ -441,6 +446,8 @@ final class LibraryInterruptionController: ObservableObject {
             send { .speechFinished($0) }
             return
         }
+        if bulletin.kind == .headline { lastSpokenHeadline = bulletin }
+        if token == speechToken, bulletin.kind == .headline { activeSpokenHeadline = bulletin }
         let (limit, sleep) = (deps.maximumSpeech, deps.sleep)
         watchdog = Task { @MainActor [weak self] in
             try? await sleep(limit)
@@ -459,6 +466,7 @@ final class LibraryInterruptionController: ObservableObject {
         speechToken &+= 1
         watchdog?.cancel()
         watchdog = nil
+        activeSpokenHeadline = nil
         deps.speaker.stop()
     }
 }

@@ -9,6 +9,7 @@ struct BulletinProducerSettings: Equatable, Sendable {
     var alertsEnabled: Bool
     var headlinesEnabled: Bool
     var headlineMinimumGapMinutes: Int
+    var publishedActive = false
     /// Headlines about these topics are never read.
     var topics = HeadlineTopicFilter()
 }
@@ -18,6 +19,8 @@ struct NewsHeadlineCandidate: Equatable, Sendable {
     /// Stable across polls: the post's identity inside its feed.
     let id: String
     let feedTitle: String
+    /// Stable identity of the feed, used for publisher actions across devices.
+    var feedID: String? = nil
     let title: String
     let publishedAt: Date?
     var link: URL?
@@ -50,11 +53,10 @@ struct BulletinProducerStatus: Equatable, Sendable {
 /// Publishes `LibraryBulletins` for the Mac: the switches from Settings and the headlines of
 /// news feeds. Weather alerts are not published; each playing device runs its own monitor.
 ///
-/// A poll reads the news feeds (only while headlines are on), turns at most one new post per
-/// `headlineMinimumGapMinutes` into a headline bulletin, drops expired ones, and writes the
-/// channel only when the switches or the list changed. Turning interruptions off writes both
-/// switches false and an empty list. A failed poll backs off, so the next attempt is never
-/// sooner than twice the interval; nothing retries faster than that.
+/// A poll refreshes story cards regardless of speech settings, turns at most one new post per
+/// `headlineMinimumGapMinutes` into a bulletin when speech is on, drops expired bulletins, and
+/// writes the channel only when its switches or list changed. Setting changes publish before RSS
+/// reads, so turning interruptions off does not wait for a slow feed. A failed poll backs off.
 actor BulletinProducer {
     private static let log = Logger(subsystem: "com.zerodelta.wilted.mac", category: "Bulletins")
     static let pollInterval: TimeInterval = 900
@@ -68,6 +70,7 @@ actor BulletinProducer {
     private let heardHeadlines: @Sendable () async -> HeardHeadlineHistory.Snapshot
     private let settings: @Sendable () async -> BulletinProducerSettings
     private let newsItems: @Sendable () async throws -> [NewsHeadlineCandidate]
+    private let onCandidates: @Sendable ([NewsHeadlineCandidate]) async throws -> Void
     private let fetchPublished: @Sendable () async throws -> LibraryBulletins?
     private let publish: @Sendable (LibraryBulletins) async throws -> Void
     private let onStatus: @Sendable (BulletinProducerStatus) -> Void
@@ -90,6 +93,7 @@ actor BulletinProducer {
 
     init(settings: @escaping @Sendable () async -> BulletinProducerSettings,
          newsItems: @escaping @Sendable () async throws -> [NewsHeadlineCandidate],
+         onCandidates: @escaping @Sendable ([NewsHeadlineCandidate]) async throws -> Void = { _ in },
          fetchPublished: @escaping @Sendable () async throws -> LibraryBulletins?,
          publish: @escaping @Sendable (LibraryBulletins) async throws -> Void,
          onStatus: @escaping @Sendable (BulletinProducerStatus) -> Void = { _ in },
@@ -100,6 +104,7 @@ actor BulletinProducer {
         self.heardHeadlines = heardHeadlines
         self.settings = settings
         self.newsItems = newsItems
+        self.onCandidates = onCandidates
         self.fetchPublished = fetchPublished
         self.publish = publish
         self.onStatus = onStatus
@@ -128,12 +133,26 @@ actor BulletinProducer {
         let current = await settings()
         let moved = observedSettings.map {
             $0.interruptionsEnabled != current.interruptionsEnabled || $0.alertsEnabled != current.alertsEnabled
-                || $0.headlinesEnabled != current.headlinesEnabled || $0.topics != current.topics
+                || $0.headlinesEnabled != current.headlinesEnabled || $0.publishedActive != current.publishedActive
+                || $0.topics != current.topics
         } ?? false
         observedSettings = current
         guard moved, loop != nil, status.consecutiveFailures == 0 else { return }
         loop?.cancel()
         launchLoop()
+    }
+
+    /// Reads a changed set of news feeds without altering the user's speech settings.
+    func sourcesChanged() {
+        guard loop != nil, status.consecutiveFailures == 0 else { return }
+        loop?.cancel()
+        launchLoop()
+    }
+
+    /// Withdraws unstarted headlines from a muted publisher and refreshes the channel.
+    func publisherMuted(_ publisherID: String) {
+        headlines.removeAll { $0.publisherID == publisherID }
+        sourcesChanged()
     }
 
     private func launchLoop() {
@@ -210,7 +229,7 @@ actor BulletinProducer {
     private func run() async throws {
         let current = await settings()
         observedSettings = current
-        if !baselineLoaded {
+        if !baselineLoaded, current.interruptionsEnabled {
             published = try await fetchPublished()
             baselineLoaded = true
             if let published {
@@ -223,14 +242,34 @@ actor BulletinProducer {
             }
             status.publishedActive = published.map { $0.alertsEnabled || $0.headlinesEnabled } ?? false
         }
+
+        // Publish setting changes before waiting on RSS. Turning off interruptions must reach
+        // devices even when every feed is down; the next section still refreshes quiet story cards.
+        let time = now()
+        headlines.removeAll { $0.isExpired(at: time) }
+        if !current.interruptionsEnabled || !current.headlinesEnabled { headlines = [] }
+        let settingsOnly = try LibraryBulletins(
+            alertsEnabled: current.interruptionsEnabled && current.alertsEnabled,
+            headlinesEnabled: current.interruptionsEnabled && current.headlinesEnabled,
+            headlines: headlines,
+            updatedAt: time)
+        let mustClearPreviouslyActive = current.publishedActive
+            && !settingsOnly.alertsEnabled && !settingsOnly.headlinesEnabled
+        if Self.differs(settingsOnly, from: published) || mustClearPreviouslyActive {
+            try await publish(settingsOnly)
+            published = settingsOnly
+            status.publishedActive = settingsOnly.alertsEnabled || settingsOnly.headlinesEnabled
+        }
+
+        // Candidate collection is independent of speech and weather switches, so Recent stays
+        // current while the listener has speech turned off.
+        let candidates = try await newsItems()
+        try await onCandidates(candidates)
+
         let desired: LibraryBulletins
         if current.interruptionsEnabled {
-            let time = now()
-            headlines.removeAll { $0.isExpired(at: time) }
             if current.headlinesEnabled {
-                try await collectHeadlines(gapMinutes: current.headlineMinimumGapMinutes, topics: current.topics)
-            } else {
-                headlines = []
+                await collectHeadlines(candidates, gapMinutes: current.headlineMinimumGapMinutes, topics: current.topics)
             }
             desired = try LibraryBulletins(alertsEnabled: current.alertsEnabled,
                                            headlinesEnabled: current.headlinesEnabled,
@@ -258,8 +297,9 @@ actor BulletinProducer {
 
     // MARK: - Headlines
 
-    private func collectHeadlines(gapMinutes: Int, topics: HeadlineTopicFilter) async throws {
-        let candidates = try await newsItems()
+    private func collectHeadlines(
+        _ candidates: [NewsHeadlineCandidate], gapMinutes: Int, topics: HeadlineTopicFilter
+    ) async {
         let heard = await heardHeadlines()
         let skipped = Set(candidates.filter {
             topics.skips(title: $0.title, link: $0.link, categories: $0.categories)
@@ -300,7 +340,11 @@ actor BulletinProducer {
         return try? Bulletin(id: "headline:\(candidate.id)", kind: .headline,
                              text: String(text.prefix(Bulletin.maximumTextCharacters)),
                              severity: .unknown, issuedAt: time,
-                             expiresAt: time.addingTimeInterval(headlineLifetime))
+                             expiresAt: time.addingTimeInterval(headlineLifetime),
+                             storyID: candidate.id, publisherID: candidate.feedID,
+                             publisherName: source.isEmpty ? nil : String(source.prefix(200)),
+                             headline: String(title.prefix(Bulletin.maximumTextCharacters)),
+                             link: candidate.link, publishedAt: candidate.publishedAt)
     }
 
     /// The headline part of a published bulletin text, which reads "Source. Headline".

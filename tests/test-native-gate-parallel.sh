@@ -30,7 +30,13 @@ source "$repo_root/scripts/lib/native-gate-parallel.sh"
 source "$repo_root/scripts/lib/native-gate-legs.sh"
 source "$repo_root/tests/lib/gate-harness-stubs.sh"
 failed_legs=0; completed_legs=0; deferred_legs=0; deferred_leg_names=()
-status() { printf '%s\\n' "$1" >&2; }
+status() {
+  printf '%s\\n' "$1" >&2
+  case "$1" in
+    'native.wait name=ios-unit-tests dependency=xcodegen-reproducible waited='*)
+      : >"$tmp_root/ios-unit-tests.waiting" ;;
+  esac
+}
 trap 'wilted_gate_stop_parallel' EXIT
 trap 'exit 143' TERM
 run_leg() {
@@ -51,6 +57,7 @@ run_leg() {
   esac
   if [[ "$name" == xcodegen-reproducible && "${HOLD_XCODEGEN:-}" == supervised ]]; then
     wilted_start_supervisor python3 "$repo_root/scripts/run-bounded.py" --timeout-seconds 120 -- sleep 60
+    : >"$tmp_root/xcodegen-supervisor.started"
     wilted_wait_active_supervisor
   elif [[ "$name" == xcodegen-reproducible && "${HOLD_XCODEGEN:-}" == wait ]]; then
     while :; do sleep .05; done
@@ -128,8 +135,18 @@ printf '%s %s %s\\n' "$failed_legs" "$completed_legs" "$deferred_legs"
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                    env=dict(os.environ, HOLD_XCODEGEN='supervised'))
         try:
-            deadline = time.monotonic() + 5
-            while not (self.root / 'events').exists() and time.monotonic() < deadline: time.sleep(.02)
+            # The dependent worker waits before run_leg, so its `.started`
+            # marker cannot exist while xcodegen is held. Its first wait
+            # status proves the cleanup trap is installed and it is pending.
+            ready = [self.root / (name + '.started') for name in
+                     ['xcodegen-reproducible', 'package-one', 'package-two']]
+            ready.append(self.root / 'xcodegen-supervisor.started')
+            ready.append(self.root / 'ios-unit-tests.waiting')
+            deadline = time.monotonic() + 20
+            while not all(path.exists() for path in ready) and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.assertEqual([path.name for path in ready if not path.exists()], [],
+                             'fixture must launch every worker and its supervisor before interruption')
             process.terminate()
             try:
                 out, err = process.communicate(timeout=50)

@@ -13,8 +13,10 @@ final class BulletinProducerHarness: @unchecked Sendable {
     private var _publishCount = 0
     private var _fetchCount = 0
     private var _newsFetches = 0
+    private var _retainedCandidates: [[NewsHeadlineCandidate]] = []
     private var _now = Date(timeIntervalSince1970: 1_800_000_000)
     private var _publishError: Error?
+    private var _newsError: Error?
     private var _delays: [TimeInterval] = []
 
     var settings: BulletinProducerSettings {
@@ -31,6 +33,7 @@ final class BulletinProducerHarness: @unchecked Sendable {
     }
     var publishCount: Int { lock.withLock { _publishCount } }
     var newsFetches: Int { lock.withLock { _newsFetches } }
+    var retainedCandidates: [[NewsHeadlineCandidate]] { lock.withLock { _retainedCandidates } }
     var now: Date {
         get { lock.withLock { _now } }
         set { lock.withLock { _now = newValue } }
@@ -39,13 +42,19 @@ final class BulletinProducerHarness: @unchecked Sendable {
         get { lock.withLock { _publishError } }
         set { lock.withLock { _publishError = newValue } }
     }
+    var newsError: Error? {
+        get { lock.withLock { _newsError } }
+        set { lock.withLock { _newsError = newValue } }
+    }
     var delays: [TimeInterval] { lock.withLock { _delays } }
 
     func advance(minutes: Double) { now = now.addingTimeInterval(minutes * 60) }
 
     func item(_ id: String, minutesAgo: Double = 1) -> NewsHeadlineCandidate {
-        NewsHeadlineCandidate(id: id, feedTitle: "Wire", title: "Story \(id)",
-                              publishedAt: now.addingTimeInterval(-minutesAgo * 60))
+        NewsHeadlineCandidate(
+            id: id, feedTitle: "Wire", feedID: "feed-wire", title: "Story \(id)",
+            publishedAt: now.addingTimeInterval(-minutesAgo * 60),
+            link: URL(string: "https://example.test/story/\(id)"))
     }
 
     func producer() -> BulletinProducer {
@@ -53,7 +62,11 @@ final class BulletinProducerHarness: @unchecked Sendable {
             settings: { [self] in settings },
             newsItems: { [self] in
                 lock.withLock { _newsFetches += 1 }
+                if let newsError { throw newsError }
                 return items
+            },
+            onCandidates: { [self] candidates in
+                lock.withLock { _retainedCandidates.append(candidates) }
             },
             fetchPublished: { [self] in
                 lock.withLock { _fetchCount += 1 }
@@ -84,7 +97,7 @@ final class BulletinProducerTests: XCTestCase {
 
     // MARK: Done-when
 
-    func testInterruptionsOffPublishesBothFlagsFalseAndNoHeadlines() async throws {
+    func testInterruptionsOffPublishesNoSpokenHeadlinesButRetainsStoryCandidates() async throws {
         let h = BulletinProducerHarness()
         let producer = h.producer()
         await producer.poll()
@@ -94,12 +107,12 @@ final class BulletinProducerTests: XCTestCase {
         XCTAssertEqual(h.published?.alertsEnabled, true)
 
         h.settings.interruptionsEnabled = false
-        let fetchesBefore = h.newsFetches
         await producer.poll()
         XCTAssertEqual(h.published?.alertsEnabled, false)
         XCTAssertEqual(h.published?.headlinesEnabled, false)
         XCTAssertEqual(h.published?.headlines, [])
-        XCTAssertEqual(h.newsFetches, fetchesBefore, "news feeds are not read while interruptions are off")
+        XCTAssertEqual(h.newsFetches, 3, "recent stories stay current while speech is off")
+        XCTAssertEqual(h.retainedCandidates.last, h.items)
     }
 
     func testTwoNewsItemsWithinTheGapYieldOneHeadlineBulletin() async throws {
@@ -113,6 +126,10 @@ final class BulletinProducerTests: XCTestCase {
         XCTAssertEqual(headlines.first?.id, "headline:b", "the newest post wins")
         XCTAssertEqual(headlines.first?.kind, .headline)
         XCTAssertEqual(headlines.first?.text, "Wire. Story b")
+        XCTAssertEqual(headlines.first?.headlineStoryID, "b")
+        XCTAssertEqual(headlines.first?.publisherID, "feed-wire")
+        XCTAssertEqual(headlines.first?.publisherName, "Wire")
+        XCTAssertEqual(headlines.first?.link?.absoluteString, "https://example.test/story/b")
 
         // A third post inside the gap is dropped for good, not held for later.
         h.advance(minutes: 10)
@@ -150,9 +167,27 @@ final class BulletinProducerTests: XCTestCase {
         let producer = h.producer()
         await producer.poll()
         XCTAssertEqual(h.publishCount, 0)
-        XCTAssertEqual(h.newsFetches, 0)
         let publishedActive = await producer.status.publishedActive
-        XCTAssertEqual(publishedActive, false)
+        XCTAssertNil(publishedActive, "a channel the producer never reads has no known published state")
+        XCTAssertEqual(h.newsFetches, 1, "quiet feed polling can update story cards")
+        XCTAssertEqual(h.retainedCandidates.last, [])
+    }
+
+    func testTurningSpeechOffPublishesEvenWhenRSSFails() async throws {
+        let h = BulletinProducerHarness()
+        let producer = h.producer()
+        await producer.poll()
+        XCTAssertEqual(h.published?.alertsEnabled, true)
+        h.settings.interruptionsEnabled = false
+        h.newsError = Boom()
+
+        await producer.poll()
+
+        XCTAssertEqual(h.published?.alertsEnabled, false)
+        XCTAssertEqual(h.published?.headlinesEnabled, false)
+        XCTAssertEqual(h.published?.headlines, [])
+        let status = await producer.status
+        XCTAssertNotNil(status.lastError, "the failed story refresh remains visible")
     }
 
     func testExpiredHeadlinesAreDropped() async throws {
@@ -179,16 +214,30 @@ final class BulletinProducerTests: XCTestCase {
         XCTAssertEqual(h.published?.headlines, [], "undated posts seen at baseline stay seen")
     }
 
-    func testHeadlinesOffPublishesNoHeadlines() async throws {
+    func testHeadlinesOffPublishesNoSpeechButRetainsStories() async throws {
         let h = BulletinProducerHarness()
         h.settings.headlinesEnabled = false
         h.items = [h.item("a")]
         let producer = h.producer()
         await producer.poll()
         await producer.poll()
-        XCTAssertEqual(h.newsFetches, 0)
+        XCTAssertEqual(h.newsFetches, 2)
+        XCTAssertEqual(h.retainedCandidates.last, h.items)
         XCTAssertEqual(h.published?.headlinesEnabled, false)
         XCTAssertEqual(h.published?.headlines, [])
+    }
+
+    func testCandidateRetentionPreservesPublisherAndOriginalStoryLink() async throws {
+        let h = BulletinProducerHarness()
+        let item = NewsHeadlineCandidate(
+            id: "story-1", feedTitle: "City Wire", feedID: "feed-1", title: "Transit plan approved",
+            publishedAt: h.now, link: URL(string: "https://example.test/story"))
+        h.items = [item]
+        h.settings.headlinesEnabled = false
+
+        await h.producer().poll()
+
+        XCTAssertEqual(h.retainedCandidates.last, [item])
     }
 
     func testARestartDoesNotAnnounceWhatTheServerAlreadyHolds() async throws {

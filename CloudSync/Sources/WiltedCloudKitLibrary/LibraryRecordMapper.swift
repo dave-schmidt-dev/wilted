@@ -29,6 +29,10 @@ public enum LibraryRecordType: String, CaseIterable, Sendable {
     case publication = "LibraryPublicationRecord"
     /// The Mac's bulletin channel (`LibraryBulletins`); one record, only the library writer writes it.
     case bulletins = "LibraryBulletinsRecord"
+    /// The Mac's bounded headline projection index; one record, only the library writer writes it.
+    case headlineProjectionIndex = "HeadlineProjectionIndexRecord"
+    /// One immutable, bounded page in a Mac-authored headline projection generation.
+    case headlineProjectionPage = "HeadlineProjectionPageRecord"
     /// The follower devices that have announced themselves (`LibraryDeviceDirectory`); one record,
     /// the only one every follower writes, each write merged into the server copy.
     case deviceDirectory = "LibraryDeviceDirectoryRecord"
@@ -54,6 +58,8 @@ public enum LibraryRecordType: String, CaseIterable, Sendable {
         case .stats: "stats:"
         case .publication: "publication:"
         case .bulletins: "bulletins:"
+        case .headlineProjectionIndex: "headlineindex:"
+        case .headlineProjectionPage: "headlinepage:"
         case .deviceDirectory: "devicedirectory:"
         case .deviceLink: "devicelink:"
         }
@@ -87,6 +93,8 @@ public enum LibraryDecodedRecord: Sendable, Equatable {
     case stats(LibraryStats)
     case publication(LibraryPublication)
     case bulletins(LibraryBulletins)
+    case headlineProjectionIndex(LibraryHeadlineProjectionIndex)
+    case headlineProjectionPage(LibraryHeadlineProjectionPage)
     case deviceDirectory(LibraryDeviceDirectory)
     case deviceLink(LibraryDeviceLink)
     case skipped(recordType: String)
@@ -159,6 +167,17 @@ public struct LibraryRecordMapper: Sendable {
 
     /// The single statistics record, read by name; only the library writer writes it.
     public var bulletinsRecordID: CKRecord.ID { CKRecord.ID(recordName: LibraryRecordType.bulletins.namePrefix + "library", zoneID: zoneID) }
+    public var headlineProjectionIndexRecordID: CKRecord.ID {
+        CKRecord.ID(recordName: LibraryRecordType.headlineProjectionIndex.namePrefix + "library", zoneID: zoneID)
+    }
+
+    public func recordID(
+        headlineProjectionPage generationID: String,
+        kind: LibraryHeadlineProjectionPage.Kind,
+        pageIndex: Int
+    ) throws -> CKRecord.ID {
+        try id(.headlineProjectionPage, [generationID, kind.rawValue, String(pageIndex)])
+    }
     public var statsRecordID: CKRecord.ID { CKRecord.ID(recordName: LibraryRecordType.stats.namePrefix + "library", zoneID: zoneID) }
 
     public func recordID(intentIndexFor deviceID: String) throws -> CKRecord.ID { try id(.intentIndex, [deviceID]) }
@@ -253,6 +272,18 @@ public struct LibraryRecordMapper: Sendable {
 
     public func record(bulletins: LibraryBulletins, existing: CKRecord? = nil) throws -> CKRecord {
         try save(.bulletins, bulletinsRecordID, bulletins, existing)
+    }
+
+    public func record(headlineProjectionIndex index: LibraryHeadlineProjectionIndex, existing: CKRecord? = nil) throws -> CKRecord {
+        try save(.headlineProjectionIndex, headlineProjectionIndexRecordID, index, existing)
+    }
+
+    public func record(headlineProjectionPage page: LibraryHeadlineProjectionPage, existing: CKRecord? = nil) throws -> CKRecord {
+        try save(
+            .headlineProjectionPage,
+            recordID(headlineProjectionPage: page.generationID, kind: page.kind, pageIndex: page.pageIndex),
+            page,
+            existing)
     }
 
     public func record(deviceDirectory: LibraryDeviceDirectory, existing: CKRecord? = nil) throws -> CKRecord {
@@ -350,6 +381,15 @@ public struct LibraryRecordMapper: Sendable {
                 let value = try Self.decoder.decode(LibraryBulletins.self, from: data)
                 try expect(name, bulletinsRecordID)
                 return .bulletins(value)
+            case .headlineProjectionIndex:
+                let value = try Self.decoder.decode(LibraryHeadlineProjectionIndex.self, from: data)
+                try expect(name, headlineProjectionIndexRecordID)
+                return .headlineProjectionIndex(value)
+            case .headlineProjectionPage:
+                let value = try Self.decoder.decode(LibraryHeadlineProjectionPage.self, from: data)
+                try expect(name, recordID(
+                    headlineProjectionPage: value.generationID, kind: value.kind, pageIndex: value.pageIndex))
+                return .headlineProjectionPage(value)
             case .deviceDirectory:
                 let value = try Self.decoder.decode(LibraryDeviceDirectory.self, from: data)
                 try expect(name, deviceDirectoryRecordID)
