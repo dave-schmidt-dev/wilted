@@ -228,7 +228,9 @@ final class WiltedMacNavigationStateTests: XCTestCase {
             XCTAssertTrue(source.contains("scrollAnchor: model.scrollAnchor(for: \(destination))"), file)
         }
         let layout = try WiltedMacHeadless.viewSource("WiltedMacDestination.swift")
-        XCTAssertTrue(layout.contains(".scrollPosition(id: scrollAnchor ?? .constant(nil), anchor: .top)"))
+        XCTAssertTrue(layout.contains("if let scrollAnchor"), "destinations bind only when they have a saved anchor")
+        XCTAssertTrue(layout.contains("scrollView.scrollPosition(id: scrollAnchor, anchor: .top)"),
+                      "the destination scroll position writes to its model binding")
         XCTAssertTrue(layout.contains(".scrollTargetLayout()"))
         let app = try String(
             contentsOf: WiltedMacHeadless.sourceRoot().appendingPathComponent("WiltedMac/WiltedMacApp.swift"),

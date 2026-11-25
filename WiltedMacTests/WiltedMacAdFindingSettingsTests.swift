@@ -299,13 +299,20 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-ready"], suffix: "ads-summary-fit")
         addTeardownBlock { await model.close() }
         model.selectedNavigation = .settings
-        model.settingsSection = .ads
+        model.settingsSection = .general
         await model.waitForLifetimeStatisticsForTesting()
-        let size = WiltedMacHeadless.windowCanvas
-        let text = try WiltedMacHeadless.recognizedText(
-            WiltedMacRootView(model: model).frame(width: size.width, height: size.height),
-            size: CGSize(width: size.width + 48, height: size.height + 48)
-        ).joined(separator: " ")
+        let mounted = WiltedMacHeadless.hosted(WiltedMacRootView(model: model))
+        defer { withExtendedLifetime(mounted.window) {} }
+        let scrollView = try XCTUnwrap(WiltedMacHeadless.destinationScrollView(in: mounted.view))
+        let initialOrigin = scrollView.contentView.bounds.origin
+        model.settingsSection = .ads
+        let reachedAds = await WiltedMacHeadless.eventually("the Ads section scrolls into view") {
+            mounted.window.displayIfNeeded()
+            mounted.view.layoutSubtreeIfNeeded()
+            return scrollView.contentView.bounds.origin != initialOrigin
+        }
+        XCTAssertTrue(reachedAds, "the hosted Settings page must scroll to its selected section")
+        let text = try WiltedMacHeadless.recognizedText(in: mounted.view).joined(separator: " ")
         XCTAssertTrue(text.contains("0 of 0 podcasts selected for ad finding"), text)
         XCTAssertTrue(text.contains("All shows"), text)
     }

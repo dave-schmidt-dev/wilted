@@ -39,13 +39,17 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
     func testExplanatorySettingsCopyMovesToHelpWhileStatusRemainsVisible() async throws {
         let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-ready"])
         await model.waitForLifetimeStatisticsForTesting()
+        model.selectedNavigation = .settings
         let view = WiltedMacSettingsView(model: model)
-        let settingsText = try WiltedMacHeadless.recognizedText(view, size: CGSize(width: 1_000, height: 2_000)).joined(separator: " ")
-        let appearance = settingsText
+        let mounted = WiltedMacHeadless.hosted(WiltedMacRootView(model: model))
+        defer { withExtendedLifetime(mounted.window) {} }
+        let appearance = try await visibleSettingsText(
+            .general, model: model, view: mounted.view, window: mounted.window)
         XCTAssertTrue(appearance.contains("Appearance"), appearance)
         XCTAssertFalse(appearance.contains("Applies to every screen"), appearance)
-        model.settingsSection = .newEpisodes
-        let automation = try WiltedMacHeadless.recognizedText(view, size: CGSize(width: 1000, height: 2000)).joined(separator: " ")
+        try retainCopyEvidence(WiltedMacHeadless.snapshot(of: mounted.view), name: "settings-inline-light")
+        let automation = try await visibleSettingsText(
+            .newEpisodes, model: model, view: mounted.view, window: mounted.window)
         XCTAssertTrue(automation.contains("Automation"), automation)
         XCTAssertTrue(automation.contains("Manual waits for Refresh"), automation)
         for paragraph in ["Refresh adds metadata only", "Both overrides stay on", "An episode joins Larder"] {
@@ -55,10 +59,9 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
             view.preparingCard, size: CGSize(width: 1_000, height: 1_000)).joined(separator: " ")
         XCTAssertTrue(preparing.contains("Immediately starts downloaded episodes"), preparing)
         let statistics = WiltedMacLifetimeStatisticsCard(model: model)
-        model.settingsSection = .about
-        let stats = try WiltedMacHeadless.recognizedText(view, size: CGSize(width: 1000, height: 2000)).joined(separator: " ")
+        let stats = try await visibleSettingsText(
+            .about, model: model, view: mounted.view, window: mounted.window)
         XCTAssertTrue(stats.contains("counted from"), "actual tracking date remains visible: \(stats)")
-        try retainCopyEvidence(WiltedMacHeadless.render(view, size: CGSize(width: 1_000, height: 2_000)), name: "settings-inline-light")
         for (name, help, marker) in [("appearance", view.appearanceHelp, "Applies"), ("automation", view.automationHelp, "override"), ("statistics", statistics.statisticsHelp, "measured")] {
             let size = CGSize(width: 400, height: 420)
             let text = try WiltedMacHeadless.recognizedText(help, size: size).joined(separator: " ")
@@ -140,12 +143,12 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
         model.selectedNavigation = .feeds
         model.selectedNavigation = .settings
 
-        // The rendered Settings destination, including its automation card.
-        model.settingsSection = .newEpisodes
-        let bitmap = try WiltedMacHeadless.render(WiltedMacRootView(model: model))
-        let detail = NSRect(x: 260, y: 0, width: bitmap.pixelsWide - 260, height: bitmap.pixelsHigh)
-        XCTAssertGreaterThan(WiltedMacHeadless.distinctColorCount(in: bitmap, region: detail), 8,
-                             "the Settings destination rendered blank")
+        let mounted = WiltedMacHeadless.hosted(WiltedMacRootView(model: model))
+        defer { withExtendedLifetime(mounted.window) {} }
+        let automationText = try await visibleSettingsText(
+            .newEpisodes, model: model, view: mounted.view, window: mounted.window)
+        XCTAssertTrue(automationText.contains("Automation"), automationText)
+        XCTAssertTrue(automationText.contains("Manual waits for Refresh"), automationText)
 
         let settings = try WiltedMacHeadless.viewSource("WiltedMacSettingsView.swift")
         for identifier in [
@@ -180,15 +183,15 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
             XCTAssertTrue(settings.contains(identifier), identifier)
         }
         XCTAssertTrue(settings.contains("Uses local time. The window may continue overnight."))
-        model.settingsSection = .preparing
-        let offPeakBitmap = try WiltedMacHeadless.render(WiltedMacRootView(model: model))
-        XCTAssertGreaterThan(WiltedMacHeadless.distinctColorCount(in: offPeakBitmap, region: detail), 8)
+        let offPeakText = try await visibleSettingsText(
+            .preparing, model: model, view: mounted.view, window: mounted.window)
+        XCTAssertTrue(offPeakText.contains("Uses local time"), offPeakText)
+        XCTAssertTrue(offPeakText.contains("The window may continue overnight"), offPeakText)
+        XCTAssertTrue(offPeakText.contains("Level voices"), offPeakText)
 
         // When no sync engine runs, Settings shows the not-running text.
-        model.settingsSection = .devices
-        let settingsView = WiltedMacSettingsView(model: model)
-        let settingsLines = try WiltedMacHeadless.recognizedText(settingsView, size: CGSize(width: 1_000, height: 2_000))
-        let settingsText = settingsLines.joined(separator: " ")
+        let settingsText = try await visibleSettingsText(
+            .devices, model: model, view: mounted.view, window: mounted.window)
         XCTAssertTrue(settingsText.contains("Library sync is not running on this Mac"), settingsText)
         XCTAssertEqual(model.librarySyncStatus.headline, "Library sync is not running on this Mac")
     }
@@ -233,5 +236,26 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
     private func isOffPeak(_ model: WiltedMacModel) -> Bool {
         if case .offPeak = model.automationSettings.processingPolicy { return true }
         return false
+    }
+
+    private func visibleSettingsText(
+        _ section: WiltedMacSettingsSection,
+        model: WiltedMacModel,
+        view: NSHostingView<AnyView>,
+        window: NSWindow
+    ) async throws -> String {
+        let previousSection = model.settingsSection
+        let scrollView = try XCTUnwrap(WiltedMacHeadless.destinationScrollView(in: view))
+        let previousOrigin = scrollView.contentView.bounds.origin
+        model.settingsSection = section
+        let reachedSection = await WiltedMacHeadless.eventually("Settings scrolls to \(section.title)") {
+            window.displayIfNeeded()
+            view.layoutSubtreeIfNeeded()
+            let origin = scrollView.contentView.bounds.origin
+            return model.settingsSection == section
+                && (previousSection == section || origin != previousOrigin)
+        }
+        XCTAssertTrue(reachedSection, "the hosted Settings page must scroll to \(section.title)")
+        return try WiltedMacHeadless.recognizedText(in: view).joined(separator: " ")
     }
 }

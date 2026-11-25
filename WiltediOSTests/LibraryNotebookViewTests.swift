@@ -95,9 +95,10 @@ final class LibraryNotebookViewTests: XCTestCase {
 
         let unavailableHost = HostedView(
             LibraryNotebookView(model: fixture.model, player: fixture.makePlayer()))
-        XCTAssertNotNil(unavailableHost.element("wilted-notebook-headline-availability"))
-        XCTAssertNil(unavailableHost.element("wilted-notebook-empty"),
-                     "unknown saved headlines must not be described as an empty Notebook")
+        let unavailableState = try XCTUnwrap(unavailableHost.element("wilted-notebook-empty"))
+        XCTAssertEqual(unavailableState.label, "Saved stories are unavailable",
+                       "offline unknown headlines must not be labelled as an empty Notebook")
+        XCTAssertEqual(unavailableState.value, "Saved headlines are unavailable while offline.")
 
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let story = try LibraryHeadlineStory(
@@ -126,6 +127,9 @@ final class LibraryNotebookViewTests: XCTestCase {
             let hosted = HostedView(
                 LibraryNotebookView(model: fixture.model, player: fixture.makePlayer()), dark: dark)
             XCTAssertNotNil(hosted.element("wilted-notebook-empty"), "empty state remains visible, dark=\(dark)")
+            let emptyState = try XCTUnwrap(hosted.element("wilted-notebook-empty"))
+            XCTAssertEqual(emptyState.label, "Notebook is waiting to sync")
+            XCTAssertEqual(emptyState.value, "Saved headlines appear after this library syncs.")
             XCTAssertNotNil(hosted.element("wilted-notebook-notice"), "offline status remains visible, dark=\(dark)")
         }
 
@@ -140,6 +144,9 @@ final class LibraryNotebookViewTests: XCTestCase {
             let hosted = HostedView(
                 LibraryNotebookView(model: failedModel, player: fixture.makePlayer()), dark: dark)
             XCTAssertNotNil(hosted.element("wilted-notebook-empty"), "error does not hide retained empty state, dark=\(dark)")
+            let emptyState = try XCTUnwrap(hosted.element("wilted-notebook-empty"))
+            XCTAssertEqual(emptyState.label, "Notebook is waiting to sync")
+            XCTAssertEqual(emptyState.value, "Saved headlines appear after this library syncs.")
             XCTAssertNotNil(hosted.element("wilted-notebook-notice"), "read error has a visible status, dark=\(dark)")
         }
     }

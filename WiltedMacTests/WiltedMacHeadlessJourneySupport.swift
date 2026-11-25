@@ -85,6 +85,51 @@ enum WiltedMacHeadless {
         return window
     }
 
+    /// Mounts a view in a real offscreen window so SwiftUI scroll readers and
+    /// appearance handlers run as they do in the app window.
+    static func hosted<Root: View>(
+        _ root: Root, size: CGSize = windowCanvas
+    ) -> (view: NSHostingView<AnyView>, window: NSWindow) {
+        let content = AnyView(root.environment(\.colorScheme, .light)
+            .frame(width: size.width, height: size.height))
+        let view = NSHostingView(rootView: content)
+        view.frame = NSRect(origin: .zero, size: size)
+        let window = offscreenWindow(hosting: view)
+        view.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+        return (view, window)
+    }
+
+    /// Returns the largest hosted scroll view, which is the destination body
+    /// when a page contains smaller nested lists or the sidebar.
+    static func destinationScrollView(in root: NSView) -> NSScrollView? {
+        func descendants(of view: NSView) -> [NSView] {
+            view.subviews.flatMap { [$0] + descendants(of: $0) }
+        }
+        return descendants(of: root).compactMap { $0 as? NSScrollView }.max {
+            ($0.documentView?.bounds.height ?? 0) < ($1.documentView?.bounds.height ?? 0)
+        }
+    }
+
+    /// Captures and recognizes the visible pixels of a mounted view.
+    static func recognizedText<Root: View>(in hostedView: NSHostingView<Root>) throws -> [String] {
+        try recognizedLines(in: snapshot(of: hostedView)).map(\.text)
+    }
+
+    /// Captures the currently visible pixels of a mounted view.
+    static func snapshot<Root: View>(of hostedView: NSHostingView<Root>) throws -> NSBitmapImageRep {
+        hostedView.window?.displayIfNeeded()
+        hostedView.layoutSubtreeIfNeeded()
+        let size = hostedView.bounds.size
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: Int(size.width) * 2, pixelsHigh: Int(size.height) * 2,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bitmapFormat: [], bytesPerRow: 0, bitsPerPixel: 0))
+        bitmap.size = size
+        hostedView.cacheDisplay(in: hostedView.bounds, to: bitmap)
+        return bitmap
+    }
+
     /// Renders `view` offscreen in light mode and returns its bitmap.
     static func render<V: View>(_ view: V, size: CGSize = windowCanvas, scale: Int = 1) throws -> NSBitmapImageRep {
         let hostingView = NSHostingView(

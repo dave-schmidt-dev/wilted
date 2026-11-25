@@ -63,7 +63,7 @@ final class LibraryHeadlineCardsTests: XCTestCase {
         XCTAssertEqual(retriedRequest, failedID)
     }
 
-    func testLarderAndHeadlineArchiveCardsShowOneListenNextActionPerStory() async throws {
+    func testLarderRecentArchiveAndNotebookShowOneListenNextActionPerStory() async throws {
         await HostedAccessibility.prepare()
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let recent = try sampleStory(id: "recent-story", firstSeenAt: now, lastSeenAt: now)
@@ -75,11 +75,9 @@ final class LibraryHeadlineCardsTests: XCTestCase {
             id: "feed-1", name: "Example News", isMuted: false, revision: 0)
         let projection = try LibraryHeadlineProjection(
             revision: 1, updatedAt: now, recent: [recent], saved: [saved], publishers: [publisher])
-        let model = LibraryAppModel(
-            transport: InMemoryLibraryTransport(
-                deviceID: "phone", server: InMemoryLibraryServer(writerDeviceID: "mac"),
-                verifiedOwnerToken: "owner-a"),
-            deviceID: "phone", now: { now })
+        let fixture = try LibraryViewFixture()
+        defer { fixture.tearDown() }
+        let model = fixture.model
         model.headlinePhoneState.bindLocalOwner("owner-a", generation: 0, reviewHold: false)
         model.headlinePhoneState.replaceProjection(projection, owner: "owner-a", generation: 0)
         let host = HostedView(NavigationStack {
@@ -96,7 +94,14 @@ final class LibraryHeadlineCardsTests: XCTestCase {
         host.settle()
 
         XCTAssertNotNil(host.element(recentListenID))
-        XCTAssertNotNil(host.element("wilted-library-headline-listen-next-\(saved.id)"))
+        let savedListenID = "wilted-library-headline-listen-next-\(saved.id)"
+        XCTAssertNil(host.element(savedListenID), "expired saved stories no longer have a second Saved destination")
+
+        let notebook = HostedView(NavigationStack {
+            LibraryNotebookView(model: model, player: fixture.makePlayer())
+        })
+        XCTAssertEqual(notebook.elements().filter { $0.identifier == savedListenID }.count, 1,
+                       "an expired saved headline keeps one Listen next action in Notebook")
     }
 
     func testProjectionAndCommandsSurviveOfflineRelaunchWithoutChangingDecisionOutbox() throws {

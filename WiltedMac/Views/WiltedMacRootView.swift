@@ -176,6 +176,7 @@ struct WiltedMacRootView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help("Dismiss headline")
                 .accessibilityLabel("Dismiss headline")
                 .accessibilityIdentifier("wilted-headline-toast-dismiss")
             }

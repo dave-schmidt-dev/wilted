@@ -56,7 +56,8 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         XCTAssertEqual(state.label, "Reading this story")
 
         forward.tap()
-        XCTAssertTrue(waitForLabel("Newest headline in the Larder", on: title, timeout: 5))
+        XCTAssertTrue(waitForLabel("Newest headline in the Larder", on: title, timeout: 12),
+                      "the next queued story waits for a later ad break after skipping the first")
         XCTAssertEqual(state.label, "Reading this story")
         XCTAssertEqual(app.staticTexts["wilted-player-headline-publisher"].label, "Newer Daily")
         let nextRead = app.descendants(matching: .any)["wilted-player-headline-read-fixture-story-newer"]

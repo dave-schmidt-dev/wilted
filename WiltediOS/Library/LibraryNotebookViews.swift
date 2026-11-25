@@ -94,9 +94,24 @@ struct LibraryNotebookView: View {
         return nil
     }
 
+    private var emptyNotebookTitle: String {
+        if model.accountQuarantined { return "Saved headlines are hidden" }
+        if headlines.refreshFailed { return "Saved stories are unavailable" }
+        if headlines.writeFailed { return "Headline changes could not be saved" }
+        if model.headlineProjection == nil && !headlines.isBoundToLocalOwner {
+            return "Notebook is waiting to sync"
+        }
+        return "Notebook is empty"
+    }
+
+    private var emptyNotebookDescription: String {
+        headlineAvailabilityMessage ?? "Save a podcast moment or headline to keep it here."
+    }
+
     var body: some View {
         List {
-            if let headlineAvailabilityMessage {
+            if let headlineAvailabilityMessage,
+               (!notebook.entries.isEmpty || !savedHeadlineStories.isEmpty) {
                 Section {
                     Text(headlineAvailabilityMessage)
                         .wiltedFont(.utility)
@@ -168,13 +183,16 @@ struct LibraryNotebookView: View {
                     }
                 }
             }
-            if notebook.entries.isEmpty && savedHeadlineStories.isEmpty && headlineAvailabilityMessage == nil {
+            if notebook.entries.isEmpty && savedHeadlineStories.isEmpty {
                 Section {
-                    ContentUnavailableView(
-                        "Notebook is empty",
-                        systemImage: "bookmark",
-                        description: Text("Save a podcast moment or headline to keep it here.")
-                    )
+                    ContentUnavailableView {
+                        Label(emptyNotebookTitle, systemImage: "bookmark")
+                    } description: {
+                        Text(emptyNotebookDescription)
+                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(emptyNotebookTitle)
+                    .accessibilityValue(emptyNotebookDescription)
                     .accessibilityIdentifier("wilted-notebook-empty")
                 }
             }
