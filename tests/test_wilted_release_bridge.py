@@ -44,9 +44,9 @@ class IdentityAllocationTests(unittest.TestCase):
         self.assertEqual(proof["groupIdentifierHash"], hashlib.sha256(b"group-1").hexdigest())
 
     def test_project_configuration_matches_the_current_release(self) -> None:
-        self.assertEqual(BRIDGE.marketing_version(), "0.8.0")
+        self.assertEqual(BRIDGE.marketing_version(), "0.8.1")
         project = (ROOT / "project.yml").read_text(encoding="utf-8")
-        self.assertRegex(project, r'(?m)^    CURRENT_PROJECT_VERSION:\s*"20"\s*$')
+        self.assertRegex(project, r'(?m)^    CURRENT_PROJECT_VERSION:\s*"21"\s*$')
 
     def test_assignment_reconciliation_is_read_only_and_binds_the_exact_group_and_build(self) -> None:
         for index, (group_builds, expected) in enumerate((([], "absent"), ([{"type": "builds", "id": "build-1"}], "found")), start=1):
