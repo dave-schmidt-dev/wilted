@@ -116,7 +116,6 @@ final class WiltedMacBulletinAudioCoordinator {
                                      revision: (existing?.statusRevision ?? 0) + 1, failure: .unavailableStory)
             return try .applied(for: intent, at: now())
         }
-        let current = resolved.bulletin
         guard let voice = selectedVoice() else {
             try await publishFailure(intent, bulletinID: bulletinID, context: context,
                                      revision: (existing?.statusRevision ?? 0) + 1, failure: .missingVoice)
