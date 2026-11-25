@@ -109,7 +109,13 @@ final class WiltedMacSyncRoundTests: XCTestCase {
     func testTenIdleMinutesAreAtMostOneRoundPerThirtySeconds() async throws {
         let rig = makeRig()
         await rig.poller.start()
-        await rig.time.advance(by: 600)
+        await waitForRound(rig, count: 1)
+        await waitForTimerSleep(rig.time)
+        for expectedRound in 2...21 {
+            await rig.time.advance(by: 30)
+            await waitForRound(rig, count: expectedRound)
+            if expectedRound < 21 { await waitForTimerSleep(rig.time) }
+        }
         let polls = rig.counts.calls("poll")
         XCTAssertEqual(polls.count, 21, "one at start, then every 30 s")
         let gaps = zip(polls.dropFirst(), polls).map { $0.timeIntervalSince($1) }
@@ -117,6 +123,24 @@ final class WiltedMacSyncRoundTests: XCTestCase {
         XCTAssertEqual(rig.counts.total, polls.count, "nothing but the round talks to the server")
         XCTAssertLessThanOrEqual(Double(rig.counts.total) / 10, 2.1, "idle ops per minute")
         await rig.poller.stop()
+    }
+
+    private func waitForRound(_ rig: Rig, count: Int) async {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while ContinuousClock.now < deadline {
+            if (await rig.poller.cycleCount) >= count { return }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        XCTFail("Timed out waiting for sync round \(count)")
+    }
+
+    private func waitForTimerSleep(_ time: VirtualTime) async {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while ContinuousClock.now < deadline {
+            if time.pendingSleeperCount > 0 { return }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        XCTFail("Timed out waiting for the next 30-second timer sleep")
     }
 
     func testARateLimitHoldsTheWholeTickForTheRetryAfter() async throws {

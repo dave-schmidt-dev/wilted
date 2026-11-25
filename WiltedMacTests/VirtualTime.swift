@@ -11,6 +11,7 @@ final class VirtualTime: @unchecked Sendable {
     init(start: Date = Date(timeIntervalSince1970: 1_000_000)) { current = start }
 
     var now: Date { lock.withLock { current } }
+    var pendingSleeperCount: Int { lock.withLock { waiters.count } }
 
     /// Suspends until the clock passes `seconds`; throws `CancellationError` if cancelled first.
     func sleep(_ seconds: TimeInterval) async throws {
