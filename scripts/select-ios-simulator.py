@@ -10,6 +10,7 @@ from typing import Any
 
 
 DEVICE_NAME = "iPhone 17 Pro"
+DEVICE_TYPE = "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"
 RUNTIME_RE = re.compile(r"iOS-(\d+(?:[-.]\d+)*)$", re.IGNORECASE)
 
 
@@ -33,13 +34,16 @@ def select(payload: dict[str, Any]) -> tuple[str, str]:
         if version is None or not isinstance(runtime_devices, list):
             continue
         for device in runtime_devices:
-            if not isinstance(device, dict) or device.get("name") != DEVICE_NAME:
+            if not isinstance(device, dict):
                 continue
             if device.get("isAvailable") is False or device.get("state") == "Unavailable":
                 continue
             device_type = device.get("deviceTypeIdentifier")
-            if isinstance(device_type, str) and device_type:
-                candidates.append((version, runtime, device_type))
+            persistent_name = "wilted-persistent-" + runtime.removeprefix(
+                "com.apple.CoreSimulator.SimRuntime."
+            )
+            if device_type == DEVICE_TYPE and device.get("name") in {DEVICE_NAME, persistent_name}:
+                candidates.append((version, runtime, DEVICE_TYPE))
     if not candidates:
         raise ValueError(f"no available {DEVICE_NAME} on an iOS 26.x runtime")
     version, runtime, device_type = max(candidates, key=lambda item: item[0])

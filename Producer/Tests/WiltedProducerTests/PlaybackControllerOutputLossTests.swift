@@ -190,12 +190,13 @@ final class PlaybackControllerOutputLossTests: XCTestCase {
         controller.onOutputLostPause = { callbacks += 1 }
         controller.enableOutputLossPause(source: rig.route)
         controller.enableInterruptions(
-            speaker: speaker, waitLimit: 60, clock: wall.clock, cues: nil, routeSource: holdRoute)
+            speaker: speaker, clock: wall.clock, routeSource: holdRoute)
         defer { controller.disableInterruptions(resuming: false) }
 
         try controller.play()
         rig.backend.currentTime = 12
         controller.deliverBulletin(try bulletin(at: wall.now))
+        controller.adBreakReached()
         XCTAssertTrue(controller.isPlaying)
         XCTAssertFalse(rig.backend.isPlaying)
         XCTAssertNotNil(controller.speakingBulletin)

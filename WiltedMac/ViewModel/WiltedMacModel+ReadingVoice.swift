@@ -42,7 +42,7 @@ final class WiltedMacReadingVoiceSelection {
     }
 
     var selectedStatus: String {
-        guard let voice = selectedVoice else { return "Choose a reading voice before you queue a story." }
+        guard let voice = selectedVoice else { return "Choose a voice for weather alerts, headlines, and stories you queue." }
         switch availability(for: voice) {
         case .available: return "\(voice.displayName) is ready for local narration."
         case .missingVoice: return "The selected voice files are missing. Choose an available voice."

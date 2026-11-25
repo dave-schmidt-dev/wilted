@@ -21,6 +21,7 @@ final class InterruptionSeekTests: XCTestCase {
         let original = try snapshot()
         _ = reducer.handle(.bulletinArrived(try bulletin("first"), original))
         _ = reducer.handle(.bulletinArrived(try bulletin("pending"), original))
+        _ = reducer.handle(.adBreakReached(original))
         XCTAssertEqual(reducer.handle(.seekStarted(try snapshot(generation: 2))),
                        [.stopSpeech, .restore(original.checkpoint)])
         XCTAssertEqual(reducer.state, .idle)
@@ -31,10 +32,11 @@ final class InterruptionSeekTests: XCTestCase {
     func testSeekOnAnotherItemStopsWithoutRestoringTheOldItem() throws {
         var reducer = InterruptionReducer()
         _ = reducer.handle(.bulletinArrived(try bulletin("first"), try snapshot()))
+        _ = reducer.handle(.adBreakReached(try snapshot()))
         XCTAssertEqual(reducer.handle(.seekStarted(try snapshot(generation: 2, entry: "other"))), [.stopSpeech])
     }
 
-    func testSeekDemotesWaitingBulletinWithoutCallingItAPause() throws {
+    func testSeekLeavesQueuedBulletinsForTheNextAdBreak() throws {
         var reducer = InterruptionReducer()
         let headline = try bulletin("waiting", severity: .minor)
         _ = reducer.handle(.bulletinArrived(headline, try snapshot()))

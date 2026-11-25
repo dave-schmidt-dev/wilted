@@ -188,7 +188,10 @@ enum LibraryUITestFixture {
                 now: LibraryUITestFixture.clock(for: scenario),
                 timeZone: scenario.isPixel ? LibraryUITestFixture.pixelTimeZone : .current)
             player = LibraryPlayer(
-                engine: LibraryUITestEngine(refusesPlay: scenario == .startError), session: LibraryUITestSession(),
+                engine: LibraryUITestEngine(
+                    refusesPlay: scenario == .startError,
+                    automaticallyAdvances: scenario == .spokenHeadlines || scenario == .pixelInterruptions),
+                session: LibraryUITestSession(),
                 nowPlaying: LibraryUITestNowPlaying(), remoteCommands: LibraryUITestRemote(),
                 sessionEvents: LibraryUITestSessionEvents())
             settings = LibrarySettingsStore(defaults: defaults)
@@ -224,7 +227,7 @@ enum LibraryUITestFixture {
         }
 
         /// Hands the player's interruption controller fixture headlines once playback runs.
-        /// The spoken-headlines scenario waits at a real transcript break for its UI test to advance.
+        /// The spoken-headlines scenario crosses a prepared ad seam before speaking.
         func speakFixtureBulletin() async {
             guard (scenario == .pixelInterruptions || scenario == .spokenHeadlines), interruptions == nil else { return }
             do {
@@ -262,10 +265,8 @@ enum LibraryUITestFixture {
                     dependencies: .init(
                         speaker: speaker, preferences: LibraryInterruptionPreferences(defaults: defaults),
                         fetchBulletins: { channel }, makeMonitor: { _ in LibraryUITestAlertMonitor() }, location: nil,
-                        cues: { _ in
-                            isSpokenHeadlineScenario
-                                ? [LibraryTranscriptCue(start: 0, end: 120, text: "Fixture transcript cue.")]
-                                : []
+                        adBreakSeams: { _, _ in
+                            isSpokenHeadlineScenario || self.scenario == .pixelInterruptions ? [0.5] : []
                         },
                         revision: { await cache.cachedEntries()[$0]?.revisionID }, now: { clock },
                         isForeground: { true }, maximumSpeech: .seconds(86_400)))
@@ -275,7 +276,7 @@ enum LibraryUITestFixture {
                 for _ in 0..<50 {
                     await controller.syncTick()
                     if case .speaking = controller.state { return }
-                    if scenario == .spokenHeadlines, case .waiting = controller.state { return }
+                    if scenario == .spokenHeadlines, controller.hasRevision { return }
                     try? await Task.sleep(for: .milliseconds(200))
                 }
                 assertionFailure("Fixture bulletin was never spoken")
@@ -477,16 +478,26 @@ final class LibraryUITestEngine: ListenerAudioEngine, LibraryRateAdjustable, @un
     static let length: Double = 600
     private let lock = NSLock()
     private let refusesPlay: Bool
+    private let automaticallyAdvances: Bool
     private var time = 0.0
     private var playing = false
+    private var timeAnchor = Date.timeIntervalSinceReferenceDate
     private var storedRate: Float = 1
     let duration = LibraryUITestEngine.length
 
-    init(refusesPlay: Bool) { self.refusesPlay = refusesPlay }
+    init(refusesPlay: Bool, automaticallyAdvances: Bool = false) {
+        self.refusesPlay = refusesPlay
+        self.automaticallyAdvances = automaticallyAdvances
+    }
 
     var currentTime: Double {
-        get { lock.withLock { time } }
-        set { lock.withLock { time = newValue } }
+        get {
+            lock.withLock {
+                guard automaticallyAdvances, playing else { return time }
+                return time + (Date.timeIntervalSinceReferenceDate - timeAnchor) * Double(storedRate)
+            }
+        }
+        set { lock.withLock { time = newValue; timeAnchor = Date.timeIntervalSinceReferenceDate } }
     }
     var rate: Float {
         get { lock.withLock { storedRate } }
@@ -496,10 +507,17 @@ final class LibraryUITestEngine: ListenerAudioEngine, LibraryRateAdjustable, @un
     func load(url: URL) throws { lock.withLock { time = 0 } }
     func play() -> Bool {
         guard !refusesPlay else { return false }
-        lock.withLock { playing = true }
+        lock.withLock { playing = true; timeAnchor = Date.timeIntervalSinceReferenceDate }
         return true
     }
-    func pause() { lock.withLock { playing = false } }
+    func pause() {
+        lock.withLock {
+            if automaticallyAdvances, playing {
+                time += (Date.timeIntervalSinceReferenceDate - timeAnchor) * Double(storedRate)
+            }
+            playing = false
+        }
+    }
 }
 
 final class LibraryUITestSession: ListenerAudioSession, @unchecked Sendable {

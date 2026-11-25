@@ -17,6 +17,8 @@ struct WiltedMacDestination<Content: View, TitleAccessory: View>: View {
     /// Where the page was scrolled to, by the id of the top visible block. The blocks of `content`
     /// carry `.id`s; an id the page no longer has scrolls nowhere.
     var scrollAnchor: Binding<String?>?
+    /// A viewport coordinate space for content that tracks its section positions while scrolling.
+    var scrollCoordinateSpaceName: String?
     /// Controls that belong to the destination itself, beside its name: a
     /// playlist's rename and delete. The name still renders exactly once.
     @ViewBuilder let titleAccessory: TitleAccessory
@@ -30,6 +32,7 @@ struct WiltedMacDestination<Content: View, TitleAccessory: View>: View {
         title: String, identifier: String,
         contentWidth: CGFloat? = 760, inset: CGFloat = WiltedTheme.Spacing.section,
         watermark: Bool = false, scrollAnchor: Binding<String?>? = nil,
+        scrollCoordinateSpaceName: String? = nil,
         @ViewBuilder content: () -> Content
     ) where TitleAccessory == EmptyView {
         self.title = title
@@ -38,6 +41,7 @@ struct WiltedMacDestination<Content: View, TitleAccessory: View>: View {
         self.inset = inset
         self.watermark = watermark
         self.scrollAnchor = scrollAnchor
+        self.scrollCoordinateSpaceName = scrollCoordinateSpaceName
         self.titleAccessory = EmptyView()
         self.content = content()
     }
@@ -46,6 +50,7 @@ struct WiltedMacDestination<Content: View, TitleAccessory: View>: View {
         title: String, identifier: String,
         contentWidth: CGFloat? = 760, inset: CGFloat = WiltedTheme.Spacing.section,
         watermark: Bool = false, scrollAnchor: Binding<String?>? = nil,
+        scrollCoordinateSpaceName: String? = nil,
         @ViewBuilder titleAccessory: () -> TitleAccessory,
         @ViewBuilder content: () -> Content
     ) {
@@ -55,12 +60,13 @@ struct WiltedMacDestination<Content: View, TitleAccessory: View>: View {
         self.inset = inset
         self.watermark = watermark
         self.scrollAnchor = scrollAnchor
+        self.scrollCoordinateSpaceName = scrollCoordinateSpaceName
         self.titleAccessory = titleAccessory()
         self.content = content()
     }
 
     var body: some View {
-        ScrollView {
+        let scrollView = ScrollView {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xLarge) {
                 HStack(alignment: .center, spacing: WiltedTheme.Spacing.small) {
                     Text(title)
@@ -78,7 +84,22 @@ struct WiltedMacDestination<Content: View, TitleAccessory: View>: View {
             .coordinateSpace(name: WiltedMacRowsTopKey.space)
             .onPreferenceChange(WiltedMacRowsTopKey.self) { rowsTop = $0 }
         }
-        .scrollPosition(id: scrollAnchor ?? .constant(nil), anchor: .top)
+        Group {
+            if let scrollAnchor {
+                if let scrollCoordinateSpaceName {
+                    scrollView.scrollPosition(id: scrollAnchor, anchor: .top)
+                        .coordinateSpace(name: scrollCoordinateSpaceName)
+                } else {
+                    scrollView.scrollPosition(id: scrollAnchor, anchor: .top)
+                }
+            } else if let scrollCoordinateSpaceName {
+                // Settings owns section jumps through ScrollViewReader. Binding an empty
+                // constant here makes SwiftUI's scroll-position system compete with them.
+                scrollView.coordinateSpace(name: scrollCoordinateSpaceName)
+            } else {
+                scrollView
+            }
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(WiltedTheme.color(.page, scheme: colorScheme))
         // Over the rows, as on iOS, whose list rows are opaque cards: behind

@@ -21,7 +21,15 @@ extension LibraryInterruptionController {
                         deliver: deliver)
                 },
                 location: LibraryLocationProvider(manager: LibraryCoreLocationManager()),
-                cues: { [weak model] in model?.transcript(for: $0)?.cues ?? [] },
+                adBreakSeams: { [weak model] entryID, revisionID in
+                    guard let transcript = model?.transcript(for: entryID), transcript.revisionID == revisionID else {
+                        return []
+                    }
+                    return transcript.cuts?.map(\.preparedSeconds) ?? []
+                },
+                prepareAdBreaks: { [weak model] entryID in
+                    await model?.prepareTranscript(entryID: entryID)
+                },
                 revision: { [weak model] in await model?.mediaCache.cachedEntries()[$0]?.revisionID },
                 now: { [weak model] in model?.now() ?? Date() },
                 isForeground: { [weak model] in model?.tickState.sceneActive ?? false }))

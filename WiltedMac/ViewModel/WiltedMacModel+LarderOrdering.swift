@@ -313,13 +313,15 @@ extension WiltedMacModel {
         if effectiveLastMarked == nil {
             lastMarkedSeam = nil
         }
+        let revisionKey = playback?.revisionID.map { "\(episode.id)|\($0.rawValue)" } ?? episode.id
         guard let marker = WiltedMacSeamMarkerSchedule.next(
             seams: currentRemovedSpans.map(\.preparedSeconds),
             position: position,
             rate: rate,
             isPlaying: isPlaying,
-            enabled: marksRemovedAds,
-            lastMarked: effectiveLastMarked
+            enabled: marksRemovedAds || (playback?.interruptionsEnabled == true),
+            lastMarked: effectiveLastMarked,
+            processedSeams: adBreakTracker.processedSeams(for: revisionKey)
         ) else { return }
 
         pendingSeamMarkerForTesting = marker.seam
@@ -349,7 +351,14 @@ extension WiltedMacModel {
                 seam: marker.seam, livePosition: livePosition, isPlaying: liveIsPlaying
             ) {
                 self.lastMarkedSeam = (episodeID, marker.seam)
-                self.seamMarkerOutput.play(volume: volume)
+                let startedBatch = self.playback?.interruptionsEnabled == true
+                    ? self.playback?.adBreakReached() == true : false
+                if self.playback?.interruptionsEnabled == true {
+                    self.adBreakTracker.markProcessed(marker.seam, for: revisionKey)
+                }
+                if self.marksRemovedAds && !startedBatch {
+                    self.seamMarkerOutput.play(volume: volume)
+                }
             }
             self.rescheduleSeamMarker()
         }

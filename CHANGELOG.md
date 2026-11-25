@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Changed
+
+- Automatic weather alerts and headlines play together at marked ad breaks. New arrivals wait for the next break.
+- Mac Settings scrolls through all four groups on one page. The tabs stay at the top, follow your position, and jump to a group when clicked.
+- New Mac headlines appear over the current screen and fade after 15 seconds by default. Adjust the duration in Feeds & Reports.
+- Saved headlines appear alongside podcast clips in Notebook on Mac and iPhone. Existing bookmarks appear there automatically.
+
+### Fixed
+
+- Mac weather announcements use the selected story voice. Spoken weather and headlines use the podcast loudness target and respect the player volume.
+
 ## [0.8.0] - 2026-11-24
 
 ### Added

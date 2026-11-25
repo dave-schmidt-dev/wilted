@@ -194,6 +194,7 @@ public struct ArticleNarrationConfiguration: Sendable {
 /// Extracts article text on Mac and synthesizes a voice-selected private M4A without saving a transcript.
 public struct ArticleNarrationCoordinator: Sendable {
     public static let engineRevision = "chatterbox-turbo-mlx-aac96-r1"
+    private static let shortTextEngineRevision = "chatterbox-turbo-mlx-aac96-loudnorm-r1"
 
     struct SynthesisMetadata: Sendable {
         let duration: TimeInterval
@@ -248,6 +249,10 @@ public struct ArticleNarrationCoordinator: Sendable {
 
     public static func voiceRevision(for voiceID: ApprovedReadingVoiceID) -> String {
         "\(engineRevision):\(voiceID.rawValue)"
+    }
+
+    public static func shortTextVoiceRevision(for voiceID: ApprovedReadingVoiceID) -> String {
+        "\(shortTextEngineRevision):\(voiceID.rawValue)"
     }
 
     public func narrate(
@@ -352,7 +357,8 @@ public struct ArticleNarrationCoordinator: Sendable {
             defer { try? FileManager.default.removeItem(at: workspace) }
             progress(ArticleNarrationProgress(stage: .loadingVoice, fraction: nil))
             let metadata = try await synthesize(
-                textURL: textURL, outputURL: outputURL, voiceID: voiceID, progress: progress)
+                textURL: textURL, outputURL: outputURL, voiceID: voiceID,
+                normalizeLoudness: true, progress: progress)
             try Task.checkCancellation()
             guard metadata.byteCount > 44, metadata.duration > 0,
                   FileManager.default.fileExists(atPath: outputURL.path) else {
@@ -360,7 +366,7 @@ public struct ArticleNarrationCoordinator: Sendable {
             }
             return ArticleNarrationAudio(
                 audioURL: outputURL, duration: metadata.duration,
-                voiceRevision: Self.voiceRevision(for: voiceID))
+                voiceRevision: Self.shortTextVoiceRevision(for: voiceID))
         } catch {
             try? FileManager.default.removeItem(at: workspace)
             throw error
@@ -371,6 +377,7 @@ public struct ArticleNarrationCoordinator: Sendable {
         textURL: URL,
         outputURL: URL,
         voiceID: ApprovedReadingVoiceID,
+        normalizeLoudness: Bool = false,
         progress: @escaping @Sendable (ArticleNarrationProgress) -> Void
     ) async throws -> SynthesisMetadata {
         if let synthesisOperation {
@@ -382,13 +389,15 @@ public struct ArticleNarrationCoordinator: Sendable {
                 let process = Process()
                 let pipe = Pipe()
                 process.executableURL = configuration.pythonURL
-                process.arguments = [
+                var arguments = [
                     configuration.helperURL.path,
                     "synthesize",
                     "--voice-id", voiceID.rawValue,
                     "--text-file", textURL.path,
                     "--output", outputURL.path
                 ]
+                if normalizeLoudness { arguments.append("--normalize-loudness") }
+                process.arguments = arguments
                 process.environment = [
                     "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
                     "PATH": "\(configuration.encoderURL.deletingLastPathComponent().path):/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",

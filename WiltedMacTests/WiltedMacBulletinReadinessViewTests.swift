@@ -23,7 +23,7 @@ final class WiltedMacBulletinReadinessViewTests: XCTestCase {
             (.init(hasNewsSource: true, hasWeatherLocation: true, soundCheckPaused: true),
              "Bulletins are paused because Wilted couldn’t check the sound output.", "Try again"),
             (.init(hasNewsSource: true, hasWeatherLocation: true, soundCheckPaused: false),
-             "Ready: Wilted can read bulletins while an episode plays.", "Play a test bulletin")
+             "Ready: Wilted can read bulletins while an episode plays, at an ad break.", "Play a test bulletin")
         ]
 
         for (readiness, expectedLine, expectedButton) in states {
@@ -41,10 +41,8 @@ final class WiltedMacBulletinReadinessViewTests: XCTestCase {
                           "Reports did not render the line: \(expectedLine). Text: \(text)")
             XCTAssertTrue(text.contains(expectedButton), "Reports did not render the action: \(expectedButton)")
             if readiness.lines.contains(.ready) {
-                XCTAssertTrue(text.contains("waits for a break or until the wait time runs out"),
+                XCTAssertTrue(text.contains("at an ad break"),
                               "the ready line must explain when Wilted can speak")
-                XCTAssertTrue(text.contains("most serious weather alerts play right away"),
-                              "the ready line must explain urgent alerts")
             }
         }
     }
@@ -100,10 +98,9 @@ final class WiltedMacBulletinReadinessViewTests: XCTestCase {
             .padding(12)
         let text = try WiltedMacHeadless.recognizedText(
             card, size: CGSize(width: 760, height: 300)).joined(separator: " ")
-        XCTAssertTrue(text.contains("Ready: Wilted can read bulletins while an episode plays."),
+        XCTAssertTrue(text.contains("Ready: Wilted can read bulletins while an episode plays, at an ad break."),
                       "the Reports card did not show the state derived from the saved News feed")
-        XCTAssertTrue(text.contains("waits for a break or until the wait time runs out"))
-        XCTAssertTrue(text.contains("most serious weather alerts play right away"))
+        XCTAssertTrue(text.contains("at an ad break"))
         XCTAssertFalse(text.contains("Weather alerts need a location."),
                        "saved coordinates remain usable when permission is denied")
         await model.close()

@@ -211,6 +211,8 @@ def synthesize(
     audio_writer: Callable[
         [Path, Iterable[Any], Callable[[str, float | None], None]], tuple[int, int]
     ] = _write_m4a_stream,
+    normalize_loudness: bool = False,
+    loudness_normalizer: Callable[[Path, Path], tuple[dict[str, float] | None, str | None]] | None = None,
     progress: Callable[[str, float | None], None] = lambda _stage, _fraction: None,
 ) -> tuple[int, int]:
     """Synthesize without printing article text and atomically publish AAC/M4A audio."""
@@ -246,6 +248,26 @@ def synthesize(
             os.close(descriptor)
             temporary_path = Path(temporary_name)
             sample_rate, duration_ms = audio_writer(temporary_path, segments, progress)
+            if normalize_loudness:
+                normalizer = loudness_normalizer or _normalize_loudness
+                descriptor, normalized_name = tempfile.mkstemp(
+                    prefix=f".{output_path.name}.levelled.", suffix=".m4a", dir=output_path.parent
+                )
+                os.fchmod(descriptor, 0o600)
+                os.close(descriptor)
+                normalized_path = Path(normalized_name)
+                normalized_path.unlink()
+                try:
+                    metrics, _reason = normalizer(temporary_path, normalized_path)
+                except BaseException:
+                    normalized_path.unlink(missing_ok=True)
+                    raise
+                if metrics is None or not normalized_path.is_file():
+                    normalized_path.unlink(missing_ok=True)
+                    raise ArticleVoiceError("loudness_normalization_failed")
+                os.chmod(normalized_path, 0o600)
+                temporary_path.unlink()
+                temporary_path = normalized_path
             progress("saving", 0.95)
             size = temporary_path.stat().st_size
             if size <= 44 or size > _MAX_OUTPUT_BYTES:
@@ -261,6 +283,13 @@ def synthesize(
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
+
+
+def _normalize_loudness(audio_path: Path, output_path: Path) -> tuple[dict[str, float] | None, str | None]:
+    """Use the podcast worker's measured loudness target and peak protection."""
+    from wilted_worker.loudness import normalize_short
+
+    return normalize_short(audio_path, output_path)
 
 
 def _read_text(path: Path) -> str:
@@ -299,6 +328,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     command.add_argument("--voice-id", required=True)
     command.add_argument("--text-file", type=Path, required=True)
     command.add_argument("--output", type=Path, required=True)
+    command.add_argument("--normalize-loudness", action="store_true")
     args = parser.parse_args(argv)
     signal.signal(signal.SIGTERM, _terminate)
     try:
@@ -312,6 +342,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             args.voice_id,
             args.output,
             progress=lambda stage, fraction: _emit("progress", stage=stage, fraction=fraction),
+            normalize_loudness=args.normalize_loudness,
         )
         _emit("complete", sampleRate=sample_rate, durationMilliseconds=duration_ms)
         return 0

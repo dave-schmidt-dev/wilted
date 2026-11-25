@@ -86,8 +86,13 @@ final class WiltedMacSettingsSectionTests: XCTestCase {
 
         for tab in WiltedMacSettingsTab.allCases {
             first.settingsTab = tab
-            XCTAssertEqual(first.scrollAnchor(for: .settings).wrappedValue, tab.rawValue)
+            XCTAssertEqual(first.scrollAnchor(for: .settings).wrappedValue, tab.sections[0].rawValue)
             XCTAssertEqual(launch().settingsTab, tab)
+
+            first.scrollAnchor(for: .settings).wrappedValue = tab.rawValue
+            let restored = launch()
+            XCTAssertEqual(restored.settingsTab, tab)
+            XCTAssertEqual(restored.settingsScrollPosition.wrappedValue, tab.sections[0].rawValue)
         }
     }
 
@@ -130,7 +135,69 @@ final class WiltedMacSettingsSectionTests: XCTestCase {
         }
     }
 
-    func testProviderJumpRestoresAfterTheReaderReturnsToThePageTop() {
+    func testScrollingAcrossSectionsUpdatesTheSelectedTab() {
+        let model = settingsModel()
+
+        for section in WiltedMacSettingsSection.allCases {
+            model.settingsScrollPosition.wrappedValue = section.rawValue
+            XCTAssertEqual(model.settingsSection, section)
+            XCTAssertEqual(model.settingsTab, WiltedMacSettingsTab(section: section))
+            XCTAssertEqual(model.scrollAnchor(for: .settings).wrappedValue, section.rawValue)
+        }
+    }
+
+    func testManualScrollMovesThroughTheWholeSettingsPageAndUpdatesTheTab() async throws {
+        let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-ready"])
+        model.selectedNavigation = .settings
+        model.settingsSection = .general
+        let size = CGSize(width: 1_000, height: 720)
+        let host = NSHostingView(rootView: WiltedMacSettingsView(model: model)
+            .environment(\.colorScheme, .light).frame(width: size.width, height: size.height))
+        host.frame = NSRect(origin: .zero, size: size)
+        let window = WiltedMacHeadless.offscreenWindow(hosting: host)
+        defer { withExtendedLifetime(window) {} }
+        host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
+
+        func descendants(of view: NSView) -> [NSView] {
+            view.subviews.flatMap { [$0] + descendants(of: $0) }
+        }
+        let scrollView = try XCTUnwrap(descendants(of: host).compactMap { $0 as? NSScrollView }.max {
+            ($0.documentView?.bounds.height ?? 0) < ($1.documentView?.bounds.height ?? 0)
+        })
+        let documentView = try XCTUnwrap(scrollView.documentView)
+        let clipView = scrollView.contentView
+        let initialOrigin = clipView.bounds.origin
+        let distance = max(0, documentView.bounds.height - clipView.bounds.height)
+        XCTAssertGreaterThan(distance, 0, "all settings sections extend beyond the viewport")
+        let targetY = documentView.isFlipped
+            ? documentView.bounds.minY + distance
+            : documentView.bounds.minY
+        clipView.scroll(to: NSPoint(x: documentView.bounds.minX, y: targetY))
+        scrollView.reflectScrolledClipView(clipView)
+        window.displayIfNeeded()
+        host.layoutSubtreeIfNeeded()
+
+        XCTAssertNotEqual(clipView.bounds.origin, initialOrigin, "the settings content actually scrolls")
+        let selectedTabUpdated = await WiltedMacHeadless.eventually("selected tab follows the settings scroll") {
+            model.settingsTab == .libraryAndSync
+        }
+        XCTAssertTrue(selectedTabUpdated)
+        await model.close()
+    }
+
+    func testTabSelectionTargetsItsFirstSectionAndRestores() {
+        let preferences = WiltedMacTestPreferences.ephemeral()
+        let model = settingsModel(preferences: preferences)
+
+        for tab in WiltedMacSettingsTab.allCases {
+            model.settingsTab = tab
+            XCTAssertEqual(model.settingsScrollPosition.wrappedValue, tab.sections[0].rawValue)
+            XCTAssertEqual(settingsModel(preferences: preferences).settingsSection, tab.sections[0])
+        }
+    }
+
+    func testProviderJumpRestoresAndReturningToTopShowsGeneral() {
         let model = settingsModel()
 
         model.settingsSection = .providers
@@ -138,8 +205,8 @@ final class WiltedMacSettingsSectionTests: XCTestCase {
         XCTAssertEqual(model.scrollAnchor(for: .settings).wrappedValue, "providers")
 
         model.settingsScrollPosition.wrappedValue = "destination-top"
-        XCTAssertEqual(model.scrollAnchor(for: .settings).wrappedValue, "ads-providers")
-        XCTAssertEqual(model.settingsTab, .adsAndProviders)
+        XCTAssertNil(model.scrollAnchor(for: .settings).wrappedValue)
+        XCTAssertEqual(model.settingsTab, .listening)
 
         model.settingsSection = .providers
         XCTAssertEqual(model.scrollAnchor(for: .settings).wrappedValue, "providers")
@@ -157,19 +224,33 @@ final class WiltedMacSettingsSectionTests: XCTestCase {
         XCTAssertEqual(model.settingsTab, .listening)
     }
 
-    func testProviderJumpRendersTheProvidersSection() throws {
+    func testProviderJumpRendersTheProvidersSection() async throws {
         let model = settingsModel()
         model.settingsSection = .providers
+        let size = CGSize(width: 900, height: 800)
+        let host = NSHostingView(rootView: WiltedMacSettingsView(model: model)
+            .environment(\.colorScheme, .light).frame(width: size.width, height: size.height))
+        host.frame = NSRect(origin: .zero, size: size)
+        let window = WiltedMacHeadless.offscreenWindow(hosting: host)
+        defer { withExtendedLifetime(window) {} }
 
-        let text = try WiltedMacHeadless.recognizedText(
-            WiltedMacSettingsView(model: model), size: CGSize(width: 900, height: 800)
-        )
+        func visibleText() throws -> [String] {
+            host.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            return try WiltedMacHeadless.recognizedLines(in: bitmap).map(\.text)
+        }
+
         XCTAssertEqual(model.settingsTab, .adsAndProviders)
-        XCTAssertTrue(text.contains(where: { $0.localizedCaseInsensitiveContains("Check all") }),
-                      "The Providers section did not appear after the section jump")
+        let providerControlsVisible = await WiltedMacHeadless.eventually("provider section renders after restoration") {
+            (try? visibleText().contains(where: { $0.localizedCaseInsensitiveContains("Check all") })) ?? false
+        }
+        XCTAssertTrue(providerControlsVisible, "The Providers section did not appear after the section jump")
+        await model.close()
     }
 
-    func testSectionJumpPlacesHeadingImmediatelyBelowTabs() throws {
+    func testSectionJumpPlacesHeadingImmediatelyBelowTabs() async throws {
         let model = settingsModel()
         model.settingsSection = .providers
         let size = CGSize(width: 900, height: 700)
@@ -179,35 +260,43 @@ final class WiltedMacSettingsSectionTests: XCTestCase {
         let window = WiltedMacHeadless.offscreenWindow(hosting: host)
         defer { withExtendedLifetime(window) {} }
 
-        func assertHeading(_ title: String, line: UInt = #line) throws {
+        func renderedLines() throws -> [(text: String, top: CGFloat)] {
             host.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
             let bitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
             host.cacheDisplay(in: host.bounds, to: bitmap)
-            let lines = try WiltedMacHeadless.recognizedLines(in: bitmap)
+            return try WiltedMacHeadless.recognizedLines(in: bitmap)
+        }
+
+        func assertHeading(_ title: String, line: UInt = #line) async throws {
+            let atTop = await WiltedMacHeadless.eventually("\(title) scrolls directly below the tabs", file: #filePath, line: line) {
+                guard let lines = try? renderedLines() else { return false }
             // Vision reliably reads only the selected (highlighted) tab, so measure from that one.
             func reading(_ text: String) -> (text: String, top: CGFloat)? {
                 lines.first { $0.text.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare(text) == .orderedSame }
             }
-            let heading = try XCTUnwrap(reading(title), "Missing heading \(title) in \(lines.map(\.text))", line: line)
-            let tab = try XCTUnwrap(reading(model.settingsTab.title),
-                                    "Missing selected tab \(model.settingsTab.title) in \(lines.map(\.text))", line: line)
+                guard let heading = reading(title), let tab = reading(model.settingsTab.title) else { return false }
             let gap = (heading.top - tab.top) * size.height
-            XCTAssertGreaterThan(gap, 0, line: line)
-            XCTAssertLessThan(gap, 50, "Expected \(title) directly below the tabs", line: line)
+                return gap > 0 && gap < 50
+            }
+            XCTAssertTrue(atTop, "Expected \(title) directly below the tabs", line: line)
         }
 
-        try assertHeading("Providers")
+        try await assertHeading("Providers")
         model.settingsSection = .preparing
-        try assertHeading("Preparing")
+        try await assertHeading("Preparing")
+        // Give the tab's first-section request one layout pass, then immediately supersede it.
         model.settingsTab = .adsAndProviders
         host.layoutSubtreeIfNeeded()
+        window.displayIfNeeded()
         model.settingsSection = .providers
-        try assertHeading("Providers")
+        try await assertHeading("Providers")
         // A jump within the open tab moves too.
         model.settingsSection = .ads
-        try assertHeading("Ads")
+        try await assertHeading("Ads")
         model.settingsSection = .providers
-        try assertHeading("Providers")
+        try await assertHeading("Providers")
+        await model.close()
     }
 
     func testFourTabsAreVisibleAtTheNarrowestSupportedWindowWidth() throws {

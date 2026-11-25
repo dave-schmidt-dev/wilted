@@ -15,7 +15,7 @@ public struct BulletinReadiness: Equatable, Sendable {
             case .sound: "Bulletins are paused because Wilted couldn’t check the sound output."
             case .chooseSources: "Turn on Headlines or Weather alerts to hear bulletins."
             case .ready:
-                "Ready: Wilted can read bulletins while an episode plays. It waits for a break or until the wait time runs out. The most serious weather alerts play right away."
+                "Ready: Wilted can read bulletins while an episode plays, at an ad break."
             }
         }
     }

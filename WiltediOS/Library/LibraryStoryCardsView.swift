@@ -60,11 +60,6 @@ private struct LibraryHeadlineArchiveView: View {
 
     @Environment(\.colorScheme) private var colorScheme
 
-    private var recentIDs: Set<String> { Set(model.recentHeadlineStories.map(\.id)) }
-    private var savedOlderStories: [LibraryHeadlineStory] {
-        (model.headlineProjection?.saved ?? []).filter { !recentIDs.contains($0.id) }
-    }
-
     var body: some View {
         List {
             if model.accountQuarantined {
@@ -87,14 +82,6 @@ private struct LibraryHeadlineArchiveView: View {
                 if !model.recentHeadlineStories.isEmpty {
                     Section("Recent") {
                         ForEach(model.recentHeadlineStories) { story in
-                            LibraryHeadlineStoryCard(
-                                state: state, model: model, story: story)
-                        }
-                    }
-                }
-                if !savedOlderStories.isEmpty {
-                    Section("Saved") {
-                        ForEach(savedOlderStories) { story in
                             LibraryHeadlineStoryCard(
                                 state: state, model: model, story: story)
                         }
@@ -127,7 +114,7 @@ private struct LibraryHeadlineArchiveView: View {
     }
 }
 
-private struct LibraryHeadlineStoryCard: View {
+struct LibraryHeadlineStoryCard: View {
     @ObservedObject var state: LibraryHeadlinePhoneState
     @ObservedObject var model: LibraryAppModel
     let story: LibraryHeadlineStory
@@ -176,7 +163,7 @@ private struct LibraryHeadlineStoryCard: View {
                 Button {
                     model.saveHeadline(story.id, isSaved: !story.isSaved)
                 } label: {
-                    Label(story.isSaved ? "Saved" : "Save", systemImage: story.isSaved ? "bookmark.fill" : "bookmark")
+                    Label(story.isSaved ? "Remove from Notebook" : "Save to Notebook", systemImage: story.isSaved ? "bookmark.fill" : "bookmark")
                 }
                 .disabled(storyCommand.map { $0.delivery != .failed } == true)
                 .accessibilityIdentifier("wilted-library-headline-save-\(story.id)")

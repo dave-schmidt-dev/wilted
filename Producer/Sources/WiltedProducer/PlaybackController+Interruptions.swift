@@ -9,7 +9,7 @@ import WiltedLibrary
 public protocol BulletinSpeaking: AnyObject {
     /// Starts speaking and returns whether it did. `finished` is called once, on the main actor,
     /// when the speech ends by itself; stopping with `stop()` does not call it.
-    /// Implementations must set their output level with ``BulletinSpeechGain/volume(forPlaybackVolume:)``.
+    /// Implementations must use the `BulletinSpeechGain` helper that matches their audio source.
     func speak(_ text: String, playbackVolume: Float, finished: @escaping @MainActor () -> Void) -> Bool
     /// Starts a bulletin with its stable identity available to voice-specific speakers.
     /// The default keeps existing alert speakers source-compatible.
@@ -26,14 +26,19 @@ public extension BulletinSpeaking {
 
 /// The volume rule every bulletin speaker must apply, including future cloned-voice speakers.
 public enum BulletinSpeechGain {
-    /// Speech is attenuated to half the episode's configured playback level as a conservative
-    /// match for the absence of a measured episode loudness value.
+    /// System generated alerts remain attenuated because they do not have a measured render level.
     public static let playbackAttenuation: Float = 0.5
 
     /// Returns a speech level at or below the app's playback volume.
     public static func volume(forPlaybackVolume playbackVolume: Float) -> Float {
         guard playbackVolume.isFinite else { return 0 }
         return min(max(playbackVolume, 0), 1) * playbackAttenuation
+    }
+
+    /// Uses the full configured level for narration normalized to the podcast target.
+    public static func measuredAudioVolume(forPlaybackVolume playbackVolume: Float) -> Float {
+        guard playbackVolume.isFinite else { return 0 }
+        return min(max(playbackVolume, 0), 1)
     }
 }
 
@@ -114,9 +119,6 @@ final class PlaybackInterruptions {
     let clock: PlaybackInterruptionClock
     let shouldSpeakHeadline: @MainActor (Bulletin) -> Bool
     let didStartHeadline: @MainActor (Bulletin) -> Void
-    /// Transcript cues of an item revision, for pause points.
-    let cues: @MainActor (ItemID, RevisionID) async -> (cues: [TranscriptCue]?, timing: TranscriptTiming)
-    var tickTask: Task<Void, Never>?
     var watchdog: Task<Void, Never>?
     var routeSource: (any MacAudioRouteSource)?
     var protectionFailed: (@MainActor () -> Void)?
@@ -130,55 +132,34 @@ final class PlaybackInterruptions {
                      item: ItemID?, revision: RevisionID?, routeInvalidations: UInt64)?
     /// Where program audio stood when the hold began; a playhead that moved since was a seek.
     var holdPosition: Double?
-    var pausePoint: (bulletinID: String, revisionID: RevisionID, seconds: Double)?
-    var pausePointTask: Task<Void, Never>?
 
     init(reducer: InterruptionReducer, speaker: any BulletinSpeaking, clock: PlaybackInterruptionClock,
          routeSource: (any MacAudioRouteSource)?,
          shouldSpeakHeadline: @escaping @MainActor (Bulletin) -> Bool = { _ in true },
-         didStartHeadline: @escaping @MainActor (Bulletin) -> Void = { _ in },
-         cues: @escaping @MainActor (ItemID, RevisionID) async -> (cues: [TranscriptCue]?, timing: TranscriptTiming)) {
+         didStartHeadline: @escaping @MainActor (Bulletin) -> Void = { _ in }) {
         self.routeSource = routeSource
         self.reducer = reducer
         self.speaker = speaker
         self.clock = clock
         self.shouldSpeakHeadline = shouldSpeakHeadline
         self.didStartHeadline = didStartHeadline
-        self.cues = cues
     }
 
     deinit {
-        tickTask?.cancel()
         watchdog?.cancel()
-        pausePointTask?.cancel()
         let source = routeSource
         Task { @MainActor in source?.stop() }
     }
 
-    var needsTicks: Bool {
-        if !reducer.pending.isEmpty { return true }
-        if case .waiting = reducer.state { return true }
-        return false
-    }
-
-    var isWaiting: Bool {
-        if case .waiting = reducer.state { return true }
-        return false
-    }
-
     func cancelTasks() {
-        tickTask?.cancel()
-        tickTask = nil
         watchdog?.cancel()
         watchdog = nil
-        pausePointTask?.cancel()
-        pausePointTask = nil
         speechToken &+= 1
     }
 }
 
-/// Spoken interruptions: news headlines and weather alerts that wait for a pause between spoken
-/// cues, hold program audio while a speaker reads them, then put the playhead back and resume.
+/// Spoken interruptions: each removed-ad seam snapshots the ready bulletin backlog, holds program
+/// audio while that batch is read, then puts the playhead back and resumes.
 ///
 /// The decisions are `InterruptionReducer`'s; this file performs its effects. A hold is not a
 /// pause. The hold stops the backend directly, so the published state stays playing, the pause
@@ -192,10 +173,10 @@ extension PlaybackController {
 
     public var interruptionsEnabled: Bool { interruptions != nil }
 
-    /// Turns interruptions on. `waitLimit` is how long a non-extreme bulletin waits for a pause point.
+    /// Enables spoken batches at marked ad seams.
     @discardableResult
     public func enableInterruptions(
-        speaker: any BulletinSpeaking = SystemBulletinSpeaker(), waitLimit: TimeInterval = 60,
+        speaker: any BulletinSpeaking = SystemBulletinSpeaker(),
         routeSource: any MacAudioRouteSource = MacAudioRouteLossObserver(),
         spokenHeadlineExpiries: [String: Date] = [:],
         shouldSpeakHeadline: @escaping @MainActor (Bulletin) -> Bool = { _ in true },
@@ -204,7 +185,7 @@ extension PlaybackController {
         protectionFailed: (@MainActor () -> Void)? = nil
     ) -> Bool {
         let enabled = enableInterruptions(
-            speaker: speaker, waitLimit: waitLimit, clock: PlaybackInterruptionClock(now: now), cues: nil,
+            speaker: speaker, clock: PlaybackInterruptionClock(now: now),
             routeSource: routeSource, spokenHeadlineExpiries: spokenHeadlineExpiries,
             shouldSpeakHeadline: shouldSpeakHeadline, didStartHeadline: didStartHeadline)
         interruptions?.protectionFailed = protectionFailed
@@ -213,23 +194,17 @@ extension PlaybackController {
 
     @discardableResult
     func enableInterruptions(
-        speaker: any BulletinSpeaking, waitLimit: TimeInterval, clock: PlaybackInterruptionClock,
-        cues: (@MainActor (ItemID, RevisionID) async -> (cues: [TranscriptCue]?, timing: TranscriptTiming))?,
+        speaker: any BulletinSpeaking, clock: PlaybackInterruptionClock,
         routeSource: (any MacAudioRouteSource)? = nil,
         spokenHeadlineExpiries: [String: Date] = [:],
         shouldSpeakHeadline: @escaping @MainActor (Bulletin) -> Bool = { _ in true },
         didStartHeadline: @escaping @MainActor (Bulletin) -> Void = { _ in }
     ) -> Bool {
         disableInterruptions()
-        let store = store
         interruptions = PlaybackInterruptions(
-            reducer: InterruptionReducer(waitLimit: waitLimit, alreadySpoken: spokenHeadlineExpiries),
+            reducer: InterruptionReducer(alreadySpoken: spokenHeadlineExpiries),
             speaker: speaker, clock: clock, routeSource: routeSource,
-            shouldSpeakHeadline: shouldSpeakHeadline, didStartHeadline: didStartHeadline,
-            cues: cues ?? { itemID, revisionID in
-                let transcript = try? await store.transcript(for: itemID, revisionID: revisionID)
-                return (transcript?.cues, transcript?.timing ?? TranscriptTiming.none)
-            })
+            shouldSpeakHeadline: shouldSpeakHeadline, didStartHeadline: didStartHeadline)
         guard let engine = interruptions else { return false }
         if let routeSource, !routeSource.start(changed: { [weak self, weak engine] in
             guard let self, let engine, self.interruptions === engine else { return }
@@ -265,11 +240,27 @@ extension PlaybackController {
         process(.bulletinArrived(bulletin, snapshot))
     }
 
-    /// The caller's current list of headlines plus its own active alerts; anything waiting that is
-    /// no longer listed is dropped.
+    /// The caller's current headlines and active alerts, retaining valid queued headlines.
     public func replaceBulletins(_ list: [Bulletin]) {
-        guard let snapshot = interruptionSnapshot() else { return }
+        guard let engine = interruptions, let snapshot = interruptionSnapshot() else { return }
+        let inactiveHeadlines = (engine.reducer.pending + engine.reducer.remainingInBatch).filter {
+            $0.kind == .headline && !engine.shouldSpeakHeadline($0)
+        }
+        engine.reducer.removePendingBulletins(withIDs: Set(inactiveHeadlines.map(\.id)))
         process(.channelReplaced(list, snapshot))
+    }
+
+    /// Starts one batch at the prepared seam where an advertisement was removed.
+    @discardableResult
+    public func adBreakReached() -> Bool {
+        guard let engine = interruptions, let snapshot = interruptionSnapshot(), snapshot.isPlaying else { return false }
+        let inactiveHeadlines = engine.reducer.pending.filter {
+            $0.kind == .headline && !engine.shouldSpeakHeadline($0)
+        }
+        engine.reducer.removePendingBulletins(withIDs: Set(inactiveHeadlines.map(\.id)))
+        process(.adBreakReached(snapshot))
+        if case .speaking = engine.reducer.state { return true }
+        return false
     }
 
     /// The banner's Skip: stop speaking, put the playhead back and resume.
@@ -289,10 +280,7 @@ extension PlaybackController {
     }
 
     func interruptionItemChanged() {
-        guard let engine = interruptions else { return }
-        engine.pausePoint = nil
-        engine.pausePointTask?.cancel()
-        engine.pausePointTask = nil
+        guard interruptions != nil else { return }
         process(.itemChanged)
     }
 
@@ -339,8 +327,6 @@ extension PlaybackController {
         for effect in engine.reducer.handle(event) {
             guard interruptions === engine, commandGeneration == effectGeneration else { return }
             switch effect {
-            case .awaitPausePoint:
-                break
             case let .speak(bulletin, checkpoint):
                 if !hold(for: bulletin, at: checkpoint, engine: engine) { speechFailedToStart = true }
             case .stopSpeech:
@@ -362,10 +348,10 @@ extension PlaybackController {
         guard interruptions === engine, commandGeneration == effectGeneration else { return }
         if case .speaking = engine.reducer.state {} else { releaseHold() }
         if speechFailedToStart {
-            // Drop an unspoken bulletin, with the same current-route checks as a completion.
-            speechEnded(engine.speechToken, engine: engine)
+            // Keep an unspoken bulletin eligible for the next ad-break batch.
+            guard let snapshot = interruptionSnapshot() else { return }
+            process(.speechStartFailed(snapshot))
         }
-        ensureTicker()
     }
 
     /// Stops program audio and starts the speaker. False when speech cannot start.
@@ -392,7 +378,7 @@ extension PlaybackController {
         }) else { return false }
         if bulletin.kind == .headline {
             engine.didStartHeadline(bulletin)
-            let newlyIneligibleIDs = engine.reducer.pending.compactMap { candidate in
+            let newlyIneligibleIDs = (engine.reducer.pending + engine.reducer.remainingInBatch).compactMap { candidate in
                 candidate.kind == .headline && !engine.shouldSpeakHeadline(candidate) ? candidate.id : nil
             }
             engine.reducer.removePendingBulletins(withIDs: Set(newlyIneligibleIDs))
@@ -479,60 +465,4 @@ extension PlaybackController {
         outputLossCompleteHoldRouteLoss(outputLossPause)
     }
 
-    // MARK: Ticks and pause points
-
-    private func ensureTicker() {
-        guard let engine = interruptions, engine.tickTask == nil, engine.needsTicks else { return }
-        engine.tickTask = Task { @MainActor [weak self, weak engine] in
-            while !Task.isCancelled {
-                guard let engine, let controller = self, controller.interruptions === engine else { return }
-                do { try await engine.clock.sleep(engine.isWaiting ? 0.2 : 1) } catch { return }
-                controller.interruptionTick()
-                if !engine.needsTicks {
-                    engine.tickTask = nil
-                    return
-                }
-            }
-        }
-    }
-
-    /// One look at the clock and the playhead: the wait deadline, a pause point, or an expiry.
-    func interruptionTick() {
-        guard let engine = interruptions, let snapshot = interruptionSnapshot() else { return }
-        if speechHeld {
-            // Program audio started under the speech: cut the speech and carry on from the checkpoint.
-            if backend.isPlaying { process(.skip(snapshot)) }
-            return
-        }
-        if case let .waiting(bulletin, _) = engine.reducer.state, snapshot.isPlaying {
-            if let point = engine.pausePoint, point.bulletinID == bulletin.id, point.revisionID == snapshot.revisionID {
-                if snapshot.positionSeconds >= point.seconds {
-                    process(.pausePointReached(snapshot))
-                    return
-                }
-            } else {
-                findPausePoint(for: bulletin, snapshot: snapshot, engine: engine)
-            }
-        }
-        process(.tick(snapshot))
-    }
-
-    private func findPausePoint(for bulletin: Bulletin, snapshot: PlaybackSnapshot, engine: PlaybackInterruptions) {
-        guard engine.pausePointTask == nil, case let .waiting(_, deadline) = engine.reducer.state else { return }
-        let remaining = max(0, deadline.timeIntervalSince(snapshot.now))
-        engine.pausePointTask = Task { @MainActor [weak engine] in
-            guard let engine else { return }
-            let found = await engine.cues(snapshot.entryID, snapshot.revisionID)
-            guard !Task.isCancelled else { return }
-            // A headline never cuts into speech: with no measurable pause it waits for the next
-            // episode (the reducer's item boundary) instead of interrupting at the wait limit.
-            let seconds = bulletin.kind == .headline
-                ? PausePointFinder.nextGap(after: snapshot.positionSeconds, cues: found.cues, timing: found.timing)
-                    ?? .infinity
-                : PausePointFinder.next(
-                    after: snapshot.positionSeconds, cues: found.cues, timing: found.timing, waitLimit: remaining)
-            engine.pausePointTask = nil
-            engine.pausePoint = (bulletin.id, snapshot.revisionID, seconds)
-        }
-    }
 }

@@ -55,6 +55,8 @@ final class WiltedMacBulletinHub {
     @ObservationIgnored private let makeSpeaker: (@MainActor () -> any BulletinSpeaking)?
     @ObservationIgnored private let makeHeadlineNarration: @MainActor () -> WiltedMacHeadlineNarration
     @ObservationIgnored private let makeHeadlineAudioPlayer: @MainActor () -> any WiltedMacHeadlineAudioPlaying
+    @ObservationIgnored private let renderShortTextNarration: WiltedMacHeadlineBulletinSpeaker.ShortTextNarration
+    @ObservationIgnored private let makeWeatherAlertNarration: @MainActor () -> WiltedMacWeatherAlertNarration
     @ObservationIgnored private let makeAlertSource: @MainActor (String?) -> any NWSAlertSource
     @ObservationIgnored private weak var attachedController: PlaybackController?
     @ObservationIgnored private let retrySleep: @MainActor (Duration) async throws -> Void
@@ -62,11 +64,11 @@ final class WiltedMacBulletinHub {
     @ObservationIgnored private var retryIndex = 0
     @ObservationIgnored private weak var lastController: PlaybackController?
     @ObservationIgnored private var wasPlaying = false
-    @ObservationIgnored private var attachedWaitLimit = 0
     @ObservationIgnored private var alertMonitor: AlertMonitor?
     @ObservationIgnored private var observing = false
     @ObservationIgnored private var didLoadInitialChannel = false
     @ObservationIgnored private var headlineNarration: WiltedMacHeadlineNarration?
+    @ObservationIgnored private var weatherAlertNarration: WiltedMacWeatherAlertNarration?
     /// The headlines of the channel as last published or read back, while headlines are on.
     @ObservationIgnored private(set) var headlines: [Bulletin] = []
     /// Alerts the monitor delivered that are still active here.
@@ -80,7 +82,13 @@ final class WiltedMacBulletinHub {
          now: @escaping @Sendable () -> Date = { Date() },
          producerFactory: (@MainActor () -> BulletinProducer)? = nil,
          makeHeadlineNarration: @escaping @MainActor () -> WiltedMacHeadlineNarration = { WiltedMacHeadlineNarration() },
-         makeHeadlineAudioPlayer: @escaping @MainActor () -> any WiltedMacHeadlineAudioPlaying = { WiltedMacAVHeadlineAudioPlayer() }) {
+         makeHeadlineAudioPlayer: @escaping @MainActor () -> any WiltedMacHeadlineAudioPlaying = { WiltedMacAVHeadlineAudioPlayer() },
+         renderShortTextNarration: @escaping WiltedMacHeadlineBulletinSpeaker.ShortTextNarration = { text, voiceID, outputURL in
+             try await ArticleNarrationCoordinator().synthesizeShortText(
+                 text, voiceID: voiceID, outputURL: outputURL)
+         }, makeWeatherAlertNarration: @escaping @MainActor () -> WiltedMacWeatherAlertNarration = {
+             WiltedMacWeatherAlertNarration()
+         }) {
         self.producerFactory = producerFactory
         self.now = now
         self.heardHistory = HeardHeadlineHistory(defaults: model.preferences, now: now())
@@ -92,6 +100,8 @@ final class WiltedMacBulletinHub {
         self.makeSpeaker = makeSpeaker
         self.makeHeadlineNarration = makeHeadlineNarration
         self.makeHeadlineAudioPlayer = makeHeadlineAudioPlayer
+        self.renderShortTextNarration = renderShortTextNarration
+        self.makeWeatherAlertNarration = makeWeatherAlertNarration
         self.makeAlertSource = makeAlertSource
     }
 
@@ -103,6 +113,15 @@ final class WiltedMacBulletinHub {
         return value
     }
 
+    private var weatherNarration: WiltedMacWeatherAlertNarration {
+        if let weatherAlertNarration { return weatherAlertNarration }
+        let value = makeWeatherAlertNarration()
+        value.onReady = { [weak self] _ in self?.syncPlayer() }
+        value.onChanged = { [weak self] in self?.syncPlayer() }
+        weatherAlertNarration = value
+        return value
+    }
+
     var latestHeadlineNarrationStoryID: String? { narration.latestCandidateStoryID }
 
     func headlineNarrationState(for storyID: String) -> WiltedMacHeadlineNarrationState {
@@ -111,6 +130,7 @@ final class WiltedMacBulletinHub {
 
     func readingVoiceSelectionChanged() {
         refreshHeadlineNarration(newlyPublished: [])
+        refreshWeatherAlertNarration()
         syncPlayer()
     }
 
@@ -138,6 +158,7 @@ final class WiltedMacBulletinHub {
     var producerIsRunning: Bool { producer != nil }
     var alertMonitorIsRunning: Bool { alertMonitor != nil }
     var interruptionsAreAttached: Bool { attachedController != nil }
+    var testBulletinIsActive: Bool { testBulletinSpeaker != nil }
 
     /// The current setup lines for the selected bulletin types.
     var readiness: BulletinReadiness {
@@ -198,7 +219,7 @@ final class WiltedMacBulletinHub {
     @discardableResult
     func playTestBulletin() -> Bool {
         testBulletinSpeaker?.stop()
-        let speaker = makeSpeaker?() ?? SystemBulletinSpeaker()
+        let speaker = makeSpeaker?() ?? makeInterruptionSpeaker()
         testBulletinSpeaker = speaker
         let playbackVolume = model?.playback?.backend.volume ?? Float(model?.playbackVolume ?? 1)
         let started = speaker.speak(Self.testBulletinText, playbackVolume: playbackVolume) { [weak self, weak speaker] in
@@ -305,14 +326,14 @@ final class WiltedMacBulletinHub {
     }
 
     private static let allOff = BulletinProducerSettings(
-        interruptionsEnabled: false, alertsEnabled: false, headlinesEnabled: false, headlineMinimumGapMinutes: 30)
+        interruptionsEnabled: false, alertsEnabled: false, headlinesEnabled: false)
 
     private var currentSettings: BulletinProducerSettings {
         guard let model else { return Self.allOff }
         let settings = model.automationSettings
         return BulletinProducerSettings(
             interruptionsEnabled: settings.interruptionsEnabled, alertsEnabled: settings.alertsEnabled,
-            headlinesEnabled: settings.headlinesEnabled, headlineMinimumGapMinutes: settings.headlineMinimumGapMinutes,
+            headlinesEnabled: settings.headlinesEnabled,
             publishedActive: model.preferences.bool(forKey: Self.activePreferenceKey),
             topics: HeadlineTopicFilter(skipSports: settings.skipSportsHeadlines, words: settings.skippedHeadlineWords))
     }
@@ -353,8 +374,7 @@ final class WiltedMacBulletinHub {
     private func reconcileInterruptions(canRun: Bool, settings: WiltedAutomationSettings, retryDue: Bool) {
         let wantsSpeech = canRun && settings.interruptionsEnabled
         let controller = wantsSpeech ? model?.playback : nil
-        let waitLimit = settings.waitLimitSeconds
-        if let attached = attachedController, attached !== controller || attachedWaitLimit != waitLimit {
+        if let attached = attachedController, attached !== controller {
             attached.disableInterruptions(resuming: canRun)
             attachedController = nil
         }
@@ -365,7 +385,7 @@ final class WiltedMacBulletinHub {
         if let controller, attachedController == nil, lastFailure == nil || retryTriggered {
             let source = makeRouteSource()
             if controller.enableInterruptions(
-                speaker: makeInterruptionSpeaker(), waitLimit: TimeInterval(waitLimit), routeSource: source,
+                speaker: makeInterruptionSpeaker(), routeSource: source,
                 spokenHeadlineExpiries: heardHistory.snapshot(at: now()).expiries,
                 shouldSpeakHeadline: { [weak self, heardHistory, now] headline in
                     let time = now()
@@ -389,7 +409,6 @@ final class WiltedMacBulletinHub {
                 }
                 clearFailure()
                 attachedController = controller
-                attachedWaitLimit = waitLimit
                 syncPlayer()
             } else {
                 protectionFailed(at: source.failureStep ?? .registration)
@@ -409,9 +428,23 @@ final class WiltedMacBulletinHub {
         return WiltedMacHeadlineBulletinSpeaker(
             audioURL: { [weak self] bulletin in
                 guard let self else { return nil }
-                return self.narration.audioURL(for: bulletin, accountIdentity: self.approvedPublicationOwner)
-            },
-            audioPlayer: makeHeadlineAudioPlayer())
+                if bulletin.kind == .headline {
+                    return self.narration.audioURL(for: bulletin, accountIdentity: self.approvedPublicationOwner)
+                }
+                return self.weatherAlertNarration?.audioURL(for: bulletin)
+            }, audioPlayer: makeHeadlineAudioPlayer(),
+            selectedVoice: { [weak self] in self?.model?.readingVoiceSelection.selectedVoice },
+            renderShortText: renderShortTextNarration)
+    }
+
+    private func refreshWeatherAlertNarration() {
+        let settings = model?.automationSettings
+        let enabled = alertMonitor != nil && model?.isPlaying == true
+            && settings?.interruptionsEnabled == true && settings?.alertsEnabled == true
+        guard alertMonitor != nil || weatherAlertNarration != nil else { return }
+        weatherNarration.update(
+            current: Array(activeAlerts.values), enabled: enabled,
+            selectedVoice: model?.readingVoiceSelection.selectedVoice)
     }
 
     private var approvedPublicationOwner: String? {
@@ -424,7 +457,7 @@ final class WiltedMacBulletinHub {
               bulletin.id == "headline:\(storyID)", bulletin.expiresAt > time,
               heardHistory.snapshot(at: time).allows(
                 id: bulletin.id, title: BulletinProducer.headlineTitle(of: bulletin.text), at: time),
-              headlines.contains(bulletin), model.automationSettings.interruptionsEnabled,
+              model.automationSettings.interruptionsEnabled,
               model.automationSettings.headlinesEnabled,
               let projection = try? model.headlineCatalogStore.projection(at: time),
               let story = (projection.recent + projection.saved).first(where: { $0.id == storyID }),
@@ -438,7 +471,7 @@ final class WiltedMacBulletinHub {
     }
 
     private func canSpeakHeadline(_ bulletin: Bulletin) -> Bool {
-        guard let model, bulletin.kind == .headline, headlines.contains(bulletin),
+        guard let model, bulletin.kind == .headline,
               bulletin.expiresAt > now(), model.automationSettings.interruptionsEnabled,
               model.automationSettings.headlinesEnabled else { return false }
         return isEligibleHeadline(bulletin)
@@ -494,6 +527,8 @@ final class WiltedMacBulletinHub {
         clearFailure()
         headlineNarration?.shutdown()
         headlineNarration = nil
+        weatherAlertNarration?.shutdown()
+        weatherAlertNarration = nil
         testBulletinSpeaker?.stop()
         testBulletinSpeaker = nil
         attachedController?.disableInterruptions(resuming: false)
@@ -546,12 +581,15 @@ final class WiltedMacBulletinHub {
     }
 
     private func stopAlerts() {
-        guard let monitor = alertMonitor else { return }
+        let monitor = alertMonitor
         alertMonitor = nil
         activeAlerts = [:]
-        Task {
-            await monitor.stop()
-            await monitor.clearCoordinates()
+        weatherAlertNarration?.update(current: [], enabled: false, selectedVoice: nil)
+        if let monitor {
+            Task {
+                await monitor.stop()
+                await monitor.clearCoordinates()
+            }
         }
         syncPlayer()
     }
@@ -560,7 +598,7 @@ final class WiltedMacBulletinHub {
     func receive(alert: Bulletin) {
         guard alertMonitor != nil else { return }
         activeAlerts[alert.id] = alert
-        attachedController?.deliverBulletin(alert)
+        refreshWeatherAlertNarration()
         syncPlayer()
     }
 
@@ -569,6 +607,7 @@ final class WiltedMacBulletinHub {
         let ids = await monitor.activeAlertIDs
         guard monitor === alertMonitor else { return }
         activeAlerts = activeAlerts.filter { ids.contains($0.key) }
+        refreshWeatherAlertNarration()
         syncPlayer()
     }
 
@@ -582,16 +621,17 @@ final class WiltedMacBulletinHub {
         let active = channel.map { $0.alertsEnabled || $0.headlinesEnabled } ?? false
         model?.preferences.set(active, forKey: Self.activePreferenceKey)
         refreshHeadlineNarration(newlyPublished: newlyPublished)
+        refreshWeatherAlertNarration()
         syncPlayer()
     }
 
     /// Hands the player the current headlines and tells it which bulletins are still current, so
-    /// a withdrawn one is dropped.
+    /// withdrawn alerts are dropped. Newly rendered candidates remain queued until an ad break.
     private func syncPlayer() {
         guard let controller = attachedController else { return }
-        let ready = headlines.filter(canSpeakHeadline)
-        for headline in ready { controller.deliverBulletin(headline) }
-        controller.replaceBulletins(ready + Array(activeAlerts.values))
+        let ready = narration.readyBulletins.filter(canSpeakHeadline)
+        let readyAlerts = weatherAlertNarration?.readyBulletins ?? []
+        controller.replaceBulletins(ready + readyAlerts)
     }
 
     private func apply(_ value: BulletinProducerStatus) {

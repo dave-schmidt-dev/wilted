@@ -6,11 +6,14 @@ import math
 import os
 import re
 import subprocess
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from . import cue_timing as _cue
 from . import reporting
-from .constants import RENDER_TIMEOUT_S
+from .constants import FFPROBE_TIMEOUT_S, RENDER_TIMEOUT_S
 from .reporting import WorkerError
 
 TARGET_I = -16.0
@@ -26,7 +29,9 @@ def measure(path: Path, *, filter_chain: str | None = None) -> tuple[float, floa
                           if part)
     command = ["ffmpeg", "-hide_banner", "-nostats", "-v", "info", "-i", str(path), "-map", "0:a:0",
                "-af", analysis, "-f", "null", "-"]
-    stderr = _cue._run_render_with_progress(command, timeout_s=RENDER_TIMEOUT_S, stage="audio.loudness.measure.progress")
+    stderr = _cue._run_render_with_progress(
+        command, timeout_s=RENDER_TIMEOUT_S, stage="audio.loudness.measure.progress"
+    )
     match = _JSON_OBJECT.search(stderr)
     if not match:
         raise WorkerError("loudness-measure-failed", "ffmpeg returned no loudness measurement")
@@ -105,3 +110,71 @@ def normalize(audio_path: Path, output_path: Path) -> tuple[dict[str, float] | N
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def normalize_short(audio_path: Path, output_path: Path) -> tuple[dict[str, float] | None, str | None]:
+    """Normalize short generated speech with FFmpeg's measured dynamic loudness filter."""
+    temporary: Path | None = None
+    try:
+        if not audio_path.is_file() or audio_path.stat().st_size == 0:
+            raise WorkerError("loudness-input-invalid", "audio to normalize is missing or empty")
+        _cue._render_codec_arguments(output_path)
+        before_duration = _cue.probe_duration(audio_path)
+        sample_rate = _probe_sample_rate(audio_path)
+        before_i, before_tp = measure(audio_path)
+    except (WorkerError, OSError, subprocess.SubprocessError) as error:
+        reason = error.code if isinstance(error, WorkerError) else type(error).__name__
+        return None, reason
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_name(f".{output_path.stem}.short-leveling-{os.getpid()}{output_path.suffix}")
+    temporary.unlink(missing_ok=True)
+    command = [
+        "ffmpeg", "-y", "-v", "error", "-i", str(audio_path), "-map", "0:a:0",
+        "-af", f"loudnorm=I={TARGET_I}:TP={TARGET_TP}:LRA=11,atrim=duration={before_duration:.6f},asetpts=PTS-STARTPTS",
+        "-ar", str(sample_rate), *_cue._render_codec_arguments(output_path), str(temporary),
+    ]
+    reporting.progress("audio.loudness.render", f"normalizing to {TARGET_I:g} LUFS")
+    try:
+        _cue._run_render_with_progress(command, timeout_s=RENDER_TIMEOUT_S,
+                                       stage="audio.loudness.render.progress")
+        if not temporary.is_file() or temporary.stat().st_size == 0:
+            raise WorkerError("loudness-output-empty", "normalization produced no playable audio")
+        after_i, after_tp = measure(temporary)
+        after_duration = _cue.probe_duration(temporary)
+        after_rate = _probe_sample_rate(temporary)
+        if abs(after_duration - before_duration) > 0.05 or after_rate != sample_rate:
+            raise WorkerError("loudness-duration-changed", "normalization changed the audio timeline or sample rate")
+        if abs(after_i - TARGET_I) > 1.0 or after_tp > TARGET_TP + 0.1:
+            raise WorkerError("loudness-target-unreachable", "audio could not meet loudness and peak targets")
+        os.replace(temporary, output_path)
+        return {
+            "inputIntegratedLufs": round(before_i, 2),
+            "inputTruePeakDbtp": round(before_tp, 2),
+            "outputIntegratedLufs": round(after_i, 2),
+            "outputTruePeakDbtp": round(after_tp, 2),
+            "targetIntegratedLufs": TARGET_I,
+            "truePeakCeilingDbtp": TARGET_TP,
+        }, None
+    except (WorkerError, OSError, subprocess.SubprocessError) as error:
+        reason = error.code if isinstance(error, WorkerError) else type(error).__name__
+        return None, reason
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _probe_sample_rate(path: Path) -> int:
+    """Return the first audio stream's sample rate for sample-rate-preserving renders."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, check=True, timeout=FFPROBE_TIMEOUT_S,
+        )
+        sample_rate = int(result.stdout.strip())
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        raise WorkerError("loudness-measure-failed", "ffprobe returned an invalid sample rate") from error
+    if sample_rate <= 0:
+        raise WorkerError("loudness-measure-failed", "ffprobe returned an invalid sample rate")
+    return sample_rate

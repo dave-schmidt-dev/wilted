@@ -79,12 +79,12 @@ chmod +x "$bin/xcrun" "$bin/apple-ui-test-lock" "$bin/xcodegen" "$bin/xcodebuild
 python3 - "$tmp/selector.json" "$$" <<'PY'
 import json, sys
 path, pid = sys.argv[1:]
-def device(uid, name, state="Shutdown"):
-    return {"udid":uid,"name":name,"state":state,"isAvailable":True,"deviceTypeIdentifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro","dataPath":"/fake/data"}
+def device(uid, name, state="Shutdown", device_type="com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro"):
+    return {"udid":uid,"name":name,"state":state,"isAvailable":True,"deviceTypeIdentifier":device_type,"dataPath":"/fake/data"}
 payload={"devices":{
  "com.apple.CoreSimulator.SimRuntime.iOS-26-3":[device("263","iPhone 17 Pro"),device("own","wilted-gate-"+pid+"-live"),device("stale","wilted-gate-99999999-old"),device("boot","wilted-gate-99999998-booted","Booted"),device("other","otherproject-gate-99999997-old"),device("stock","iPhone 17 Pro","Booted")],
  "com.apple.CoreSimulator.SimRuntime.iOS-26-4":[device("264","iPhone 17 Pro")],
- "com.apple.CoreSimulator.SimRuntime.iOS-26-5":[device("265","iPhone 17 Pro")],
+ "com.apple.CoreSimulator.SimRuntime.iOS-26-5":[device("265","wilted-persistent-iOS-26-5"),device("wrong-model","wilted-persistent-iOS-26-5",device_type="com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro")],
  "com.apple.CoreSimulator.SimRuntime.iOS-27-0":[device("270","iPhone 17 Pro")]}}
 json.dump(payload,open(path,"w"))
 PY

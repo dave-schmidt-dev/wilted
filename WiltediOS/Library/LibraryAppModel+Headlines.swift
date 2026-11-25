@@ -47,6 +47,32 @@ extension LibraryAppModel {
         return headlineProjection.recent.filter { $0.isRecent(at: now()) }
     }
 
+    /// Saved headlines appear in Notebook with any local save changes that are still syncing.
+    /// The account-bound projection and outbox remain the source of truth.
+    var notebookSavedHeadlineStories: [LibraryHeadlineStory] {
+        guard let projection = headlineProjection, let owner = headlinePhoneState.ownerForActions else { return [] }
+        var stories = Dictionary(uniqueKeysWithValues: projection.saved.map { ($0.id, $0) })
+        for command in headlinePhoneState.commands where command.ownerToken == owner
+            && (command.delivery == .pending || command.delivery == .sent) {
+            guard case let .save(story, isSaved, _) = command.action else { continue }
+            if isSaved {
+                stories[story.id] = (try? LibraryHeadlineStory(
+                    id: story.id, title: story.title, publisherID: story.publisherID,
+                    publisherName: story.publisherName, link: story.link, publishedAt: story.publishedAt,
+                    firstSeenAt: story.firstSeenAt, lastSeenAt: story.lastSeenAt,
+                    savedAt: story.savedAt ?? command.createdAt, savedRevision: story.savedRevision)) ?? story
+            } else {
+                stories.removeValue(forKey: story.id)
+            }
+        }
+        return stories.values.sorted {
+            let leftDate = $0.savedAt ?? $0.recentAnchorAt
+            let rightDate = $1.savedAt ?? $1.recentAnchorAt
+            if leftDate != rightDate { return leftDate > rightDate }
+            return $0.id < $1.id
+        }
+    }
+
     /// Resolves the exact Mac-catalog story named by the active or last spoken headline.
     func canonicalHeadlineStory(for bulletin: Bulletin) -> LibraryHeadlineStory? {
         guard let storyID = bulletin.headlineStoryID, let projection = headlineProjection else { return nil }

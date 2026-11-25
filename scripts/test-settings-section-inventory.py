@@ -55,8 +55,8 @@ class SettingsInventory(unittest.TestCase):
 
     def test_sections(self):
         settings = source("WiltedMacSettingsView")
-        self.assertIn("settingsTabContent", settings, "Settings must render the selected tab")
-        self.assertIn("ForEach(model.settingsTab.sections)", settings)
+        self.assertIn("settingsContent", settings, "Settings must render one continuous page")
+        self.assertIn("ForEach(WiltedMacSettingsTab.allCases.flatMap(\\.sections))", settings)
         self.assertIn('"wilted-settings-section-\\(section.rawValue)"', settings)
         layout = source("WiltedMacSettingsSections").split("func settingsSectionContent(for section:", 1)[1]
         # Expand the view declarations reached by each arm of the section switch.
@@ -112,15 +112,27 @@ class SettingsInventory(unittest.TestCase):
             "libraryAndSync": ["devices", "about"],
         })
         flattened = [section for group in sections.values() for section in group]
-        self.assertCountEqual(flattened, [
-            "general", "newEpisodes", "preparing", "ads", "providers", "reports", "devices", "about",
+        self.assertEqual(flattened, [
+            "general", "preparing", "newEpisodes", "reports", "ads", "providers", "devices", "about",
         ])
         self.assertEqual(len(flattened), len(set(flattened)))
 
         view = source("WiltedMacSettingsView")
+        self.assertIn("ScrollViewReader { reader in", view)
+        self.assertIn("model.settingsSection = tab.sections[0]", view)
+        self.assertIn("reader.scrollTo(section.rawValue, anchor: .top)", view)
+        self.assertIn("onPreferenceChange(WiltedMacSettingsSectionPositionKey.self)", view)
+        self.assertIn("proxy.frame(", view)
+        self.assertIn(".named(WiltedMacSettingsScrollCoordinateSpace.name)).minY", view)
+        self.assertNotIn(".id(model.settingsTab)", view, "scrolling must not rebuild the page per tab")
         self.assertIn('.accessibilityIdentifier("wilted-settings-tab-\\(tab.id)")', view)
         self.assertIn('.accessibilityIdentifier("wilted-settings-section-\\(section.rawValue)")', view)
         self.assertIn('.id(section.rawValue)', view)
+
+        destination = source("WiltedMacDestination")
+        self.assertIn("if let scrollAnchor {", destination)
+        self.assertIn("scrollView.scrollPosition(id: scrollAnchor, anchor: .top)", destination)
+        self.assertNotIn("scrollAnchor ?? .constant(nil)", destination)
 
 
 class ShowSettingsInventory(unittest.TestCase):
@@ -324,8 +336,6 @@ INVENTORY = {
         'wilted-reports-interruptions-summary',
         'wilted-reports-weather-explanation',
         'wilted-reports-headlines-explanation',
-        'wilted-reports-wait-limit-explanation',
-        'wilted-reports-headline-gap-explanation',
         'wilted-reports-daily-explanation',
         'wilted-reports-contact-explanation',
         'wilted-reports-reading-voice-explanation',
@@ -356,8 +366,8 @@ INVENTORY = {
         'wilted-reports-skip-sports',
         'wilted-reports-skip-words',
         'wilted-reports-skipped-count',
-        'wilted-reports-wait-limit',
-        'wilted-reports-headline-gap',
+        'wilted-reports-headline-toast-duration',
+        'wilted-reports-headline-toast-duration-explanation',
         'wilted-reports-bulletin-status',
         'wilted-reports-daily',
         'wilted-reports-time',

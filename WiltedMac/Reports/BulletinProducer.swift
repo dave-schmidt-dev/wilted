@@ -8,7 +8,6 @@ struct BulletinProducerSettings: Equatable, Sendable {
     var interruptionsEnabled: Bool
     var alertsEnabled: Bool
     var headlinesEnabled: Bool
-    var headlineMinimumGapMinutes: Int
     var publishedActive = false
     /// Headlines about these topics are never read.
     var topics = HeadlineTopicFilter()
@@ -53,10 +52,9 @@ struct BulletinProducerStatus: Equatable, Sendable {
 /// Publishes `LibraryBulletins` for the Mac: the switches from Settings and the headlines of
 /// news feeds. Weather alerts are not published; each playing device runs its own monitor.
 ///
-/// A poll refreshes story cards regardless of speech settings, turns at most one new post per
-/// `headlineMinimumGapMinutes` into a bulletin when speech is on, drops expired bulletins, and
-/// writes the channel only when its switches or list changed. Setting changes publish before RSS
-/// reads, so turning interruptions off does not wait for a slow feed. A failed poll backs off.
+/// A poll refreshes story cards regardless of speech settings, admits fresh eligible posts in a
+/// bounded pending queue, rotates published headlines through the transport limit, and writes the
+/// channel only when its switches or list changed. A failed poll backs off without losing pending work.
 actor BulletinProducer {
     private static let log = Logger(subsystem: "com.zerodelta.wilted.mac", category: "Bulletins")
     static let pollInterval: TimeInterval = 900
@@ -82,11 +80,11 @@ actor BulletinProducer {
     private var baselineLoaded = false
     private var published: LibraryBulletins?
     private var headlines: [Bulletin] = []
+    private var pendingHeadlines: [Bulletin] = []
     private var seen: Set<String> = []
     private var seenOrder: [String] = []
     private var stories = HeadlineStoryMemory()
     private var newsBaselined = false
-    private var lastEmittedAt: Date?
     private var observedSettings: BulletinProducerSettings?
     private var loop: Task<Void, Never>?
     private var loopGeneration = 0
@@ -152,6 +150,7 @@ actor BulletinProducer {
     /// Withdraws unstarted headlines from a muted publisher and refreshes the channel.
     func publisherMuted(_ publisherID: String) {
         headlines.removeAll { $0.publisherID == publisherID }
+        pendingHeadlines.removeAll { $0.publisherID == publisherID }
         sourcesChanged()
     }
 
@@ -236,9 +235,8 @@ actor BulletinProducer {
                 headlines = published.headlines
                 for bulletin in published.headlines {
                     remember(bulletin.id)
-                    stories.remember(Self.headlineTitle(of: bulletin.text), at: bulletin.issuedAt)
+                    stories.remember(Self.storyTitle(of: bulletin), at: bulletin.issuedAt)
                 }
-                lastEmittedAt = published.headlines.map(\.issuedAt).max()
             }
             status.publishedActive = published.map { $0.alertsEnabled || $0.headlinesEnabled } ?? false
         }
@@ -247,7 +245,11 @@ actor BulletinProducer {
         // devices even when every feed is down; the next section still refreshes quiet story cards.
         let time = now()
         headlines.removeAll { $0.isExpired(at: time) }
-        if !current.interruptionsEnabled || !current.headlinesEnabled { headlines = [] }
+        pendingHeadlines.removeAll { $0.isExpired(at: time) }
+        if !current.interruptionsEnabled || !current.headlinesEnabled {
+            headlines = []
+            pendingHeadlines = []
+        }
         let settingsOnly = try LibraryBulletins(
             alertsEnabled: current.interruptionsEnabled && current.alertsEnabled,
             headlinesEnabled: current.interruptionsEnabled && current.headlinesEnabled,
@@ -269,7 +271,7 @@ actor BulletinProducer {
         let desired: LibraryBulletins
         if current.interruptionsEnabled {
             if current.headlinesEnabled {
-                await collectHeadlines(candidates, gapMinutes: current.headlineMinimumGapMinutes, topics: current.topics)
+                await collectHeadlines(candidates, topics: current.topics)
             }
             desired = try LibraryBulletins(alertsEnabled: current.alertsEnabled,
                                            headlinesEnabled: current.headlinesEnabled,
@@ -298,7 +300,7 @@ actor BulletinProducer {
     // MARK: - Headlines
 
     private func collectHeadlines(
-        _ candidates: [NewsHeadlineCandidate], gapMinutes: Int, topics: HeadlineTopicFilter
+        _ candidates: [NewsHeadlineCandidate], topics: HeadlineTopicFilter
     ) async {
         let heard = await heardHeadlines()
         let skipped = Set(candidates.filter {
@@ -307,29 +309,113 @@ actor BulletinProducer {
         status.skippedHeadlineCount = skipped.count
         let time = now()
         let isBaseline = !newsBaselined
-        let fresh = candidates.filter { !seen.contains($0.id) }
-        for candidate in fresh { remember(candidate.id) }
+        let pendingIDs = Set(pendingHeadlines.compactMap(\.headlineStoryID))
+        let activeIDs = Set(headlines.compactMap(\.headlineStoryID))
+        let fresh = candidates
+            .filter { !seen.contains($0.id) && !pendingIDs.contains($0.id) && !activeIDs.contains($0.id) }
+            .sorted {
+                let left = $0.publishedAt ?? time
+                let right = $1.publishedAt ?? time
+                return left == right ? $0.id < $1.id : left < right
+            }
         newsBaselined = true
-        // A dated post counts while it is recent. An undated one cannot be aged, so the first
-        // look at a feed only records it.
-        let eligible = fresh.filter { candidate in
-            guard !skipped.contains(candidate.id) else { return false }
-            guard let date = candidate.publishedAt else { return !isBaseline }
-            return time.timeIntervalSince(date) <= Self.headlineLifetime && date.timeIntervalSince(time) < 300
+
+        var pendingStories = stories
+        for bulletin in pendingHeadlines {
+            pendingStories.remember(Self.storyTitle(of: bulletin), at: bulletin.issuedAt)
         }
-        // The same story from another feed is read once; a major update to it may be read again.
-        .filter { heard.allows(id: "headline:\($0.id)", title: $0.title, at: time)
-            && stories.verdict(for: $0.title, at: time) != .duplicate }
-        guard let newest = eligible.max(by: { ($0.publishedAt ?? time) < ($1.publishedAt ?? time) }) else { return }
-        if let lastEmittedAt, time.timeIntervalSince(lastEmittedAt) < Double(gapMinutes) * 60 { return }
-        guard let bulletin = Self.bulletin(for: newest, at: time) else { return }
-        stories.remember(newest.title, at: time)
-        headlines.append(bulletin)
-        headlines.sort { $0.issuedAt > $1.issuedAt }
-        if headlines.count > LibraryBulletins.maximumHeadlines {
-            headlines = Array(headlines.prefix(LibraryBulletins.maximumHeadlines))
+        for candidate in fresh {
+            guard !seen.contains(candidate.id) else { continue }
+            guard !skipped.contains(candidate.id) else { remember(candidate.id); continue }
+            if let date = candidate.publishedAt {
+                guard time.timeIntervalSince(date) <= Self.headlineLifetime,
+                      date.timeIntervalSince(time) < 300 else {
+                    remember(candidate.id)
+                    continue
+                }
+            } else if isBaseline {
+                remember(candidate.id)
+                continue
+            }
+            guard heard.allows(id: "headline:\(candidate.id)", title: candidate.title, at: time),
+                  pendingStories.verdict(for: candidate.title, at: time) != .duplicate else {
+                remember(candidate.id)
+                continue
+            }
+            guard pendingHeadlines.count < Self.seenLimit else { continue }
+            guard let bulletin = Self.bulletin(for: candidate, at: time) else {
+                remember(candidate.id)
+                continue
+            }
+            queue(bulletin, candidate: candidate, into: &pendingStories)
         }
-        lastEmittedAt = time
+        pendingHeadlines.sort(by: Self.pendingBefore)
+        publishPendingHeadlines()
+    }
+
+    private func queue(
+        _ bulletin: Bulletin,
+        candidate: NewsHeadlineCandidate,
+        into pendingStories: inout HeadlineStoryMemory
+    ) {
+        pendingHeadlines.append(bulletin)
+        pendingStories.remember(candidate.title, at: bulletin.issuedAt)
+        remember(candidate.id)
+    }
+
+    /// Advances the bounded channel window without evicting a headline until a successful
+    /// previous publish proves that its ID reached the channel.
+    private func publishPendingHeadlines() {
+        guard !pendingHeadlines.isEmpty else { return }
+        let capacity = LibraryBulletins.maximumHeadlines
+        let freeSlots = capacity - headlines.count
+        let mustRotate = max(0, pendingHeadlines.count - freeSlots)
+        if mustRotate > 0 {
+            let deliveredIDs = Set(published?.headlines.map(\.id) ?? [])
+            let removable = headlines
+                .filter { deliveredIDs.contains($0.id) }
+                .sorted { Self.older($0, than: $1) }
+                .prefix(mustRotate)
+                .map(\.id)
+            let removal = Set(removable)
+            headlines.removeAll { removal.contains($0.id) }
+        }
+        let slots = max(0, capacity - headlines.count)
+        let count = min(slots, pendingHeadlines.count)
+        guard count > 0 else { return }
+        let admitted = Array(pendingHeadlines.prefix(count))
+        pendingHeadlines.removeFirst(count)
+        for bulletin in admitted {
+            headlines.append(bulletin)
+            stories.remember(Self.storyTitle(of: bulletin), at: bulletin.issuedAt)
+        }
+        headlines.sort(by: Self.newer)
+    }
+
+    private static func newer(_ lhs: Bulletin, _ rhs: Bulletin) -> Bool {
+        let left = lhs.publishedAt ?? lhs.issuedAt
+        let right = rhs.publishedAt ?? rhs.issuedAt
+        if left != right { return left > right }
+        if lhs.issuedAt != rhs.issuedAt { return lhs.issuedAt > rhs.issuedAt }
+        return lhs.id < rhs.id
+    }
+
+    private static func pendingBefore(_ lhs: Bulletin, _ rhs: Bulletin) -> Bool {
+        let left = lhs.publishedAt ?? lhs.issuedAt
+        let right = rhs.publishedAt ?? rhs.issuedAt
+        return left == right ? lhs.id < rhs.id : left < right
+    }
+
+    private static func older(_ lhs: Bulletin, than rhs: Bulletin) -> Bool {
+        let left = lhs.publishedAt ?? lhs.issuedAt
+        let right = rhs.publishedAt ?? rhs.issuedAt
+        if left != right { return left < right }
+        if lhs.issuedAt != rhs.issuedAt { return lhs.issuedAt < rhs.issuedAt }
+        return lhs.id > rhs.id
+    }
+
+    private static func storyTitle(of bulletin: Bulletin) -> String {
+        bulletin.headline ?? headlineTitle(of: bulletin.text)
     }
 
     private static func bulletin(for candidate: NewsHeadlineCandidate, at time: Date) -> Bulletin? {

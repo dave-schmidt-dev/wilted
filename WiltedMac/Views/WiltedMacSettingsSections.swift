@@ -75,22 +75,27 @@ extension WiltedMacModel {
             if let tab = WiltedMacSettingsTab(rawValue: anchor ?? "") { return tab.sections[0] }
             return WiltedMacSettingsSection(savedAnchor: anchor)
         }
-        set { scrollAnchor(for: .settings).wrappedValue = newValue.rawValue }
+        set {
+            let anchor = scrollAnchor(for: .settings)
+            if anchor.wrappedValue != newValue.rawValue {
+                anchor.wrappedValue = newValue.rawValue
+            }
+        }
     }
 
     var settingsTab: WiltedMacSettingsTab {
         get { WiltedMacSettingsTab(savedAnchor: scrollAnchor(for: .settings).wrappedValue) }
-        set { scrollAnchor(for: .settings).wrappedValue = newValue.rawValue }
+        set { scrollAnchor(for: .settings).wrappedValue = newValue.sections[0].rawValue }
     }
 
     func persistSettingsScrollPosition(_ position: String?) {
         guard let position else { return }
+        let anchor = scrollAnchor(for: .settings)
         if position == "destination-top" {
-            guard scrollAnchor(for: .settings).wrappedValue != nil else { return }
-            scrollAnchor(for: .settings).wrappedValue = settingsTab.rawValue
-        } else if let section = WiltedMacSettingsSection(rawValue: position),
-                  settingsTab.sections.contains(section) {
-            scrollAnchor(for: .settings).wrappedValue = position
+            if anchor.wrappedValue != nil { anchor.wrappedValue = nil }
+        } else if WiltedMacSettingsSection(rawValue: position) != nil,
+                  anchor.wrappedValue != position {
+            anchor.wrappedValue = position
         }
     }
 
@@ -99,7 +104,9 @@ extension WiltedMacModel {
         return Binding(
             get: {
                 guard let anchor = savedAnchor.wrappedValue else { return "destination-top" }
-                if WiltedMacSettingsTab(rawValue: anchor) != nil { return "destination-top" }
+                if let tab = WiltedMacSettingsTab(rawValue: anchor) {
+                    return tab.sections[0].rawValue
+                }
                 return WiltedMacSettingsSection(savedAnchor: anchor).rawValue
             },
             set: { self.persistSettingsScrollPosition($0) }

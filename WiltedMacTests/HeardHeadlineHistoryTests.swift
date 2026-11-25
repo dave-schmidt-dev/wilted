@@ -18,27 +18,38 @@ final class HeardHeadlineHistoryTests: XCTestCase {
         _ = library.installScriptedPlayback(on: library.model)
         library.model.playEpisode(library.episodes[0])
         await library.model.waitForPlaybackOperationForTesting()
-        configure(library.model, wait: 10)
+        configure(library.model)
 
         let original = try bulletin("headline:npr", "NPR. \(title)", at: clock.now)
         try publishCatalog([original], on: library.model, at: clock.now)
         let liveChannel = try channel([original], at: clock.now)
         initial.channelUpdated(try channel([], at: clock.now))
         initial.channelUpdated(liveChannel)
-        await WiltedMacHeadless.eventually("the first voice attempt starts after rendering") {
+        let playback = try XCTUnwrap(library.model.playback)
+        await WiltedMacHeadless.eventually("the first headline finishes local rendering") {
+            self.isReady(initial.headlineNarrationState(for: "npr"))
+        }
+        _ = playback.adBreakReached()
+        await WiltedMacHeadless.eventually("the first voice attempt starts") {
             speakers.all.first?.attempts == 1
         }
         XCTAssertEqual(speakers.all.map(\.attempts), [1])
         XCTAssertEqual(speakers.all.flatMap(\.texts), [])
 
-        configure(library.model, wait: 20)
+        XCTAssertTrue(playback.adBreakReached(), "a failed start remains pending for the next ad break")
         await WiltedMacHeadless.eventually("the selected voice retries the failed start") {
-            speakers.all.count >= 2 && speakers.all[1].texts == [original.text]
+            speakers.all.first?.texts == [original.text]
         }
-        XCTAssertEqual(speakers.all.flatMap(\.texts), [original.text], "failed starts can be retried")
-        clock.advance(minutes: 40)
-        configure(library.model, wait: 30)
-        XCTAssertEqual(speakers.all.map(\.attempts), [1, 1, 0], "re-enabling syncs the same live channel")
+        XCTAssertEqual(speakers.all.map(\.attempts), [2], "failed starts can retry on the next ad break")
+        speakers.all[0].finish()
+        await WiltedMacHeadless.eventually("program playback resumes") { library.model.isPlaying }
+        configure(library.model, interruptions: false)
+        XCTAssertFalse(initial.interruptionsAreAttached)
+        configure(library.model)
+        XCTAssertTrue(initial.interruptionsAreAttached, "turning interruptions on attaches again")
+        initial.channelUpdated(liveChannel)
+        XCTAssertEqual(speakers.all.flatMap(\.texts), [original.text], "a heard headline is not replayed after re-enable")
+        XCTAssertEqual(speakers.all.map(\.attempts), [2, 0])
         await library.model.close()
 
         let relaunched = library.relaunch()
@@ -61,7 +72,12 @@ final class HeardHeadlineHistoryTests: XCTestCase {
         let major = try bulletin("headline:ap", "AP. \(update)", at: clock.now)
         try publishCatalog([major], on: relaunched, at: clock.now)
         hub.channelUpdated(try channel([major], at: clock.now))
-        await WiltedMacHeadless.eventually("an eligible major update is rendered and spoken") {
+        await WiltedMacHeadless.eventually("an eligible major update finishes rendering") {
+            self.isReady(hub.headlineNarrationState(for: "ap"))
+        }
+        XCTAssertTrue(freshSpeakers.all.flatMap(\.texts).isEmpty, "a new headline waits for an ad break")
+        XCTAssertTrue(relaunched.playback?.adBreakReached() == true)
+        await WiltedMacHeadless.eventually("the eligible major update is spoken") {
             freshSpeakers.all.flatMap(\.texts) == [major.text]
         }
         XCTAssertEqual(freshSpeakers.all.flatMap(\.texts), [major.text])
@@ -76,7 +92,7 @@ final class HeardHeadlineHistoryTests: XCTestCase {
         feed.advance(minutes: 90) // The original has already disappeared from the hourly channel.
         let model = WiltedMacModel(arguments: [], preferences: preferences)
         let hub = installHub(on: model, clock: feed, speakers: HeadlineSpeakerFactory(startResults: [true]))
-        configure(model, wait: 10)
+        configure(model)
         defer { withExtendedLifetime(model) {} }
         let producer = scriptedProducer(hub, feed)
         feed.items = [post("bbc", title: reworded, feed: feed)]
@@ -96,7 +112,7 @@ final class HeardHeadlineHistoryTests: XCTestCase {
             feed.advance(minutes: hours == 23 ? 23 * 60 : 2 * 60)
             let model = WiltedMacModel(arguments: [], preferences: preferences)
             let hub = installHub(on: model, clock: feed, speakers: HeadlineSpeakerFactory(startResults: [true]))
-            configure(model, wait: 10)
+            configure(model)
             defer { withExtendedLifetime(model) {} }
             let producer = scriptedProducer(hub, feed)
             feed.items = [post("npr", title: title, feed: feed)]
@@ -127,21 +143,25 @@ final class HeardHeadlineHistoryTests: XCTestCase {
                 try Data(repeating: 0x39, count: 128).write(to: outputURL)
                 return ArticleNarrationAudio(
                     audioURL: outputURL, duration: 1,
-                    voiceRevision: ArticleNarrationCoordinator.voiceRevision(for: voiceID))
+                    voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID))
             },
             availability: { _ in .available }, now: now)
     }
 
-    private func configure(_ model: WiltedMacModel, wait: Int) {
+    private func configure(_ model: WiltedMacModel, interruptions: Bool = true) {
         model.updateAutomationSettings { current in
             current.updatingReports {
-                $0.interruptionsEnabled = true
+                $0.interruptionsEnabled = interruptions
                 $0.alertsEnabled = false
                 $0.headlinesEnabled = true
-                $0.waitLimitSeconds = wait
             }
         }
         model.bulletinHub.reconcile()
+    }
+
+    private func isReady(_ state: WiltedMacHeadlineNarrationState) -> Bool {
+        if case .ready = state { return true }
+        return false
     }
 
     private func post(_ id: String, title: String, feed: BulletinProducerHarness) -> NewsHeadlineCandidate {
@@ -149,7 +169,7 @@ final class HeardHeadlineHistoryTests: XCTestCase {
     }
 
     private func bulletin(_ id: String, _ text: String, at time: Date) throws -> Bulletin {
-        // Immediate scheduling makes a mistaken replay observable in this call.
+        // The caller explicitly drives an ad break to test whether this headline is admitted.
         let publisherID = String(id.dropFirst("headline:".count))
         let publisherName = String(text.prefix { $0 != "." })
         let storyID = publisherID
@@ -183,16 +203,18 @@ final class HeardHeadlineHistoryTests: XCTestCase {
 
 @MainActor
 private final class HeadlineTestSpeaker: BulletinSpeaking {
-    let startsSpeech: Bool
+    private let startResults: [Bool]
     private(set) var attempts = 0
     private(set) var texts: [String] = []
+    private var completion: (@MainActor () -> Void)?
 
-    init(startsSpeech: Bool) { self.startsSpeech = startsSpeech }
+    init(startResults: [Bool]) { self.startResults = startResults }
 
     func speak(_ text: String, playbackVolume: Float, finished: @escaping @MainActor () -> Void) -> Bool {
         attempts += 1
-        guard startsSpeech else { return false }
+        guard startResults[min(attempts - 1, startResults.count - 1)] else { return false }
         texts.append(text)
+        completion = finished
         return true
     }
 
@@ -203,7 +225,9 @@ private final class HeadlineTestSpeaker: BulletinSpeaking {
         return speak(bulletin.text, playbackVolume: playbackVolume, finished: finished)
     }
 
-    func stop() {}
+    func stop() { completion = nil }
+
+    func finish() { let action = completion; completion = nil; action?() }
 }
 
 @MainActor
@@ -214,8 +238,7 @@ private final class HeadlineSpeakerFactory {
     init(startResults: [Bool]) { self.startResults = startResults }
 
     func make() -> HeadlineTestSpeaker {
-        let result = startResults[min(all.count, startResults.count - 1)]
-        let speaker = HeadlineTestSpeaker(startsSpeech: result)
+        let speaker = HeadlineTestSpeaker(startResults: startResults)
         all.append(speaker)
         return speaker
     }

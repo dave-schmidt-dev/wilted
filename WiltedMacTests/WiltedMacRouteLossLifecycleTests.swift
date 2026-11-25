@@ -140,6 +140,8 @@ final class WiltedMacRouteLossLifecycleTests: XCTestCase {
         let bulletin = try Bulletin(id: "lifecycle", kind: .alert, text: "Synthetic bulletin", severity: .extreme,
                                     issuedAt: now, expiresAt: now.addingTimeInterval(3600))
         rig.model.playback?.deliverBulletin(bulletin)
+        XCTAssertNil(rig.model.playback?.speakingBulletin, "alerts wait for a removed-ad seam too")
+        XCTAssertTrue(rig.model.playback?.adBreakReached() == true)
         XCTAssertNotNil(rig.model.playback?.speakingBulletin)
         XCTAssertEqual(rig.route.listeners, 1)
         rig.backend.resetCounts()

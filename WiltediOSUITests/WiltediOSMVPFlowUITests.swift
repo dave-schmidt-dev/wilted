@@ -42,11 +42,8 @@ final class WiltediOSMVPFlowUITests: XCTestCase {
         expand.tap()
         let state = app.descendants(matching: .any)["wilted-player-headline-state"]
         let forward = app.buttons["wilted-player-forward"]
-        for _ in 0..<6 {
-            if state.exists && state.label == "Reading this story" { break }
-            forward.tap()
-        }
-        XCTAssertTrue(waitForLabel("Reading this story", on: state, timeout: 5))
+        XCTAssertTrue(waitForLabel("Reading this story", on: state, timeout: 10),
+                      "the fixture advances through its prepared ad seam before speaking")
 
         let card = app.descendants(matching: .any)["wilted-player-headline-story-card"]
         XCTAssertTrue(card.waitForExistence(timeout: 5))

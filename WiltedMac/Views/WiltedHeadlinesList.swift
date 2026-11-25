@@ -56,7 +56,7 @@ struct WiltedHeadlineStoryCard: View {
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 }
-                Button(story.isSaved ? "Unsave" : "Save") { setSaved(!story.isSaved) }
+                Button(story.isSaved ? "Remove from Notebook" : "Save to Notebook") { setSaved(!story.isSaved) }
                     .disabled(actionInProgress)
                     .accessibilityIdentifier("wilted-headline-save-\(story.id)")
                 if isMuted {
@@ -211,7 +211,6 @@ struct WiltedHeadlineStoryCard: View {
 
 struct WiltedHeadlinesList: View {
     let recent: [LibraryHeadlineStory]
-    let saved: [LibraryHeadlineStory]
     let publishers: [LibraryHeadlinePublisher]
     let actionInProgress: Bool
     let actionMessage: String?
@@ -230,8 +229,8 @@ struct WiltedHeadlinesList: View {
         Set(publishers.filter(\.isMuted).map(\.id))
     }
 
-    private var unsavedRecent: [LibraryHeadlineStory] {
-        recent.filter { !$0.isSaved }
+    private var recentStories: [LibraryHeadlineStory] {
+        recent
     }
 
     var body: some View {
@@ -243,7 +242,7 @@ struct WiltedHeadlinesList: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("wilted-headlines-load-status")
             }
-            if unsavedRecent.isEmpty && saved.isEmpty && projectionMessage == nil {
+            if recentStories.isEmpty && projectionMessage == nil {
                 Text("New stories from your headline feeds will appear here for seven days.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
@@ -256,8 +255,7 @@ struct WiltedHeadlinesList: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-headline-action-status")
             }
-            storySection("Recent headlines", stories: unsavedRecent)
-            storySection("Saved stories", stories: saved)
+            storySection("Recent headlines", stories: recentStories)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

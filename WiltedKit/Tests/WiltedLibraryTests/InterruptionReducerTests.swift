@@ -19,13 +19,13 @@ final class InterruptionReducerTests: XCTestCase {
                      expiresAt: t0.addingTimeInterval(issued + ttl), supersedes: supersedes)
     }
 
-    /// Arrives, waits, then speaks at the pause point; returns the reducer mid-speech.
+    /// Queues a bulletin, then starts a batch at an explicit ad break.
     private func speaking(_ id: String = "h1", severity: BulletinSeverity = .minor) throws
         -> (InterruptionReducer, SpeechCheckpoint) {
-        var reducer = InterruptionReducer(waitLimit: 60)
+        var reducer = InterruptionReducer()
         let b = try bulletin(id, severity: severity)
         _ = reducer.handle(.bulletinArrived(b, try snap()))
-        let effects = reducer.handle(.pausePointReached(try snap(5)))
+        let effects = reducer.handle(.adBreakReached(try snap(5)))
         let checkpoint = try snap(5).checkpoint
         XCTAssertEqual(effects, [.speak(b, checkpoint)])
         return (reducer, checkpoint)
@@ -79,60 +79,111 @@ final class InterruptionReducerTests: XCTestCase {
         XCTAssertFalse(effects.contains { if case .restore = $0 { true } else if $0 == .resume { true } else { false } })
     }
 
-    func testAnExpiredBulletinIsDroppedWithoutSpeaking() throws {
-        var reducer = InterruptionReducer(waitLimit: 60)
+    func testExpiredBulletinsAreDroppedBeforeAnAdBreakBatchStarts() throws {
+        var reducer = InterruptionReducer()
         let stale = try bulletin("old", ttl: 10)
         XCTAssertEqual(reducer.handle(.bulletinArrived(stale, try snap(20))), [])
         XCTAssertEqual(reducer.state, .idle)
         XCTAssertTrue(reducer.pending.isEmpty)
-        // One that expires while waiting is dropped before it can speak.
+        // A bulletin can expire after arrival but before its next break.
         let brief = try bulletin("brief", ttl: 30)
-        let effects = reducer.handle(.bulletinArrived(brief, try snap()))
-        XCTAssertEqual(effects, [.awaitPausePoint(brief, deadline: t0.addingTimeInterval(60))])
-        XCTAssertEqual(reducer.handle(.pausePointReached(try snap(40))), [])
+        XCTAssertEqual(reducer.handle(.bulletinArrived(brief, try snap())), [])
+        XCTAssertEqual(reducer.handle(.adBreakReached(try snap(40))), [])
         XCTAssertEqual(reducer.state, .idle)
+        XCTAssertTrue(reducer.pending.isEmpty)
     }
 
-    func testAnExtremeAlertArrivingWhileAHeadlineWaitsIsSpokenFirst() throws {
-        var reducer = InterruptionReducer(waitLimit: 60)
+    func testAllSeveritiesWaitForTheNextBreakAndBatchBySeverity() throws {
+        var reducer = InterruptionReducer()
         let headline = try bulletin("h1")
         let alert = try bulletin("a1", .alert, severity: .extreme, issued: 1)
         _ = reducer.handle(.bulletinArrived(headline, try snap()))
-        guard case .waiting = reducer.state else { return XCTFail("headline should wait") }
+        XCTAssertEqual(reducer.state, .idle)
         let effects = reducer.handle(.bulletinArrived(alert, try snap(1)))
-        XCTAssertEqual(effects, [.speak(alert, try snap(1).checkpoint)])
-        // The headline is still pending and waits after the alert is done.
-        XCTAssertEqual(reducer.pending, [headline])
-        XCTAssertEqual(reducer.handle(.speechFinished(try snap(4))).suffix(2), [.restore(try snap(1).checkpoint), .resume])
-        XCTAssertEqual(reducer.handle(.tick(try snap(5))), [.awaitPausePoint(headline, deadline: t0.addingTimeInterval(65))])
+        XCTAssertEqual(effects, [])
+        XCTAssertEqual(reducer.pending.map(\.id), ["a1", "h1"])
+        XCTAssertEqual(reducer.handle(.tick(try snap(61))), [], "time passing never speaks a bulletin")
+        XCTAssertEqual(reducer.handle(.adBreakReached(try snap(62))), [.speak(alert, try snap(62).checkpoint)])
+        XCTAssertEqual(reducer.remainingInBatch, [headline])
+        XCTAssertEqual(reducer.handle(.speechFinished(try snap(64))), [.speak(headline, try snap(62).checkpoint)])
+        XCTAssertEqual(reducer.handle(.speechFinished(try snap(66))), [.restore(try snap(62).checkpoint), .resume])
     }
 
-    func testAnExtremeAlertDuringSpeechIsSpokenNextWithOneRestoreAtTheEnd() throws {
+    func testEveryWeatherSeverityWaitsForAndDrainsAtTheAdBreak() throws {
+        var reducer = InterruptionReducer()
+        let alerts = try BulletinSeverity.allCases.enumerated().map { index, severity in
+            try bulletin("alert-\(severity.rawValue)", .alert, severity: severity, issued: TimeInterval(index))
+        }
+        for alert in alerts {
+            XCTAssertEqual(reducer.handle(.bulletinArrived(alert, try snap())), [])
+        }
+        XCTAssertEqual(reducer.pending.count, alerts.count)
+        XCTAssertEqual(reducer.state, .idle, "no severity starts speech before a marked break")
+
+        let ordered = alerts.sorted { $0.severity > $1.severity }
+        let checkpoint = try snap(20).checkpoint
+        XCTAssertEqual(reducer.handle(.adBreakReached(try snap(20))), [.speak(ordered[0], checkpoint)])
+        for alert in ordered.dropFirst() {
+            XCTAssertEqual(reducer.handle(.speechFinished(try snap(21))), [.speak(alert, checkpoint)])
+        }
+        XCTAssertEqual(reducer.handle(.speechFinished(try snap(22))), [.restore(checkpoint), .resume])
+    }
+
+    func testItemsArrivingDuringASnapshotBatchWaitForTheNextBreak() throws {
         var (reducer, checkpoint) = try speaking()
-        let alert = try bulletin("a1", .alert, severity: .extreme, issued: 2)
-        XCTAssertEqual(reducer.handle(.bulletinArrived(alert, try snap(6))), [], "never interrupts speech in progress")
-        XCTAssertEqual(reducer.handle(.speechFinished(try snap(8))), [.speak(alert, checkpoint)])
-        XCTAssertEqual(reducer.handle(.speechFinished(try snap(12))), [.restore(checkpoint), .resume])
+        let arrival = try bulletin("a1", .alert, severity: .extreme, issued: 6)
+        XCTAssertEqual(reducer.handle(.bulletinArrived(arrival, try snap(6))), [])
+        XCTAssertEqual(reducer.pending, [arrival])
+        XCTAssertEqual(reducer.handle(.speechFinished(try snap(8))), [.restore(checkpoint), .resume])
+        XCTAssertEqual(reducer.handle(.adBreakReached(try snap(12))), [.speak(arrival, try snap(12).checkpoint)])
+        XCTAssertEqual(reducer.handle(.speechFinished(try snap(15))), [.restore(try snap(12).checkpoint), .resume])
     }
 
-    func testChannelReplacedWithAnEmptyListDropsAWaitingBulletin() throws {
-        var reducer = InterruptionReducer(waitLimit: 60)
+    func testFailedSpeechStartRequeuesTheCurrentAndUnreadBulletins() throws {
+        var reducer = InterruptionReducer()
+        let current = try bulletin("current", .alert, severity: .severe)
+        let queued = try bulletin("queued", .headline, severity: .minor, issued: 1)
+        _ = reducer.handle(.bulletinArrived(current, try snap()))
+        _ = reducer.handle(.bulletinArrived(queued, try snap(1)))
+        let checkpoint = try snap(2).checkpoint
+        XCTAssertEqual(reducer.handle(.adBreakReached(try snap(2))), [.speak(current, checkpoint)])
+
+        XCTAssertEqual(reducer.handle(.speechStartFailed(try snap(2))),
+                       [.stopSpeech, .restore(checkpoint), .resume])
+        XCTAssertEqual(reducer.state, .idle)
+        XCTAssertEqual(reducer.pending.map(\.id), ["current", "queued"])
+        XCTAssertEqual(reducer.handle(.adBreakReached(try snap(3))), [.speak(current, try snap(3).checkpoint)])
+    }
+
+    func testChannelRefreshDoesNotDiscardAccumulatedValidHeadlines() throws {
+        var reducer = InterruptionReducer()
         let queued = try bulletin("h2", issued: 1)
         _ = reducer.handle(.bulletinArrived(try bulletin("h1"), try snap()))
         _ = reducer.handle(.bulletinArrived(queued, try snap(1)))
-        XCTAssertEqual(reducer.pending, [queued])
+        XCTAssertEqual(reducer.pending, [try bulletin("h1"), queued])
         XCTAssertEqual(reducer.handle(.channelReplaced([], try snap(2))), [])
         XCTAssertEqual(reducer.state, .idle)
+        XCTAssertEqual(reducer.pending, [try bulletin("h1"), queued])
+        XCTAssertEqual(reducer.handle(.adBreakReached(try snap(3))), [.speak(try bulletin("h1"), try snap(3).checkpoint)])
+        XCTAssertEqual(reducer.handle(.speechFinished(try snap(4))), [.speak(queued, try snap(3).checkpoint)])
+    }
+
+    func testAWeatherAlertRemovedFromTheActiveChannelIsDroppedBeforeTheBreak() throws {
+        var reducer = InterruptionReducer()
+        let alert = try bulletin("alert-1", .alert, severity: .severe)
+        _ = reducer.handle(.bulletinArrived(alert, try snap()))
+
+        XCTAssertEqual(reducer.handle(.channelReplaced([], try snap(1))), [])
         XCTAssertTrue(reducer.pending.isEmpty)
-        XCTAssertEqual(reducer.handle(.pausePointReached(try snap(3))), [])
+        XCTAssertEqual(reducer.handle(.adBreakReached(try snap(2))), [])
     }
 
     func testTheSameBulletinIdArrivingTwiceIsSpokenOnce() throws {
-        var reducer = InterruptionReducer(waitLimit: 60)
+        var reducer = InterruptionReducer()
         let b = try bulletin("h1")
         _ = reducer.handle(.bulletinArrived(b, try snap()))
-        XCTAssertEqual(reducer.handle(.bulletinArrived(b, try snap(1))), [], "already waiting")
-        XCTAssertEqual(reducer.handle(.pausePointReached(try snap(2))), [.speak(b, try snap(2).checkpoint)])
+        XCTAssertEqual(reducer.handle(.bulletinArrived(b, try snap(1))), [], "duplicate queued id")
+        XCTAssertEqual(reducer.handle(.adBreakReached(try snap(2))), [.speak(b, try snap(2).checkpoint)])
         XCTAssertEqual(reducer.handle(.bulletinArrived(b, try snap(3))), [], "already speaking")
         _ = reducer.handle(.speechFinished(try snap(4)))
         XCTAssertEqual(reducer.handle(.bulletinArrived(b, try snap(5))), [], "already spoken")
@@ -140,38 +191,41 @@ final class InterruptionReducerTests: XCTestCase {
         XCTAssertTrue(reducer.pending.isEmpty)
     }
 
-    func testNeverSpeaksWhenNotPlayingAndWaitsAgainOnceItPlays() throws {
-        var reducer = InterruptionReducer(waitLimit: 60)
+    func testAReachedBreakWhilePausedKeepsBulletinsForTheNextBreak() throws {
+        var reducer = InterruptionReducer()
         let extreme = try bulletin("a1", .alert, severity: .extreme)
         XCTAssertEqual(reducer.handle(.bulletinArrived(extreme, try snap(playing: false))), [])
         XCTAssertEqual(reducer.handle(.tick(try snap(100, playing: false))), [])
-        XCTAssertEqual(reducer.handle(.pausePointReached(try snap(101, playing: false))), [])
-        XCTAssertEqual(reducer.handle(.tick(try snap(102))), [.speak(extreme, try snap(102).checkpoint)])
+        XCTAssertEqual(reducer.handle(.adBreakReached(try snap(101, playing: false))), [])
+        XCTAssertEqual(reducer.handle(.tick(try snap(102))), [])
+        XCTAssertEqual(reducer.pending, [extreme])
     }
 
-    func testAWaitingAlertSpeaksAtItsDeadlineAndGoesBackToPendingWhenPaused() throws {
-        var reducer = InterruptionReducer(waitLimit: 60)
+    func testPausePointAndItemBoundaryNeverStartAutomaticBulletins() throws {
+        var reducer = InterruptionReducer()
         let b = try bulletin("a1", .alert, severity: .severe)
         _ = reducer.handle(.bulletinArrived(b, try snap()))
-        XCTAssertEqual(reducer.handle(.tick(try snap(59))), [])
-        XCTAssertEqual(reducer.handle(.userPaused(try snap(60, generation: 2))), [])
+        XCTAssertEqual(reducer.handle(.tick(try snap(10))), [])
+        XCTAssertEqual(reducer.handle(.itemChanged), [])
+        XCTAssertEqual(reducer.handle(.tick(try snap(61, entry: "e2", position: 0))), [])
         XCTAssertEqual(reducer.pending, [b])
-        XCTAssertEqual(reducer.handle(.tick(try snap(61, generation: 3))), [.awaitPausePoint(b, deadline: t0.addingTimeInterval(121))])
-        XCTAssertEqual(reducer.handle(.tick(try snap(121, generation: 3))), [.speak(b, try snap(121, generation: 3).checkpoint)])
+        XCTAssertEqual(reducer.handle(.adBreakReached(try snap(62, entry: "e2", position: 10))),
+                       [.speak(b, try snap(62, entry: "e2", position: 10).checkpoint)])
     }
 
-    func testAWaitingHeadlineNeverSpeaksAtItsDeadlineOnlyAtAPausePoint() throws {
-        var reducer = InterruptionReducer(waitLimit: 60)
+    func testAHeadlineDoesNotSpeakFromTicksOrSpeechPausePoints() throws {
+        var reducer = InterruptionReducer()
         let b = try bulletin("h1")
         _ = reducer.handle(.bulletinArrived(b, try snap()))
         XCTAssertEqual(reducer.handle(.tick(try snap(61))), [], "the deadline passing is not a pause")
         XCTAssertEqual(reducer.handle(.tick(try snap(3_600 - 1))), [])
-        guard case .waiting = reducer.state else { return XCTFail("the headline keeps waiting") }
-        XCTAssertEqual(reducer.handle(.pausePointReached(try snap(90))), [.speak(b, try snap(90).checkpoint)])
+        XCTAssertEqual(reducer.handle(.tick(try snap(90))), [])
+        XCTAssertEqual(reducer.state, .idle)
+        XCTAssertEqual(reducer.pending, [b])
     }
 
-    func testAWaitingHeadlineSpeaksWhenTheNextItemStartsPlaying() throws {
-        var reducer = InterruptionReducer(waitLimit: 60)
+    func testAHeadlineDoesNotSpeakWhenTheNextEpisodeStartsPlaying() throws {
+        var reducer = InterruptionReducer()
         let b = try bulletin("h1")
         _ = reducer.handle(.bulletinArrived(b, try snap()))
         XCTAssertEqual(reducer.handle(.tick(try snap(61))), [])
@@ -179,26 +233,26 @@ final class InterruptionReducerTests: XCTestCase {
         XCTAssertEqual(reducer.handle(.tick(try snap(62, playing: false, entry: "e2", position: 0))), [],
                        "nothing speaks before the next item plays")
         let start = try snap(63, entry: "e2", position: 0)
-        XCTAssertEqual(reducer.handle(.tick(start)), [.speak(b, start.checkpoint)])
+        XCTAssertEqual(reducer.handle(.tick(start)), [])
+        XCTAssertEqual(reducer.pending, [b])
     }
 
-    func testTheItemBoundaryIsUsedOnceAndAPendingHeadlineSpeaksAtIt() throws {
-        var reducer = InterruptionReducer(waitLimit: 60)
+    func testAnItemBoundaryLeavesAccumulatedHeadlinesForAnAdBreak() throws {
+        var reducer = InterruptionReducer()
         let b = try bulletin("h1")
         _ = reducer.handle(.bulletinArrived(b, try snap(playing: false)))
         XCTAssertEqual(reducer.pending, [b])
         _ = reducer.handle(.itemChanged)
         let start = try snap(1, entry: "e2", position: 0)
-        XCTAssertEqual(reducer.handle(.tick(start)), [.speak(b, start.checkpoint)])
-        _ = reducer.handle(.speechFinished(try snap(4, entry: "e2", position: 0)))
+        XCTAssertEqual(reducer.handle(.tick(start)), [])
+        XCTAssertEqual(reducer.pending, [b])
         let later = try bulletin("h2", issued: 5)
-        XCTAssertEqual(reducer.handle(.bulletinArrived(later, try snap(5, entry: "e2", position: 3))),
-                       [.awaitPausePoint(later, deadline: t0.addingTimeInterval(65))],
-                       "a headline arriving mid-episode waits for a pause")
+        XCTAssertEqual(reducer.handle(.bulletinArrived(later, try snap(5, entry: "e2", position: 3))), [])
+        XCTAssertEqual(reducer.pending.map(\.id), ["h1", "h2"])
     }
 
     func testSupersededBulletinsAreRemovedAndOrderIsSeverityThenIssueTime() throws {
-        var reducer = InterruptionReducer(waitLimit: 60)
+        var reducer = InterruptionReducer()
         let first = try bulletin("h1", severity: .minor, issued: 0)
         let second = try bulletin("h2", severity: .severe, issued: 1)
         let third = try bulletin("h3", severity: .severe, issued: 2)
@@ -212,5 +266,12 @@ final class InterruptionReducerTests: XCTestCase {
         // The superseded id arriving late is not resurrected.
         _ = reducer.handle(.bulletinArrived(third, try snap(playing: false)))
         XCTAssertEqual(reducer.pending.map(\.id), ["h2", "h1", "h4"])
+        let effects = reducer.handle(.adBreakReached(try snap()))
+        XCTAssertEqual(effects, [.speak(second, try snap().checkpoint)])
+        XCTAssertEqual(reducer.pending, [])
+        XCTAssertEqual(reducer.remainingInBatch.map(\.id), ["h1", "h4"])
+        XCTAssertEqual(reducer.handle(.speechFinished(try snap(1))), [.speak(first, try snap().checkpoint)])
+        XCTAssertEqual(reducer.handle(.speechFinished(try snap(2))), [.speak(replacement, try snap().checkpoint)])
+        XCTAssertEqual(reducer.handle(.speechFinished(try snap(3))), [.restore(try snap().checkpoint), .resume])
     }
 }

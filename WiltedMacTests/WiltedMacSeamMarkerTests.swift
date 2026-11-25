@@ -59,6 +59,26 @@ final class WiltedMacSeamMarkerTests: XCTestCase {
         }
     }
 
+    func testStartAdSeamRunsOnlyFromTheEpisodeStartAndCannotRepeat() {
+        let tracker = WiltedMacAdBreakTracker()
+        let revision = "episode|revision"
+        let start = WiltedMacSeamMarkerSchedule.next(
+            seams: [0], position: 0, rate: 1, isPlaying: true, enabled: true, lastMarked: nil)
+        XCTAssertEqual(start?.seam, 0)
+        XCTAssertEqual(start?.delay, 0)
+
+        let resumedInside = WiltedMacSeamMarkerSchedule.next(
+            seams: [0], position: 1, rate: 1, isPlaying: true, enabled: true, lastMarked: nil)
+        XCTAssertNil(resumedInside)
+
+        var processed = tracker
+        processed.markProcessed(0, for: revision)
+        let replay = WiltedMacSeamMarkerSchedule.next(
+            seams: [0, 30], position: 0, rate: 1, isPlaying: true, enabled: true,
+            lastMarked: nil, processedSeams: processed.processedSeams(for: revision))
+        XCTAssertEqual(replay?.seam, 30)
+    }
+
     func testTheWakeCheckFiresOnlyWhilePlayingNearTheSeam() {
         let seam: TimeInterval = 30
         let tolerance = WiltedMacSeamMarkerSchedule.fireTolerance

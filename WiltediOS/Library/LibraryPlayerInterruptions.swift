@@ -147,8 +147,10 @@ final class LibraryInterruptionController: ObservableObject {
         var fetchBulletins: @Sendable () async throws -> LibraryBulletins?
         var makeMonitor: (@escaping @Sendable (Bulletin) -> Void) -> any LibraryAlertMonitoring
         var location: LibraryLocationProvider?
-        /// The synced cues of an entry, for pause points.
-        var cues: (ItemID) -> [LibraryTranscriptCue] = { _ in [] }
+        /// Prepared ad seams from the synced transcript for this exact audio revision.
+        var adBreakSeams: (ItemID, RevisionID) -> [Double] = { _, _ in [] }
+        /// Ensures the active entry's transcript and cut seams are available while audio plays.
+        var prepareAdBreaks: (ItemID) async -> Void = { _ in }
         var revision: (ItemID) async -> RevisionID?
         var now: () -> Date = Date.init
         var isForeground: () -> Bool = { false }
@@ -172,7 +174,21 @@ final class LibraryInterruptionController: ObservableObject {
     private var alerts: [String: Bulletin] = [:]
     private var activeAlertIDs: Set<String> = []
     private var revision: (entry: ItemID, id: RevisionID)?
-    private var pausePoint: Double?
+    private var hasObservedInitialItem = false
+    private var initialPositionNeedsCapture = false
+    private var initialPositionEntry: ItemID?
+    private var initialLoadCommandGeneration: UInt64?
+    private var initialItemStartedAtZero = false
+    private var hasObservedFirstPlayForItem = false
+    private var zeroSeamCommandGeneration: UInt64?
+    private struct PositionSample {
+        let entry: ItemID
+        let revision: RevisionID
+        let position: Double
+        let commandGeneration: UInt64
+    }
+    private var lastPositionSample: PositionSample?
+    private var deliveredAdBreaks: Set<String> = []
     private var speechToken: UInt64 = 0
     private var watchdog: Task<Void, Never>?
     private var monitor: (any LibraryAlertMonitoring)?
@@ -205,9 +221,13 @@ final class LibraryInterruptionController: ObservableObject {
             MainActor.assumeIsolated { self?.positionChanged(to: position) }
         }.store(in: &cancellables)
         player.$item.sink { [weak self] item in
-            MainActor.assumeIsolated { self?.itemChanged(to: item) }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let isInitial = !self.hasObservedInitialItem
+                self.hasObservedInitialItem = true
+                self.itemChanged(to: item, mayReadZeroSeam: !isInitial)
+            }
         }.store(in: &cancellables)
-        itemChanged(to: player.item)
     }
 
     /// Waits for monitor work already queued. For tests.
@@ -230,7 +250,8 @@ final class LibraryInterruptionController: ObservableObject {
     /// One sync round: reads the channel while playing, applies it and brings the alert monitor in line.
     func syncTick() async {
         if !deps.preferences.speaks {
-            if player.isHoldingForSpeech { send { .skip($0) } }
+            lastPositionSample = nil
+            discardBulletins { _ in true }
             reconcileMonitor()
             return
         }
@@ -262,6 +283,7 @@ final class LibraryInterruptionController: ObservableObject {
 
     private func applyChannel() {
         guard deps.preferences.speaks, let channel else { return }
+        discardDisabledBulletins()
         let headlines = channel.headlinesEnabled ? channel.headlines : []
         let local = channel.alertsEnabled ? alerts.values.filter { activeAlertIDs.contains($0.id) } : []
         send { .channelReplaced(headlines + local, $0) }
@@ -345,30 +367,97 @@ final class LibraryInterruptionController: ObservableObject {
 
     private func statusChanged(to status: LibraryPlayer.Status) {
         if status == .playing { deps.location?.playbackStarted(inForeground: deps.isForeground()) }
-        send(playing: status == .playing) { .tick($0) }
+        if status == .playing, !hasObservedFirstPlayForItem {
+            hasObservedFirstPlayForItem = true
+            if initialItemStartedAtZero,
+               let initialLoadCommandGeneration,
+               player.commandGeneration == initialLoadCommandGeneration &+ 1 {
+                zeroSeamCommandGeneration = player.commandGeneration
+            }
+        } else if status != .playing {
+            // A pause before the first forward sample means a later resume is not the original
+            // zero-second crossing.
+            zeroSeamCommandGeneration = nil
+        }
+        lastPositionSample = nil
         reconcileMonitor(playing: status == .playing)
     }
 
     private func positionChanged(to position: Double) {
-        guard player.status == .playing, !player.isHoldingForSpeech else { return }
-        if let point = pausePoint, position >= point {
-            pausePoint = nil
-            send(position: position) { .pausePointReached($0) }
-        } else {
-            send(position: position) { .tick($0) }
+        guard deps.preferences.speaks else {
+            lastPositionSample = nil
+            zeroSeamCommandGeneration = nil
+            discardBulletins { _ in true }
+            return
+        }
+        if initialPositionNeedsCapture, player.item?.entryID == initialPositionEntry {
+            initialPositionNeedsCapture = false
+            initialItemStartedAtZero = position == 0
+        }
+        discardDisabledBulletins()
+        guard player.status == .playing, !player.isHoldingForSpeech,
+              let item = player.item, let revision, revision.entry == item.entryID,
+              let snapshot = snapshot(position: position), position.isFinite
+        else {
+            lastPositionSample = nil
+            return
+        }
+
+        let sample = PositionSample(
+            entry: item.entryID, revision: revision.id, position: position,
+            commandGeneration: player.commandGeneration)
+        defer { lastPositionSample = sample }
+        if zeroSeamCommandGeneration != nil, zeroSeamCommandGeneration != sample.commandGeneration {
+            zeroSeamCommandGeneration = nil
+        }
+        // A zero-second cut is eligible only when we observed this newly loaded item's first
+        // playback command and then saw position zero before continuous forward movement.
+        if lastPositionSample == nil, position != 0, zeroSeamCommandGeneration == sample.commandGeneration {
+            zeroSeamCommandGeneration = nil
+        }
+        guard let previous = lastPositionSample,
+              previous.entry == sample.entry, previous.revision == sample.revision,
+              previous.commandGeneration == sample.commandGeneration,
+              position >= previous.position, position - previous.position <= 3 else {
+            return
+        }
+
+        let crossedInitialZero = previous.position == 0 && position > 0
+            && zeroSeamCommandGeneration == sample.commandGeneration
+        let availableSeams = deps.adBreakSeams(item.entryID, revision.id)
+        let crossedSeam = availableSeams
+            .filter {
+                $0.isFinite && (($0 > previous.position && $0 <= position)
+                    || ($0 == 0 && crossedInitialZero))
+            }
+            .sorted()
+            .first { deliveredAdBreaks.insert(Self.adBreakIdentity(item.entryID, revision.id, $0)).inserted }
+        if crossedInitialZero { zeroSeamCommandGeneration = nil }
+        if crossedSeam != nil {
+            perform(reducer.handle(.adBreakReached(snapshot)))
         }
     }
 
-    private func itemChanged(to item: LibraryPlayer.Item?) {
-        pausePoint = nil
+    private func itemChanged(to item: LibraryPlayer.Item?, mayReadZeroSeam: Bool) {
+        lastPositionSample = nil
+        deliveredAdBreaks = []
         perform(reducer.handle(.itemChanged))
         revision = nil
+        initialPositionNeedsCapture = mayReadZeroSeam && item != nil
+        initialPositionEntry = mayReadZeroSeam ? item?.entryID : nil
+        initialLoadCommandGeneration = mayReadZeroSeam && item != nil ? player.commandGeneration : nil
+        initialItemStartedAtZero = false
+        hasObservedFirstPlayForItem = false
+        zeroSeamCommandGeneration = nil
         guard let entry = item?.entryID else { return }
         let lookup = deps.revision
         Task { @MainActor [weak self] in
             guard let id = await lookup(entry), let self, self.player.item?.entryID == entry else { return }
             self.revision = (entry, id)
-            self.send { .tick($0) }
+            self.lastPositionSample = nil
+            await self.deps.prepareAdBreaks(entry)
+            guard !Task.isCancelled, self.player.item?.entryID == entry,
+                  self.revision?.id == id else { return }
         }
     }
 
@@ -380,25 +469,22 @@ final class LibraryInterruptionController: ObservableObject {
 
     // MARK: Reducer plumbing
 
-    private func snapshot(playing: Bool? = nil, position: Double? = nil) -> PlaybackSnapshot? {
+    private func snapshot(position: Double? = nil) -> PlaybackSnapshot? {
         guard let item = player.item, let revision, revision.entry == item.entryID else { return nil }
         return PlaybackSnapshot(
             entryID: item.entryID, revisionID: revision.id, positionSeconds: position ?? player.position,
-            commandGeneration: player.commandGeneration, isPlaying: playing ?? (player.status == .playing),
+            commandGeneration: player.commandGeneration, isPlaying: player.status == .playing,
             now: deps.now())
     }
 
-    private func send(
-        playing: Bool? = nil, position: Double? = nil, _ event: (PlaybackSnapshot) -> InterruptionEvent
-    ) {
-        guard let snapshot = snapshot(playing: playing, position: position) else { return }
+    private func send(_ event: (PlaybackSnapshot) -> InterruptionEvent) {
+        guard let snapshot = snapshot() else { return }
         perform(reducer.handle(event(snapshot)))
     }
 
     private func perform(_ effects: [InterruptionEffect]) {
         for effect in effects {
             switch effect {
-            case .awaitPausePoint: awaitPausePoint()
             case let .speak(bulletin, _): speak(bulletin)
             case .stopSpeech: stopSpeaker()
             case let .restore(checkpoint): player.restoreFromSpeech(to: checkpoint.positionSeconds)
@@ -412,21 +498,29 @@ final class LibraryInterruptionController: ObservableObject {
         }
     }
 
-    /// The end of the cue now playing is the pause point. With no cue an alert waits for its deadline and a
-    /// headline for the next item (the reducer never lets a headline speak at its deadline).
-    private func awaitPausePoint() {
-        let cues = player.item.map { deps.cues($0.entryID) } ?? []
-        let position = player.position
-        guard !cues.isEmpty else { pausePoint = nil; return }
-        if let index = LibraryTranscriptFollow.currentIndex(in: cues, at: position) {
-            pausePoint = max(position, cues[index].end)
-        } else {
-            pausePoint = position
+    private func discardDisabledBulletins() {
+        guard let channel else { return }
+        discardBulletins { bulletin in
+            (bulletin.kind == .headline && !channel.headlinesEnabled)
+                || (bulletin.kind == .alert && !channel.alertsEnabled)
         }
-        if let point = pausePoint, position >= point {
-            pausePoint = nil
-            send { .pausePointReached($0) }
+    }
+
+    private func discardBulletins(where shouldDiscard: (Bulletin) -> Bool) {
+        let queued = reducer.pending + reducer.remainingInBatch
+        var ids = Set(queued.filter(shouldDiscard).map(\.id))
+        if case let .speaking(bulletin, _) = reducer.state, shouldDiscard(bulletin) {
+            ids.insert(bulletin.id)
         }
+        guard !ids.isEmpty else { return }
+        reducer.removePendingBulletins(withIDs: ids)
+        if case let .speaking(bulletin, _) = reducer.state, ids.contains(bulletin.id) {
+            send { .skip($0) }
+        }
+    }
+
+    private static func adBreakIdentity(_ entry: ItemID, _ revision: RevisionID, _ seam: Double) -> String {
+        "\(entry.rawValue)|\(revision.rawValue)|\(seam.bitPattern)"
     }
 
     // MARK: Speaking
@@ -436,14 +530,14 @@ final class LibraryInterruptionController: ObservableObject {
         let token = speechToken
         let title = bulletin.kind == .alert ? "Weather alert" : "News headline"
         guard player.holdForSpeech(title: title) else {
-            interruptionLog.error("Could not hold playback for a bulletin; dropped")
-            send { .speechFinished($0) }
+            interruptionLog.error("Could not hold playback for a bulletin; keeping it queued")
+            send { .speechStartFailed($0) }
             return
         }
         let started = deps.speaker.speak(bulletin.text) { [weak self] in self?.speechEnded(token) }
         guard started else {
-            interruptionLog.error("Speech could not start; dropped")
-            send { .speechFinished($0) }
+            interruptionLog.error("Speech could not start; keeping it queued")
+            send { .speechStartFailed($0) }
             return
         }
         if bulletin.kind == .headline { lastSpokenHeadline = bulletin }

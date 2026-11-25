@@ -76,13 +76,29 @@ enum WiltedMacSeamMarkerSchedule {
 
     static func next(
         seams: [TimeInterval], position: TimeInterval, rate: Double,
-        isPlaying: Bool, enabled: Bool, lastMarked: TimeInterval?
+        isPlaying: Bool, enabled: Bool, lastMarked: TimeInterval?,
+        processedSeams: Set<TimeInterval> = []
     ) -> (seam: TimeInterval, delay: TimeInterval)? {
         guard enabled, isPlaying, rate > 0 else { return nil }
-        guard let seam = seams.sorted().first(where: {
-            $0 >= 0.5 && $0 > position + 0.05 && $0 != lastMarked
+        guard let seam = seams.sorted().first(where: { seam in
+            guard seam >= 0, seam != lastMarked, !processedSeams.contains(seam) else { return false }
+            if seam == 0 { return position <= 0.05 }
+            return seam >= 0.5 && seam > position + 0.05
         }) else { return nil }
         return (seam, (seam - position) / rate)
+    }
+}
+
+struct WiltedMacAdBreakTracker {
+    private var processedByRevision: [String: Set<TimeInterval>] = [:]
+
+    func processedSeams(for revisionKey: String) -> Set<TimeInterval> {
+        processedByRevision[revisionKey] ?? []
+    }
+
+    mutating func markProcessed(_ seam: TimeInterval, for revisionKey: String) {
+        guard seam.isFinite, seam >= 0 else { return }
+        processedByRevision[revisionKey, default: []].insert(seam)
     }
 }
 

@@ -4,7 +4,7 @@ import XCTest
 
 @MainActor
 final class BulletinSpeechGainTests: XCTestCase {
-    func testGainNeverExceedsPlaybackVolume() {
+    func testSystemGainRemainsAtHalfPlaybackVolume() {
         for playbackVolume: Float in [0, 0.05, 0.25, 0.5, 0.75, 1] {
             let speechVolume = BulletinSpeechGain.volume(forPlaybackVolume: playbackVolume)
             XCTAssertGreaterThanOrEqual(speechVolume, 0)
@@ -14,6 +14,14 @@ final class BulletinSpeechGainTests: XCTestCase {
                 XCTAssertLessThan(speechVolume, playbackVolume)
             }
         }
+    }
+
+    func testMeasuredNarrationUsesTheConfiguredPlaybackVolume() {
+        for playbackVolume: Float in [0, 0.05, 0.25, 0.5, 0.75, 1] {
+            XCTAssertEqual(BulletinSpeechGain.measuredAudioVolume(forPlaybackVolume: playbackVolume), playbackVolume)
+        }
+        XCTAssertEqual(BulletinSpeechGain.measuredAudioVolume(forPlaybackVolume: .infinity), 0)
+        XCTAssertEqual(BulletinSpeechGain.measuredAudioVolume(forPlaybackVolume: -.infinity), 0)
     }
 
     func testSystemSpeakerAppliesGainAndFollowsPlaybackVolume() {

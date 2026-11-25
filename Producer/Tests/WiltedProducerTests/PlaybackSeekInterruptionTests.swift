@@ -62,10 +62,13 @@ extension PlaybackControllerTests {
         let speaker = StubSpeaker()
         let route = InterruptionRoute()
         let wall = TestWallClock()
-        controller.enableInterruptions(speaker: speaker, waitLimit: 60, clock: wall.clock, cues: nil, routeSource: route)
+        controller.enableInterruptions(speaker: speaker, clock: wall.clock, routeSource: route)
         backend.currentTime = 12
         if playing { try controller.play() }
-        if speaking { controller.deliverBulletin(try bulletin("seek", at: wall.now)) }
+        if speaking {
+            controller.deliverBulletin(try bulletin("seek", at: wall.now))
+            controller.adBreakReached()
+        }
         backend.trace.removeAll()
         backend.playPositions.removeAll()
         return SeekRig(controller: controller, backend: backend, speaker: speaker, route: route,
@@ -293,8 +296,7 @@ extension PlaybackControllerTests {
         defer { rig.controller.disableInterruptions(resuming: false); try? FileManager.default.removeItem(at: rig.root) }
         let wall = TestWallClock()
         wall.firesWatchdog = true
-        rig.controller.enableInterruptions(speaker: rig.speaker, waitLimit: 60, clock: wall.clock,
-                                           cues: nil, routeSource: rig.route)
+        rig.controller.enableInterruptions(speaker: rig.speaker, clock: wall.clock, routeSource: rig.route)
         let first = try bulletin("first", at: wall.now)
         let next = try bulletin("next", at: wall.now)
         await withCheckedContinuation { (stopped: CheckedContinuation<Void, Never>) in
@@ -305,9 +307,11 @@ extension PlaybackControllerTests {
                 // The successor stays live so an old snapshot must not consume its reducer state.
                 wall.firesWatchdog = false
                 rig.controller.deliverBulletin(next)
+                rig.controller.adBreakReached()
                 stopped.resume()
             }
             rig.controller.deliverBulletin(first)
+            rig.controller.adBreakReached()
         }
         XCTAssertEqual(rig.controller.speakingBulletin?.id, "next")
         guard let engine = rig.controller.interruptions, case .speaking = engine.reducer.state else {

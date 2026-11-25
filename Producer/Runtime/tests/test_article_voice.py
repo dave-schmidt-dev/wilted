@@ -242,3 +242,67 @@ def test_encoder_streams_segments_to_bounded_m4a(tmp_path: Path) -> None:
     assert 80 <= duration_ms <= 120
     assert output.stat().st_size < 100_000
     assert events == []
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg is required by the local article media path")
+def test_short_narration_uses_podcast_loudness_target_and_peak_ceiling(monkeypatch, tmp_path: Path) -> None:
+    worker_directory = Path(__file__).parents[2] / "Workers"
+    monkeypatch.syspath_prepend(str(worker_directory))
+    from wilted_worker import cue_timing, loudness
+
+    home, _, _ = configured_home(tmp_path)
+    output = tmp_path / "private" / "story.m4a"
+
+    def quiet_audio(path: Path, segments, _progress) -> tuple[int, int]:
+        next(iter(segments))
+        subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=8",
+             "-af", "volume=-35dB", "-ar", "24000", "-c:a", "aac", "-b:a", "96k",
+             "-movflags", "+faststart", str(path)],
+            check=True, timeout=30,
+        )
+        return 24_000, 8_000
+
+    synthesize(
+        "Short bulletin",
+        "casey-kasem",
+        output,
+        home=home,
+        lock_path=tmp_path / "gpu.lock",
+        model_loader=lambda _path: FakeModel("", ""),
+        audio_writer=quiet_audio,
+        normalize_loudness=True,
+    )
+
+    integrated, true_peak = loudness.measure(output)
+    assert abs(integrated - loudness.TARGET_I) <= 1.0
+    assert true_peak <= loudness.TARGET_TP + 0.1
+    assert abs(cue_timing.probe_duration(output) - 8.0) <= 0.05
+    assert loudness._probe_sample_rate(output) == 24_000
+    assert stat.S_IMODE(output.stat().st_mode) == 0o600
+
+
+def test_requested_loudness_failure_does_not_publish_audio(tmp_path: Path) -> None:
+    home, _, _ = configured_home(tmp_path)
+    output = tmp_path / "story.m4a"
+    output.write_bytes(b"previous complete audio")
+
+    def write(path: Path, segments, _progress) -> tuple[int, int]:
+        next(iter(segments))
+        path.write_bytes(b"M4A!" + b"\x00" * 80)
+        return 24_000, 1_000
+
+    with pytest.raises(ArticleVoiceError, match="loudness_normalization_failed"):
+        synthesize(
+            "Short bulletin",
+            "casey-kasem",
+            output,
+            home=home,
+            lock_path=tmp_path / "gpu.lock",
+            model_loader=lambda _path: FakeModel("", ""),
+            audio_writer=write,
+            normalize_loudness=True,
+            loudness_normalizer=lambda *_: (None, "loudness-measure-failed"),
+        )
+
+    assert output.read_bytes() == b"previous complete audio"

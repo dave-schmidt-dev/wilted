@@ -116,6 +116,7 @@ struct InterruptionRig {
     let location: InterruptionLocationManager
     let monitor: StubMonitor
     let monitorsMade: () -> Int
+    let adBreakSeams: () -> [Double]
     let item = LibraryPlayer.Item(
         entryID: try! ItemID(rawValue: "entry-1"), title: "Episode One", showTitle: "Show",
         fileURL: URL(fileURLWithPath: "/nonexistent/interruption-test.mp3"))
@@ -125,6 +126,13 @@ struct InterruptionRig {
         XCTAssertTrue(player.start(item, at: position))
         for _ in 0..<200 where !controller.hasRevision { try? await Task.sleep(for: .milliseconds(5)) }
         XCTAssertTrue(controller.hasRevision)
+        player.position = position
+    }
+
+    func crossAdBreak(to position: Double? = nil) {
+        let target = position ?? ((adBreakSeams().first { $0 > player.position } ?? player.position) + 0.25)
+        engine.currentTime = target
+        player.position = target
     }
 }
 
@@ -132,7 +140,8 @@ struct InterruptionRig {
 func makeInterruptionRig(
     channel: LibraryBulletins?, defaults: UserDefaults, tick: Duration = .seconds(3600),
     foreground: Bool = true,
-    cues: @escaping (ItemID) -> [LibraryTranscriptCue] = { _ in [] }
+    adBreakSeams seams: [Double] = [42.5],
+    adBreakSeamProvider: (() -> [Double])? = nil
 ) -> InterruptionRig {
     let engine = InterruptionEngine(), session = InterruptionSession(), nowPlaying = InterruptionNowPlaying()
     let remote = InterruptionRemote(), events = InterruptionEvents(), speaker = StubSpeaker()
@@ -144,6 +153,7 @@ func makeInterruptionRig(
     let monitor = StubMonitor()
     var made = 0
     let revision = try! RevisionID(rawValue: "rev-1")
+    let adBreakSeams = { adBreakSeamProvider?() ?? seams }
     let controller = LibraryInterruptionController(
         player: player,
         dependencies: .init(
@@ -152,14 +162,15 @@ func makeInterruptionRig(
             fetchBulletins: { channel },
             makeMonitor: { _ in made += 1; return monitor },
             location: LibraryLocationProvider(manager: location),
-            cues: cues,
+            adBreakSeams: { _, _ in adBreakSeams() },
             revision: { _ in revision },
             isForeground: { foreground },
             sleep: { _ in try await Task.sleep(for: .seconds(3600)) }))
     return InterruptionRig(
         player: player, engine: engine, session: session, nowPlaying: nowPlaying, remote: remote, events: events,
         speaker: speaker, previewSpeaker: previewSpeaker, playingPreviewSpeaker: playingPreviewSpeaker,
-        controller: controller, location: location, monitor: monitor, monitorsMade: { made })
+        controller: controller, location: location, monitor: monitor, monitorsMade: { made },
+        adBreakSeams: adBreakSeams)
 }
 
 func headlineChannel(alerts: Bool = false) -> LibraryBulletins {
@@ -179,6 +190,105 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
     }
 
     override func tearDown() async throws { defaults.removePersistentDomain(forName: suite) }
+
+    func testHeadlineAndExtremeAlertWaitForPreparedAdBreakWithoutTranscriptCues() async {
+        let rig = makeInterruptionRig(channel: headlineChannel(alerts: true), defaults: defaults)
+        await rig.play(at: 42)
+        await rig.controller.syncTick()
+        let urgentAlert = try! Bulletin(
+            id: "alert-urgent", kind: .alert, text: "Spoken text for alert-urgent.", severity: .extreme,
+            issuedAt: Date(timeIntervalSinceNow: -600), expiresAt: Date(timeIntervalSinceNow: 3_600))
+        rig.controller.alertArrived(urgentAlert)
+
+        XCTAssertTrue(rig.speaker.spoken.isEmpty, "channel arrival and extreme severity never interrupt playback")
+        XCTAssertTrue(rig.engine.isPlaying)
+        rig.crossAdBreak()
+
+        XCTAssertEqual(rig.speaker.spoken, ["Spoken text for alert-urgent."])
+        XCTAssertTrue(rig.player.isHoldingForSpeech)
+        rig.speaker.completeSpeech()
+        XCTAssertEqual(rig.speaker.spoken, ["Spoken text for alert-urgent.", "Spoken text for headline-1."])
+    }
+
+    func testSeekingAcrossAnAdSeamDoesNotTriggerSpeechOrConsumeThatSeam() async {
+        let rig = makeInterruptionRig(
+            channel: headlineChannel(), defaults: defaults, adBreakSeams: [42.5, 80])
+        await rig.play(at: 42)
+        await rig.controller.syncTick()
+        rig.player.skipForward()
+        XCTAssertEqual(rig.player.position, 72)
+        XCTAssertTrue(rig.speaker.spoken.isEmpty, "a seek across a prepared cut is not an ad-break arrival")
+
+        rig.crossAdBreak(to: 79.5)
+        XCTAssertTrue(rig.speaker.spoken.isEmpty)
+        rig.crossAdBreak(to: 80.25)
+        XCTAssertEqual(rig.speaker.spoken, ["Spoken text for headline-1."])
+    }
+
+    func testZeroSecondAdSeamRequiresInitialForwardPlaybackAndIsNotReplayedAfterResumeOrSeek() async {
+        let rig = makeInterruptionRig(channel: headlineChannel(), defaults: defaults, adBreakSeams: [0])
+        await rig.play(at: 0)
+        await rig.controller.syncTick()
+        XCTAssertTrue(rig.speaker.spoken.isEmpty, "opening at zero does not start a batch")
+
+        rig.crossAdBreak(to: 0.25)
+        XCTAssertEqual(rig.speaker.spoken, ["Spoken text for headline-1."],
+                       "continuous forward playback from the actual start crosses the zero seam")
+        rig.speaker.completeSpeech()
+
+        rig.player.pause()
+        XCTAssertTrue(rig.player.play())
+        rig.crossAdBreak(to: 0.5)
+        XCTAssertEqual(rig.speaker.spoken.count, 1, "resuming does not replay a start seam")
+
+        rig.player.seek(to: 0)
+        rig.crossAdBreak(to: 0.25)
+        XCTAssertEqual(rig.speaker.spoken.count, 1, "seeking back to zero does not replay a start seam")
+    }
+
+    func testZeroSecondAdSeamLoadedAfterPlaybackPassedItDoesNotTriggerLate() async {
+        var preparedSeams: [Double] = []
+        let rig = makeInterruptionRig(
+            channel: headlineChannel(), defaults: defaults, adBreakSeams: [],
+            adBreakSeamProvider: { preparedSeams })
+        await rig.play(at: 0)
+        await rig.controller.syncTick()
+        rig.crossAdBreak(to: 0.25)
+        preparedSeams = [0]
+        rig.crossAdBreak(to: 0.5)
+
+        XCTAssertTrue(rig.speaker.spoken.isEmpty, "a late transcript load does not announce a passed cut")
+    }
+
+    func testBulletinsArrivingDuringABatchWaitForTheFollowingAdBreak() async {
+        let rig = makeInterruptionRig(
+            channel: headlineChannel(alerts: true), defaults: defaults, adBreakSeams: [42.5, 80])
+        await rig.play(at: 42)
+        await rig.controller.syncTick()
+        rig.crossAdBreak()
+        XCTAssertEqual(rig.speaker.spoken, ["Spoken text for headline-1."])
+
+        rig.controller.alertArrived(interruptionBulletin("alert-1", kind: .alert))
+        rig.speaker.completeSpeech()
+        XCTAssertEqual(rig.speaker.spoken, ["Spoken text for headline-1."])
+        XCTAssertFalse(rig.player.isHoldingForSpeech)
+
+        rig.crossAdBreak(to: 79.5)
+        rig.crossAdBreak(to: 80.25)
+        XCTAssertEqual(rig.speaker.spoken, ["Spoken text for headline-1.", "Spoken text for alert-1."])
+    }
+
+    func testDisablingSpokenBulletinsDropsTheQueuedBatchBeforeTheNextBreak() async {
+        let rig = makeInterruptionRig(channel: headlineChannel(alerts: true), defaults: defaults)
+        await rig.play(at: 42)
+        await rig.controller.syncTick()
+        LibraryInterruptionPreferences(defaults: defaults).speaks = false
+        rig.crossAdBreak()
+
+        XCTAssertTrue(rig.speaker.spoken.isEmpty)
+        XCTAssertFalse(rig.player.isHoldingForSpeech)
+        XCTAssertTrue(rig.engine.isPlaying)
+    }
 
     func testTestBulletinUsesTheSpeakerOnceWithoutChangingPlayerState() {
         let rig = makeInterruptionRig(channel: nil, defaults: defaults)
@@ -217,6 +327,8 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
         let rig = makeInterruptionRig(channel: headlineChannel(), defaults: defaults)
         await rig.play(at: 42)
         await rig.controller.syncTick()
+        XCTAssertFalse(rig.player.isHoldingForSpeech, "a newly synced headline waits for an ad break")
+        rig.crossAdBreak()
         XCTAssertEqual(rig.speaker.spoken, ["Spoken text for headline-1."])
         XCTAssertTrue(rig.player.isHoldingForSpeech)
         XCTAssertEqual(rig.player.status, .playing)
@@ -225,8 +337,8 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
         rig.player.skipSpeech()
         XCTAssertFalse(rig.player.isHoldingForSpeech)
         XCTAssertTrue(rig.engine.isPlaying)
-        XCTAssertEqual(rig.engine.currentTime, 42)
-        XCTAssertEqual(rig.player.position, 42)
+        XCTAssertEqual(rig.engine.currentTime, 42.75)
+        XCTAssertEqual(rig.player.position, 42.75)
         XCTAssertEqual(rig.speaker.stops, 1 + 1, "stopped before speaking and once more for the skip")
         XCTAssertEqual(rig.nowPlaying.infos.last?.title, "Episode One")
     }
@@ -247,18 +359,12 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
         // The newer candidate remains in the channel, but the first normal headline is the one read.
         let channel = try LibraryBulletins(
             alertsEnabled: false, headlinesEnabled: true, headlines: [earlier, newer], updatedAt: now)
-        let rig = makeInterruptionRig(
-            channel: channel, defaults: defaults,
-            cues: { _ in [LibraryTranscriptCue(start: 42, end: 43, text: "A known safe transcript break.")] })
+        let rig = makeInterruptionRig(channel: channel, defaults: defaults)
         await rig.play(at: 42)
         await rig.controller.syncTick()
-
-        guard case .waiting = rig.controller.state else {
-            XCTFail("A normal-severity headline should wait for the transcript break.")
-            return
-        }
+        XCTAssertFalse(rig.player.isHoldingForSpeech)
         XCTAssertNil(rig.controller.nowPlayingHeadline)
-        rig.player.skipForward()
+        rig.crossAdBreak()
         XCTAssertEqual(rig.speaker.spoken, ["Example Dispatch: The older story"])
         XCTAssertEqual(rig.controller.activeSpokenHeadline?.headline, "The older story")
         XCTAssertEqual(rig.controller.activeSpokenHeadline?.publisherName, "Example Dispatch")
@@ -267,34 +373,44 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
 
         rig.speaker.completeSpeech()
 
+        XCTAssertEqual(rig.speaker.spoken, ["Example Dispatch: The older story", "Newer Daily: The newer story"])
+        XCTAssertEqual(rig.controller.activeSpokenHeadline?.storyID, "newer-story")
+        XCTAssertEqual(rig.controller.lastSpokenHeadline?.storyID, "newer-story")
+        XCTAssertEqual(rig.controller.nowPlayingHeadline?.headline, "The newer story")
+        XCTAssertEqual(rig.controller.nowPlayingHeadline?.publisherName, "Newer Daily")
+        XCTAssertEqual(rig.controller.nowPlayingHeadline?.link?.absoluteString, "https://example.com/newer-story")
+
+        rig.speaker.completeSpeech()
+
         XCTAssertNil(rig.controller.activeSpokenHeadline)
-        XCTAssertEqual(rig.controller.lastSpokenHeadline?.storyID, "older-story")
-        XCTAssertEqual(rig.controller.nowPlayingHeadline?.headline, "The older story")
-        XCTAssertEqual(rig.controller.nowPlayingHeadline?.publisherName, "Example Dispatch")
-        XCTAssertEqual(rig.controller.nowPlayingHeadline?.link?.absoluteString, "https://example.com/older-story")
+        XCTAssertEqual(rig.controller.lastSpokenHeadline?.storyID, "newer-story")
+        XCTAssertEqual(rig.controller.nowPlayingHeadline?.headline, "The newer story")
     }
 
     func testFinishedSpeechRestoresAndResumes() async {
         let rig = makeInterruptionRig(channel: headlineChannel(), defaults: defaults)
         await rig.play(at: 42)
         await rig.controller.syncTick()
+        rig.crossAdBreak()
         rig.speaker.completeSpeech()
         XCTAssertFalse(rig.player.isHoldingForSpeech)
         XCTAssertTrue(rig.engine.isPlaying)
-        XCTAssertEqual(rig.player.position, 42)
+        XCTAssertEqual(rig.player.position, 42.75)
     }
 
     func testNextTrackAdvancesAsBeforeWhenNothingIsSpokenAndSkipsOnlyWhileSpeaking() async throws {
-        let rig = makeInterruptionRig(channel: headlineChannel(), defaults: defaults)
+        let rig = makeInterruptionRig(channel: headlineChannel(), defaults: defaults, adBreakSeams: [40.5])
         await rig.play(at: 10)
         let handler = try XCTUnwrap(rig.remote.handler)
         XCTAssertTrue(handler(.skipForward(30)))
         XCTAssertEqual(rig.player.position, 40, "next-track outside speech moves on as before")
         await rig.controller.syncTick()
+        XCTAssertFalse(rig.player.isHoldingForSpeech)
+        rig.crossAdBreak(to: 40.75)
         XCTAssertTrue(rig.player.isHoldingForSpeech)
         XCTAssertTrue(handler(.skipForward(30)))
         XCTAssertFalse(rig.player.isHoldingForSpeech)
-        XCTAssertEqual(rig.player.position, 40, "while speaking it skips the bulletin and does not seek")
+        XCTAssertEqual(rig.player.position, 40.75, "while speaking it skips the bulletin and does not seek")
         XCTAssertTrue(rig.engine.isPlaying)
     }
 
@@ -302,36 +418,55 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
         let rig = makeInterruptionRig(channel: headlineChannel(), defaults: defaults)
         await rig.play(at: 42)
         await rig.controller.syncTick()
+        rig.crossAdBreak()
         XCTAssertTrue(rig.player.isHoldingForSpeech)
         rig.events.send(.routeLost)
         XCTAssertEqual(rig.player.status, .paused)
         XCTAssertFalse(rig.player.isHoldingForSpeech)
         XCTAssertFalse(rig.engine.isPlaying)
-        XCTAssertEqual(rig.player.position, 42)
-        XCTAssertEqual(rig.engine.currentTime, 42)
+        XCTAssertEqual(rig.player.position, 42.75)
+        XCTAssertEqual(rig.engine.currentTime, 42.75)
         XCTAssertEqual(rig.speaker.stops, 2)
     }
 
-    func testSpeechThatCannotStartIsDroppedAndPlaybackKeepsGoing() async {
-        let rig = makeInterruptionRig(channel: headlineChannel(), defaults: defaults)
+    func testSpeechThatCannotStartIsRetriedAtTheNextBreak() async {
+        let rig = makeInterruptionRig(
+            channel: headlineChannel(), defaults: defaults, adBreakSeams: [42.5, 80])
         rig.speaker.canStart = false
         await rig.play(at: 42)
         await rig.controller.syncTick()
+        rig.crossAdBreak()
         XCTAssertFalse(rig.player.isHoldingForSpeech)
         XCTAssertEqual(rig.player.status, .playing)
         XCTAssertTrue(rig.engine.isPlaying)
-        XCTAssertEqual(rig.player.position, 42)
+        XCTAssertEqual(rig.player.position, 42.75)
         XCTAssertNil(rig.controller.nowPlayingHeadline, "a failed speech start is not shown as a story read")
+
+        rig.speaker.canStart = true
+        rig.crossAdBreak(to: 79.5)
+        rig.crossAdBreak(to: 80.25)
+        XCTAssertEqual(rig.speaker.spoken, ["Spoken text for headline-1."],
+                       "a failed start is not marked read and remains queued for the next break")
+        XCTAssertEqual(rig.controller.activeSpokenHeadline?.id, "headline-1")
     }
 
     func testStatusStaysPlayingAndListeningDoesNotGrowDuringSpeechWithTheRealTimer() async throws {
-        let rig = makeInterruptionRig(channel: headlineChannel(), defaults: defaults, tick: .milliseconds(10))
+        let seam = 0.15
+        let rig = makeInterruptionRig(
+            channel: headlineChannel(), defaults: defaults, tick: .milliseconds(10), adBreakSeams: [seam])
         var listened = 0.0
         rig.player.onListened = { wall, _ in listened += wall }
         await rig.play(at: 0)
-        try await Task.sleep(for: .milliseconds(80))
+        try await Task.sleep(for: .milliseconds(60))
+        rig.engine.currentTime = 0.1
+        rig.player.position = 0.1
         await rig.controller.syncTick()
+        XCTAssertFalse(rig.player.isHoldingForSpeech, "the timer never starts a bulletin")
+        XCTAssertGreaterThan(listened, 0)
+        rig.engine.currentTime = 0.2
+        rig.player.position = 0.2
         XCTAssertTrue(rig.player.isHoldingForSpeech)
+        XCTAssertGreaterThanOrEqual(rig.player.position, seam, "continuous playback crossed the prepared ad seam")
         let atHold = listened
         XCTAssertGreaterThan(atHold, 0)
         try await Task.sleep(for: .milliseconds(200))
@@ -340,7 +475,6 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
         rig.speaker.completeSpeech()
         try await Task.sleep(for: .milliseconds(80))
         XCTAssertGreaterThan(listened, atHold)
-        XCTAssertLessThan(listened - atHold, 0.5, "the speech gap is not counted afterwards")
     }
 
     func testAlertMonitorStartsAtThisPhonesCoordinatesOnlyWhilePlayingWithAlertsOn() async throws {
@@ -375,6 +509,7 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
         XCTAssertNotNil(rig.model.tickState.tick)
         let activations = rig.rig.session.activations
         await rig.rig.controller.syncTick()
+        rig.rig.crossAdBreak()
         XCTAssertTrue(rig.rig.player.isHoldingForSpeech)
         await rig.model.sceneBecameBackground()
         await rig.model.syncRound(.timer)
@@ -472,6 +607,7 @@ struct HandoffSpeechRig {
         XCTAssertTrue(rig.player.start(item, at: 42))
         for _ in 0..<200 where !rig.controller.hasRevision { try await Task.sleep(for: .milliseconds(5)) }
         for _ in 0..<400 where !model.handoffState.reportedPlaying { try await Task.sleep(for: .milliseconds(5)) }
+        rig.player.position = 42
         return HandoffSpeechRig(model: model, rig: rig, mac: mac, scratch: scratch)
     }
 

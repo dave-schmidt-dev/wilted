@@ -67,7 +67,7 @@ final class WiltedMacHeadlineCatalogState {
             switch result {
             case .applied:
                 self.model?.librarySyncController?.requestPublish()
-                return isSaved ? "Story saved." : "Story removed from Saved."
+                return isSaved ? "Saved to Notebook." : "Removed from Notebook."
             case .staleRevision:
                 return "The story changed on another device. The list is current. Try again."
             case .rejected:

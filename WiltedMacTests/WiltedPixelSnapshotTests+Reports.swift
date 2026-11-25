@@ -85,7 +85,8 @@ extension WiltedPixelSnapshotTests {
                 displayName: nil, lastAnnouncedAt: nil)
         ]
         let image = render(WiltedMacRootView(model: model),
-            variant: .init(appearance: .light, dynamicType: .standard, reduceMotion: false), size: windowCanvas)
+            variant: .init(appearance: .light, dynamicType: .standard, reduceMotion: false),
+            size: windowCanvas, inWindow: true)
         assertSnapshot(image,
             named: WiltedSnapshotContract.shellName(kind: "section-devices-synthetic-rows", appearance: .light),
             testName: "testDevicesSettingsWithSyntheticDeviceRowsPixels")

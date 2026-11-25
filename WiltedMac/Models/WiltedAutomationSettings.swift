@@ -329,13 +329,13 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
     // before Reports existed keeps every other preference and interruptions stay off.
     // Change them through `updatingReports`, which clamps and validates.
 
-    /// Whether the Mac may pause playback at a pause point to read a bulletin. Off until chosen.
+    /// Whether the Mac may pause playback at an ad break to read a bulletin. Off until chosen.
     private(set) var interruptionsEnabled = false
     private(set) var alertsEnabled = true
     private(set) var headlinesEnabled = true
-    /// How long a waiting alert may wait for a pause point before it is spoken anyway. Headlines
-    /// never cut into speech, so this limit does not apply to them.
+    /// Legacy persisted value retained for settings-file compatibility; ad-break timing is event-driven.
     private(set) var waitLimitSeconds = 60
+    /// Legacy persisted value retained for settings-file compatibility; all eligible headlines queue.
     private(set) var headlineMinimumGapMinutes = 30
     private(set) var reportEnabled = false
     private(set) var reportTime = WiltedAutomationLocalTime(hour: 7, minute: 0)!

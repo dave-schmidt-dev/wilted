@@ -4,7 +4,7 @@ import WiltedLibrary
 import WiltedProducer
 #endif
 
-/// Recent and saved story actions live together in Reports and the player's story cards.
+/// Recent story actions live in Reports, while saved stories live in Notebook.
 struct WiltedMacHeadlineHistoryDisclosure: View {
     let model: WiltedMacModel
     @Binding var isExpanded: Bool
@@ -23,7 +23,7 @@ struct WiltedMacHeadlineHistoryDisclosure: View {
                     Task { await refreshListenNextRequests() }
                 }
         } label: {
-            Text("Recent and saved stories")
+            Text("Recent stories")
                 .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
         }
@@ -33,10 +33,8 @@ struct WiltedMacHeadlineHistoryDisclosure: View {
     /// The production list view and its model-backed Listen next actions.
     @MainActor var headlinesList: WiltedHeadlinesList {
         let catalog = model.headlineCatalogState
-        let activeStoryID = self.featuredStoryID
         return WiltedHeadlinesList(
-            recent: catalog.projection?.recent.filter { $0.id != activeStoryID } ?? [],
-            saved: catalog.projection?.saved.filter { $0.id != activeStoryID } ?? [],
+            recent: catalog.projection?.recent ?? [],
             publishers: catalog.projection?.publishers ?? [],
             actionInProgress: catalog.isActionInProgress,
             actionMessage: catalog.actionMessage,
@@ -53,18 +51,6 @@ struct WiltedMacHeadlineHistoryDisclosure: View {
 
     private var localListenNextRequests: [LibraryListenNextRequestSnapshot] {
         listenNextRequests.filter { $0.requesterDeviceID == model.libraryDeviceID() }
-    }
-
-    private var featuredStoryID: String? {
-#if canImport(WiltedProducer)
-        WiltedMacPlayerContent.selectHeadlineCard(
-            speaking: model.speakingBulletin,
-            lastSpokenStoryID: model.bulletinHub.featuredHeadlineStoryID,
-            pendingStoryID: model.bulletinHub.latestHeadlineNarrationStoryID,
-            projection: model.headlineCatalogState.projection)?.id
-#else
-        nil
-#endif
     }
 
     /// The Recent and Saved card action bound to the list's Listen next and Retry buttons.

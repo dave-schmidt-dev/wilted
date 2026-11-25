@@ -118,7 +118,6 @@ extension PlaybackControllerTests {
     }
 
     func interruptionRig(
-        cues: (@MainActor (ItemID, RevisionID) async -> (cues: [TranscriptCue]?, timing: TranscriptTiming))? = nil,
         shouldSpeakHeadline: @escaping @MainActor (Bulletin) -> Bool = { _ in true },
         didStartHeadline: @escaping @MainActor (Bulletin) -> Void = { _ in },
         firesWatchdog: Bool = false, name: String = #function
@@ -134,7 +133,7 @@ extension PlaybackControllerTests {
         wall.firesWatchdog = firesWatchdog
         let route = InterruptionRoute()
         controller.enableInterruptions(
-            speaker: speaker, waitLimit: 60, clock: wall.clock, cues: cues, routeSource: route,
+            speaker: speaker, clock: wall.clock, routeSource: route,
             shouldSpeakHeadline: shouldSpeakHeadline, didStartHeadline: didStartHeadline)
         return InterruptionRig(controller: controller, backend: backend, route: route, speaker: speaker, wall: wall,
                                root: path.deletingLastPathComponent())
@@ -155,7 +154,10 @@ extension PlaybackControllerTests {
         rig.backend.currentTime = 10
 
         controller.deliverBulletin(try bulletin("tornado", at: rig.wall.now))
-        XCTAssertEqual(rig.speaker.spoken, ["Bulletin tornado."], "an extreme alert speaks at once")
+        XCTAssertTrue(rig.speaker.spoken.isEmpty, "an arriving extreme alert waits for an ad break")
+        XCTAssertTrue(rig.backend.isPlaying)
+        controller.adBreakReached()
+        XCTAssertEqual(rig.speaker.spoken, ["Bulletin tornado."])
         XCTAssertFalse(rig.backend.isPlaying, "program audio is held while speaking")
         XCTAssertEqual(controller.speakingBulletin?.id, "tornado")
 
@@ -173,21 +175,20 @@ extension PlaybackControllerTests {
         rig.controller.setVolume(0.35)
         try rig.controller.play()
 
-        rig.controller.deliverBulletin(try bulletin("story-one", .headline, .extreme, at: rig.wall.now))
+        rig.controller.deliverBulletin(try bulletin("story-one", .headline, .unknown, at: rig.wall.now))
+        rig.controller.adBreakReached()
         XCTAssertEqual(rig.speaker.playbackVolumes, [0.35])
         rig.speaker.finishSpeaking()
 
         rig.controller.setVolume(0.6)
-        rig.controller.deliverBulletin(try bulletin("story-two", .headline, .extreme, at: rig.wall.now))
+        rig.controller.deliverBulletin(try bulletin("story-two", .headline, .unknown, at: rig.wall.now))
+        rig.controller.adBreakReached()
         XCTAssertEqual(rig.speaker.playbackVolumes, [0.35, 0.6])
     }
 
     func testStartingAHeadlineDropsAQueuedRewordingAndResumesPlayback() async throws {
         var storyWasHeard = false
-        let cues = [try TranscriptCue(startSeconds: 0, endSeconds: 5, text: "a"),
-                    try TranscriptCue(startSeconds: 6, endSeconds: 40, text: "b")]
         let rig = try await interruptionRig(
-            cues: { _, _ in (cues, .aligned) },
             shouldSpeakHeadline: { _ in !storyWasHeard },
             didStartHeadline: { _ in storyWasHeard = true })
         defer { try? FileManager.default.removeItem(at: rig.root) }
@@ -205,10 +206,9 @@ extension PlaybackControllerTests {
         rig.controller.deliverBulletin(reworded)
         XCTAssertTrue(rig.speaker.spoken.isEmpty, "both headlines wait before the story is heard")
 
-        rig.controller.interruptionTick() // looks for the pause point
-        await waitUntil { rig.controller.interruptions?.pausePoint != nil }
-        rig.backend.currentTime = 5.2 // in the gap after the first cue
-        rig.controller.interruptionTick()
+        rig.backend.currentTime = 5.2
+        XCTAssertTrue(rig.speaker.spoken.isEmpty, "changing playback position does not start a batch")
+        rig.controller.adBreakReached()
         XCTAssertEqual(rig.speaker.spoken, [first.text])
         XCTAssertTrue(storyWasHeard)
         XCTAssertEqual(rig.controller.speakingBulletin?.id, first.id)
@@ -218,94 +218,80 @@ extension PlaybackControllerTests {
         XCTAssertTrue(rig.backend.isPlaying, "the skipped rewording does not leave playback held")
         XCTAssertEqual(rig.backend.currentTime, 5.2, accuracy: 0.0001)
         rig.wall.now = now.addingTimeInterval(122)
-        rig.controller.interruptionTick()
         XCTAssertEqual(rig.speaker.spoken, [first.text], "the queued story stays removed")
         XCTAssertNil(rig.controller.speakingBulletin)
         XCTAssertTrue(rig.backend.isPlaying)
     }
 
-    func testAHeadlineWaitsForItsPauseBetweenCuesThenSpeaksAndResumes() async throws {
-        let cues = [try TranscriptCue(startSeconds: 0, endSeconds: 11, text: "a"),
-                    try TranscriptCue(startSeconds: 11.2, endSeconds: 15, text: "b"),
-                    try TranscriptCue(startSeconds: 15.9, endSeconds: 20, text: "c")]
-        let rig = try await interruptionRig(cues: { _, _ in (cues, .aligned) })
+    func testTranscriptGapsDoNotStartAnAutomaticBatch() async throws {
+        let rig = try await interruptionRig()
         defer { try? FileManager.default.removeItem(at: rig.root) }
         let controller = rig.controller
         try controller.play()
         rig.backend.currentTime = 12
 
         controller.deliverBulletin(try bulletin("story", .headline, .unknown, at: rig.wall.now))
-        controller.interruptionTick() // looks for the pause point
-        await waitUntil { controller.interruptions?.pausePoint != nil }
-        controller.interruptionTick()
-        XCTAssertTrue(rig.speaker.spoken.isEmpty, "mid-sentence: it keeps waiting")
+        XCTAssertTrue(rig.speaker.spoken.isEmpty, "time and playback position do not start a batch")
 
-        rig.backend.currentTime = 15.1 // inside the gap before the third cue
-        controller.interruptionTick()
+        rig.backend.currentTime = 15.1
+        XCTAssertTrue(rig.speaker.spoken.isEmpty, "a transcript gap does not start a bulletin batch")
+        controller.adBreakReached()
         XCTAssertEqual(rig.speaker.spoken, ["Bulletin story."])
         rig.speaker.finishSpeaking()
         XCTAssertTrue(rig.backend.isPlaying)
         XCTAssertEqual(rig.backend.currentTime, 15.1, accuracy: 0.0001)
     }
 
-    func testAHeadlineWithNoTranscriptNeverCutsInAndSpeaksWhenTheNextEpisodeStarts() async throws {
-        let rig = try await interruptionRig(cues: { _, _ in (nil, TranscriptTiming.none) })
+    func testAnAccumulatedHeadlineWaitsAcrossEpisodeChangesForAnAdBreak() async throws {
+        let rig = try await interruptionRig()
         defer { try? FileManager.default.removeItem(at: rig.root) }
         let controller = rig.controller
         try controller.play()
         rig.backend.currentTime = 30
         controller.deliverBulletin(try bulletin("story", .headline, .unknown, at: rig.wall.now))
-        controller.interruptionTick()
-        await waitUntil { controller.interruptions?.pausePoint != nil }
         for seconds in [61.0, 600, 1_200] { // the headline expires after an hour
             rig.wall.now = rig.wall.now.addingTimeInterval(seconds)
             rig.backend.currentTime += seconds
-            controller.interruptionTick()
-            XCTAssertTrue(rig.speaker.spoken.isEmpty, "no measurable pause: the headline waits, past \(seconds) s")
+            XCTAssertTrue(rig.speaker.spoken.isEmpty, "a timer never speaks a headline, after \(seconds) s")
         }
 
         let (_, revision) = try fixture()
         try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
         try controller.play()
-        controller.interruptionTick()
+        XCTAssertTrue(rig.speaker.spoken.isEmpty, "the next episode start is not a bulletin trigger")
+        controller.adBreakReached()
         XCTAssertEqual(rig.speaker.spoken, ["Bulletin story."], "the next episode's start is a boundary")
         rig.speaker.finishSpeaking()
         XCTAssertTrue(rig.backend.isPlaying)
         XCTAssertEqual(rig.backend.currentTime, 0, accuracy: 0.0001, "the new episode starts from its beginning")
     }
 
-    func testAHeadlineInLongUnbrokenSpeechWaitsPastTheLimitForTheNextGap() async throws {
-        // Speech with no gap for 35 seconds, then a pause before the next cue (the fixture is 42 s).
-        let cues = [try TranscriptCue(startSeconds: 0, endSeconds: 35, text: "a"),
-                    try TranscriptCue(startSeconds: 36, endSeconds: 42, text: "b")]
-        let rig = try await interruptionRig(cues: { _, _ in (cues, .aligned) })
+    func testLongPlaybackAndFormerDeadlineDoNotStartBulletins() async throws {
+        let rig = try await interruptionRig()
         defer { try? FileManager.default.removeItem(at: rig.root) }
         let controller = rig.controller
         try controller.play()
         rig.backend.currentTime = 2
         controller.deliverBulletin(try bulletin("story", .headline, .unknown, at: rig.wall.now))
-        rig.wall.now = rig.wall.now.addingTimeInterval(59) // one second of the wait limit left
-        controller.interruptionTick()
-        await waitUntil { controller.interruptions?.pausePoint != nil }
         rig.wall.now = rig.wall.now.addingTimeInterval(120)
         rig.backend.currentTime = 30
-        controller.interruptionTick()
-        XCTAssertTrue(rig.speaker.spoken.isEmpty, "past the wait limit but mid-speech: still waiting")
+        XCTAssertTrue(rig.speaker.spoken.isEmpty, "mid-speech and after the old deadline: still waiting")
 
         rig.backend.currentTime = 35.2
-        controller.interruptionTick()
-        XCTAssertEqual(rig.speaker.spoken, ["Bulletin story."], "speaks in the first real gap")
+        XCTAssertTrue(rig.speaker.spoken.isEmpty, "a transcript gap does not start a batch")
+        controller.adBreakReached()
+        XCTAssertEqual(rig.speaker.spoken, ["Bulletin story."], "the explicit ad seam starts the batch")
     }
 
-    func testANonExtremeAlertWithNoPauseStillSpeaksWhenTheWaitLimitPasses() async throws {
-        let rig = try await interruptionRig(cues: { _, _ in (nil, TranscriptTiming.none) })
+    func testSevereAlertWaitsPastTheFormerDeadlineUntilAnAdBreak() async throws {
+        let rig = try await interruptionRig()
         defer { try? FileManager.default.removeItem(at: rig.root) }
         try rig.controller.play()
         rig.controller.deliverBulletin(try bulletin("storm", .alert, .severe, at: rig.wall.now))
-        rig.controller.interruptionTick()
         XCTAssertTrue(rig.speaker.spoken.isEmpty)
         rig.wall.now = rig.wall.now.addingTimeInterval(61)
-        rig.controller.interruptionTick()
+        XCTAssertTrue(rig.speaker.spoken.isEmpty, "severe weather follows the same ad-break rule")
+        rig.controller.adBreakReached()
         XCTAssertEqual(rig.speaker.spoken, ["Bulletin storm."])
     }
 
@@ -316,14 +302,14 @@ extension PlaybackControllerTests {
         XCTAssertFalse(rig.backend.isPlaying)
 
         controller.deliverBulletin(try bulletin("tornado", at: rig.wall.now))
-        controller.interruptionTick()
         XCTAssertTrue(rig.speaker.spoken.isEmpty, "nothing is spoken over silence")
         XCTAssertFalse(rig.backend.isPlaying, "and nothing starts playing")
         XCTAssertNil(controller.speakingBulletin)
 
         try controller.play()
-        controller.interruptionTick()
-        XCTAssertEqual(rig.speaker.spoken, ["Bulletin tornado."], "it is spoken once the listener plays")
+        XCTAssertTrue(rig.speaker.spoken.isEmpty, "starting playback does not start an accumulated batch")
+        controller.adBreakReached()
+        XCTAssertEqual(rig.speaker.spoken, ["Bulletin tornado."], "the next marked break plays the batch")
     }
 
     func testThePublishedStateStaysPlayingAndListeningStatisticsDoNotGrowDuringSpeech() async throws {
@@ -337,6 +323,7 @@ extension PlaybackControllerTests {
         rig.backend.currentTime = 5
 
         controller.deliverBulletin(try bulletin("tornado", at: rig.wall.now))
+        controller.adBreakReached()
         meter.now += 30 // speech
         XCTAssertTrue(controller.isPlaying, "the published state stays playing")
         XCTAssertTrue(controller.liveIsPlaying, "and so does the live state the sync sample reads")
@@ -358,6 +345,7 @@ extension PlaybackControllerTests {
         try controller.play()
         rig.backend.currentTime = 10
         controller.deliverBulletin(try bulletin("tornado", at: rig.wall.now))
+        controller.adBreakReached()
 
         try await controller.pause()
         XCTAssertEqual(rig.speaker.stopCount, 1)
@@ -375,6 +363,7 @@ extension PlaybackControllerTests {
         try rig.controller.play()
         rig.backend.currentTime = 7
         rig.controller.deliverBulletin(try bulletin("tornado", at: rig.wall.now))
+        rig.controller.adBreakReached()
 
         rig.controller.skipSpokenBulletin()
         XCTAssertEqual(rig.speaker.stopCount, 1)
@@ -383,18 +372,29 @@ extension PlaybackControllerTests {
         XCTAssertNil(rig.controller.speakingBulletin)
     }
 
-    func testSpeechThatCannotStartDropsTheBulletinAndKeepsPlaying() async throws {
+    func testSpeechThatCannotStartRequeuesTheWholeBatchForTheNextBreak() async throws {
         let rig = try await interruptionRig()
         defer { try? FileManager.default.removeItem(at: rig.root) }
         rig.speaker.canStart = false
         try rig.controller.play()
         rig.backend.currentTime = 4
 
-        rig.controller.deliverBulletin(try bulletin("tornado", at: rig.wall.now))
+        rig.controller.deliverBulletin(try bulletin("one", at: rig.wall.now))
+        rig.controller.deliverBulletin(try bulletin("two", at: rig.wall.now.addingTimeInterval(1)))
+        rig.controller.adBreakReached()
         XCTAssertTrue(rig.backend.isPlaying, "playback carries on")
         XCTAssertEqual(rig.backend.currentTime, 4, accuracy: 0.0001)
         XCTAssertNil(rig.controller.speakingBulletin)
         XCTAssertTrue(rig.controller.isPlaying)
+        XCTAssertEqual(rig.controller.interruptions?.reducer.pending.map(\.id), ["one", "two"])
+
+        rig.speaker.canStart = true
+        rig.controller.adBreakReached()
+        XCTAssertEqual(rig.speaker.spoken, ["Bulletin one."])
+        rig.speaker.finishSpeaking()
+        XCTAssertEqual(rig.speaker.spoken, ["Bulletin one.", "Bulletin two."])
+        rig.speaker.finishSpeaking()
+        XCTAssertTrue(rig.backend.isPlaying)
     }
 
     func testSpeechThatNeverEndsIsTimedOutAndPlaybackResumes() async throws {
@@ -403,6 +403,7 @@ extension PlaybackControllerTests {
         try rig.controller.play()
         rig.backend.currentTime = 9
         rig.controller.deliverBulletin(try bulletin("tornado", at: rig.wall.now))
+        rig.controller.adBreakReached()
 
         await waitUntil { rig.backend.isPlaying }
         XCTAssertTrue(rig.backend.isPlaying)
@@ -416,6 +417,7 @@ extension PlaybackControllerTests {
         let controller = rig.controller
         try controller.play()
         controller.deliverBulletin(try bulletin("tornado", at: rig.wall.now))
+        controller.adBreakReached()
         let (_, revision) = try fixture()
 
         try await controller.load(revision: revision, mediaURL: URL(fileURLWithPath: "/tmp/audio.m4a"))
@@ -429,6 +431,7 @@ extension PlaybackControllerTests {
         defer { try? FileManager.default.removeItem(at: rig.root) }
         try rig.controller.play()
         rig.controller.deliverBulletin(try bulletin("tornado", at: rig.wall.now))
+        rig.controller.adBreakReached()
 
         rig.controller.disableInterruptions()
         XCTAssertFalse(rig.controller.interruptionsEnabled)

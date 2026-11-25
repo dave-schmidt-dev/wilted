@@ -40,10 +40,13 @@ final class WiltedMacHeadlineNarration {
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let directory: URL
     @ObservationIgnored private var renderTask: Task<Void, Never>?
+    @ObservationIgnored private var expiryTask: Task<Void, Never>?
     @ObservationIgnored private var renderGeneration: UInt64 = 0
     @ObservationIgnored private var activeRenderID: String?
+    @ObservationIgnored private var enabled = false
     @ObservationIgnored private var voiceID: ApprovedReadingVoiceID?
     @ObservationIgnored private var accountIdentity: String?
+    @ObservationIgnored private var eligibility: @MainActor (Bulletin) -> Bool = { _ in false }
     @ObservationIgnored private var queue: [String] = []
     @ObservationIgnored private var candidates: [String: Bulletin] = [:]
     @ObservationIgnored private var current: [String: Bulletin] = [:]
@@ -71,17 +74,19 @@ final class WiltedMacHeadlineNarration {
         self.directory = directory
     }
 
-    /// Candidate IDs are admitted only when the local hub observes a new channel bulletin.
+    /// Newly published eligible candidates stay available until spoken, expired, or invalidated.
     func update(
         current headlines: [Bulletin],
         newlyPublished: [Bulletin],
         enabled: Bool,
         selectedVoice: ApprovedReadingVoiceID?,
         accountIdentity: String?,
-        isEligible: @MainActor (Bulletin) -> Bool
+        isEligible: @escaping @MainActor (Bulletin) -> Bool
     ) {
         let incoming = Dictionary(headlines.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
         current = incoming
+        self.enabled = enabled
+        self.eligibility = isEligible
         if !enabled {
             clearCandidates()
             self.accountIdentity = accountIdentity
@@ -89,68 +94,49 @@ final class WiltedMacHeadlineNarration {
         }
 
         let validIDs = Set(candidates.compactMap { id, bulletin in
-            incoming[id] == bulletin && bulletin.expiresAt > now() && isEligible(bulletin) ? id : nil
+            bulletin.expiresAt > now() && isEligible(bulletin) ? id : nil
         })
         for id in Array(candidates.keys) where !validIDs.contains(id) {
             candidates.removeValue(forKey: id)
             assets.removeValue(forKey: id).map { try? FileManager.default.removeItem(at: $0.url) }
         }
         queue.removeAll { !validIDs.contains($0) }
-        states = states.filter { _, state in validIDs.contains(where: { candidates[$0]?.headlineStoryID == state.storyID }) }
+        states = states.filter { id, _ in validIDs.contains(id) }
 
-        let newCandidate = newlyPublished.filter {
+        let newCandidates = newlyPublished.filter {
             incoming[$0.id] == $0 && $0.kind == .headline && $0.headlineStoryID != nil
                 && $0.expiresAt > now() && isEligible($0)
-        }.max(by: { $0.issuedAt < $1.issuedAt })
-        if let newCandidate { candidates[newCandidate.id] = newCandidate }
-
-        var retainedIDs = Set(candidates.values.max(by: { $0.issuedAt < $1.issuedAt }).map { [$0.id] } ?? [])
-        if let activeRenderID, validIDs.contains(activeRenderID), candidates[activeRenderID] != nil {
-            retainedIDs.insert(activeRenderID)
-        }
-        let removedActiveRender = activeRenderID.map { !retainedIDs.contains($0) } ?? false
-        for id in Array(candidates.keys) where !retainedIDs.contains(id) {
-            candidates.removeValue(forKey: id)
-            assets.removeValue(forKey: id).map { try? FileManager.default.removeItem(at: $0.url) }
-            states.removeValue(forKey: id)
-        }
-        queue.removeAll { !retainedIDs.contains($0) }
-        if removedActiveRender {
-            renderGeneration &+= 1
-            renderTask?.cancel()
-            renderTask = nil
-            activeRenderID = nil
         }
 
         let voiceChanged = selectedVoice != voiceID
         let accountChanged = accountIdentity != self.accountIdentity
-        let changedBetweenApprovedOwners = self.accountIdentity != nil && accountIdentity != self.accountIdentity
+        let purgeAccountContext = accountChanged && !candidates.isEmpty
         if voiceChanged || accountChanged {
             renderGeneration &+= 1
             renderTask?.cancel()
             renderTask = nil
             activeRenderID = nil
             voiceID = selectedVoice
-            if changedBetweenApprovedOwners {
-                candidates.removeAll()
-                queue.removeAll()
-            }
             queue.removeAll()
             for asset in assets.values { try? FileManager.default.removeItem(at: asset.url) }
             assets.removeAll()
             states.removeAll()
+            if purgeAccountContext { candidates.removeAll() }
         }
         self.accountIdentity = accountIdentity
+
+        for bulletin in newCandidates { candidates[bulletin.id] = bulletin }
 
         for bulletin in candidates.values.sorted(by: { $0.issuedAt < $1.issuedAt }) {
             guard let storyID = bulletin.headlineStoryID else { continue }
             if selectedVoice == nil {
                 states[bulletin.id] = .chooseVoice(storyID: storyID, bulletinID: bulletin.id)
             } else if voiceChanged || accountChanged || states[bulletin.id] == nil {
-                queue.append(bulletin.id)
+                if !queue.contains(bulletin.id) { queue.append(bulletin.id) }
             }
         }
         refreshLatestCandidate()
+        scheduleExpiry()
         startNextIfPossible()
     }
 
@@ -164,12 +150,17 @@ final class WiltedMacHeadlineNarration {
     }
 
     func audioURL(for bulletin: Bulletin, accountIdentity: String?) -> URL? {
-        guard current[bulletin.id] == bulletin, candidates[bulletin.id] == bulletin,
+        guard candidates[bulletin.id] == bulletin,
               accountIdentity == self.accountIdentity,
               bulletin.expiresAt > now(), let voiceID, let asset = assets[bulletin.id],
               asset.bulletin == bulletin, asset.voiceID == voiceID,
-              asset.voiceRevision == ArticleNarrationCoordinator.voiceRevision(for: voiceID) else { return nil }
+              asset.voiceRevision == ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID) else { return nil }
         return asset.url
+    }
+
+    var readyBulletins: [Bulletin] {
+        candidates.values.filter { audioURL(for: $0, accountIdentity: accountIdentity) != nil }
+            .sorted { $0.issuedAt < $1.issuedAt }
     }
 
     func didStart(_ bulletin: Bulletin) {
@@ -181,6 +172,7 @@ final class WiltedMacHeadlineNarration {
             try? FileManager.default.removeItem(at: asset.url)
         }
         refreshLatestCandidate()
+        scheduleExpiry()
     }
 
     func shutdown() {
@@ -196,6 +188,8 @@ final class WiltedMacHeadlineNarration {
         renderGeneration &+= 1
         renderTask?.cancel()
         renderTask = nil
+        expiryTask?.cancel()
+        expiryTask = nil
         activeRenderID = nil
         queue.removeAll()
         candidates.removeAll()
@@ -205,6 +199,21 @@ final class WiltedMacHeadlineNarration {
         refreshLatestCandidate()
     }
 
+    private func scheduleExpiry() {
+        expiryTask?.cancel()
+        expiryTask = nil
+        guard enabled, let expiresAt = candidates.values.map(\.expiresAt).min() else { return }
+        let delay = max(0.01, expiresAt.timeIntervalSince(now()))
+        expiryTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            guard let self else { return }
+            self.expiryTask = nil
+            self.update(current: Array(self.current.values), newlyPublished: [], enabled: self.enabled,
+                        selectedVoice: self.voiceID, accountIdentity: self.accountIdentity,
+                        isEligible: self.eligibility)
+        }
+    }
+
     private func refreshLatestCandidate() {
         latestCandidateStoryID = candidates.values.filter { $0.expiresAt > now() }
             .max { $0.issuedAt < $1.issuedAt }?.headlineStoryID
@@ -212,10 +221,10 @@ final class WiltedMacHeadlineNarration {
 
     private func startNextIfPossible() {
         guard renderTask == nil, let voiceID, let id = queue.first,
-              let bulletin = candidates[id], current[id] == bulletin else { return }
+              let bulletin = candidates[id] else { return }
         queue.removeFirst()
         let storyID = bulletin.headlineStoryID ?? ""
-        let voiceRevision = ArticleNarrationCoordinator.voiceRevision(for: voiceID)
+        let voiceRevision = ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID)
         let state = WiltedMacHeadlineNarrationState.preparing(
             storyID: storyID, bulletinID: bulletin.id, voiceID: voiceID, voiceRevision: voiceRevision)
         states[id] = state
@@ -252,7 +261,7 @@ final class WiltedMacHeadlineNarration {
                 guard let self else { try? FileManager.default.removeItem(at: outputURL); return }
                 guard !Task.isCancelled, self.renderGeneration == generation,
                       self.voiceID == voiceID, self.candidates[id] == bulletin,
-                      self.current[id] == bulletin, bulletin.expiresAt > self.now(),
+                      bulletin.expiresAt > self.now(),
                       audio.voiceRevision == voiceRevision, audio.audioURL == outputURL else {
                     try? FileManager.default.removeItem(at: outputURL)
                     if self.renderGeneration == generation {
@@ -284,6 +293,7 @@ final class WiltedMacHeadlineNarration {
     }
 }
 
+/// Renders active Mac weather alerts before the player receives them.
 @MainActor
 protocol WiltedMacHeadlineAudioPlaying: AnyObject {
     func play(url: URL, volume: Float, finished: @escaping @MainActor () -> Void) -> Bool
@@ -343,36 +353,127 @@ final class WiltedMacAVHeadlineAudioPlayer: NSObject, WiltedMacHeadlineAudioPlay
 
 @MainActor
 final class WiltedMacHeadlineBulletinSpeaker: BulletinSpeaking {
-    private let alertSpeaker: any BulletinSpeaking
+    typealias ShortTextNarration = @Sendable (
+        String, ApprovedReadingVoiceID, URL
+    ) async throws -> ArticleNarrationAudio
+
     private let audioURL: @MainActor (Bulletin) -> URL?
     private let audioPlayer: any WiltedMacHeadlineAudioPlaying
+    private let selectedVoice: @MainActor () -> ApprovedReadingVoiceID?
+    private let renderShortText: ShortTextNarration
+    private var shortTextTask: Task<Void, Never>?
+    private var shortTextDirectory: URL?
+    private var shortTextFinished: (@MainActor () -> Void)?
+    private var shortTextGeneration: UInt64 = 0
 
-    init(alertSpeaker: any BulletinSpeaking = SystemBulletinSpeaker(),
-         audioURL: @escaping @MainActor (Bulletin) -> URL?,
-         audioPlayer: any WiltedMacHeadlineAudioPlaying = WiltedMacAVHeadlineAudioPlayer()) {
-        self.alertSpeaker = alertSpeaker
+    init(audioURL: @escaping @MainActor (Bulletin) -> URL?,
+         audioPlayer: any WiltedMacHeadlineAudioPlaying = WiltedMacAVHeadlineAudioPlayer(),
+         selectedVoice: @escaping @MainActor () -> ApprovedReadingVoiceID? = { nil },
+         renderShortText: @escaping ShortTextNarration = { text, voiceID, outputURL in
+             try await ArticleNarrationCoordinator().synthesizeShortText(
+                 text, voiceID: voiceID, outputURL: outputURL)
+         }) {
         self.audioURL = audioURL
         self.audioPlayer = audioPlayer
+        self.selectedVoice = selectedVoice
+        self.renderShortText = renderShortText
     }
 
     func speak(_ text: String, playbackVolume: Float, finished: @escaping @MainActor () -> Void) -> Bool {
-        false
+        stop()
+        guard let voiceID = selectedVoice(), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              text.utf8.count <= 4_096 else { return false }
+        return speakShortText(text, voiceID: voiceID, playbackVolume: playbackVolume, finished: finished)
     }
 
     func speak(_ bulletin: Bulletin, playbackVolume: Float,
                finished: @escaping @MainActor () -> Void) -> Bool {
-        guard bulletin.kind == .headline else {
-            audioPlayer.stop()
-            return alertSpeaker.speak(bulletin, playbackVolume: playbackVolume, finished: finished)
-        }
+        stop()
+        guard bulletin.kind == .headline || bulletin.kind == .alert else { return false }
         guard let url = audioURL(bulletin) else { return false }
-        alertSpeaker.stop()
         return audioPlayer.play(
-            url: url, volume: BulletinSpeechGain.volume(forPlaybackVolume: playbackVolume), finished: finished)
+            url: url, volume: BulletinSpeechGain.measuredAudioVolume(forPlaybackVolume: playbackVolume),
+            finished: finished)
     }
 
     func stop() {
-        alertSpeaker.stop()
+        shortTextGeneration &+= 1
+        shortTextTask?.cancel()
+        shortTextTask = nil
+        shortTextFinished = nil
+        if let shortTextDirectory { try? FileManager.default.removeItem(at: shortTextDirectory) }
+        shortTextDirectory = nil
         audioPlayer.stop()
+    }
+
+    private func speakShortText(
+        _ text: String,
+        voiceID: ApprovedReadingVoiceID,
+        playbackVolume: Float,
+        finished: @escaping @MainActor () -> Void
+    ) -> Bool {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "wilted-short-bulletin-\(UUID().uuidString)", directoryHint: .isDirectory)
+        do {
+            try FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        } catch {
+            return false
+        }
+
+        let outputURL = directory.appending(path: "bulletin.m4a")
+        shortTextDirectory = directory
+        shortTextFinished = finished
+        let generation = shortTextGeneration
+        let render = renderShortText
+        let volume = BulletinSpeechGain.measuredAudioVolume(forPlaybackVolume: playbackVolume)
+        shortTextTask = Task { @MainActor [weak self] in
+            do {
+                let audio = try await render(text, voiceID, outputURL)
+                guard let self else {
+                    try? FileManager.default.removeItem(at: directory)
+                    return
+                }
+                guard !Task.isCancelled, self.shortTextGeneration == generation,
+                      audio.audioURL == outputURL,
+                      audio.voiceRevision == ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID),
+                      audio.duration > 0, Self.fileSize(at: outputURL) > 44 else {
+                    self.finishShortText(generation)
+                    return
+                }
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outputURL.path)
+                self.shortTextTask = nil
+                guard self.audioPlayer.play(url: outputURL, volume: volume, finished: { [weak self] in
+                    self?.finishShortText(generation)
+                }) else {
+                    self.finishShortText(generation)
+                    return
+                }
+            } catch {
+                guard let self, self.shortTextGeneration == generation else {
+                    try? FileManager.default.removeItem(at: directory)
+                    return
+                }
+                self.finishShortText(generation)
+            }
+        }
+        return true
+    }
+
+    private static func fileSize(at url: URL) -> Int64 {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attributes[.size] as? NSNumber else { return 0 }
+        return size.int64Value
+    }
+
+    private func finishShortText(_ generation: UInt64) {
+        guard shortTextGeneration == generation else { return }
+        shortTextTask = nil
+        let directory = shortTextDirectory
+        shortTextDirectory = nil
+        let finished = shortTextFinished
+        shortTextFinished = nil
+        if let directory { try? FileManager.default.removeItem(at: directory) }
+        finished?()
     }
 }

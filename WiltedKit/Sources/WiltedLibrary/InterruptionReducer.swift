@@ -54,16 +54,18 @@ public struct PlaybackSnapshot: Equatable, Sendable {
 
 public enum InterruptionState: Equatable, Sendable {
     case idle
-    case waiting(Bulletin, deadline: Date)
     case speaking(Bulletin, SpeechCheckpoint)
 }
 
 public enum InterruptionEvent: Equatable, Sendable {
     case bulletinArrived(Bulletin, PlaybackSnapshot)
-    /// Time passing; promotes pending bulletins and fires a waiting one whose deadline came.
+    /// Maintenance tick; it never starts speech.
     case tick(PlaybackSnapshot)
-    case pausePointReached(PlaybackSnapshot)
+    /// A prepared podcast ad was removed at this exact playback seam.
+    case adBreakReached(PlaybackSnapshot)
     case speechFinished(PlaybackSnapshot)
+    /// The speaker refused the captured bulletin before it could start.
+    case speechStartFailed(PlaybackSnapshot)
     case skip(PlaybackSnapshot)
     /// Mac seek cancellation restores the hold without resuming; iOS seeking is unchanged.
     case seekStarted(PlaybackSnapshot)
@@ -72,14 +74,12 @@ public enum InterruptionEvent: Equatable, Sendable {
     case routeLost(PlaybackSnapshot)
     case systemInterruption(shouldResume: Bool, PlaybackSnapshot)
     case itemChanged
-    /// The fetched bulletin list changed (the caller sends the headlines plus its own active
-    /// alerts). Anything pending or waiting that is no longer listed is dropped.
+    /// The fetched bulletin list changed. Canceled alerts are dropped, while valid headlines
+    /// already queued remain until the next ad break.
     case channelReplaced([Bulletin], PlaybackSnapshot)
 }
 
 public enum InterruptionEffect: Equatable, Sendable {
-    /// Find the next pause point and send `pausePointReached`; `tick` covers the deadline.
-    case awaitPausePoint(Bulletin, deadline: Date)
     /// Hold program audio, then speak.
     case speak(Bulletin, SpeechCheckpoint)
     case stopSpeech
@@ -89,40 +89,41 @@ public enum InterruptionEffect: Equatable, Sendable {
 
 /// Pure decision logic for spoken interruptions, shared by the Mac and iPhone players.
 ///
-/// It never speaks while program audio is not playing, speaks each bulletin id once, and drops a
-/// bulletin whose `expiresAt` has passed on this device's clock before waiting and before
-/// speaking. A headline never cuts into speech: its wait deadline does not make it speak. It
-/// speaks only at a pause point or at the start of the next item (an episode boundary). Restore and resume are emitted together, and only while the checkpoint is still
-/// current, so a newer command always wins over a late speech completion.
+/// It speaks only at a removed-ad seam while program audio is playing. Each seam snapshots the
+/// currently pending bulletins into one batch. Later arrivals wait for a later seam. Expired
+/// bulletins are discarded, and restore/resume require the original checkpoint to remain current.
 public struct InterruptionReducer: Sendable {
     public private(set) var state: InterruptionState = .idle
-    /// Not yet waiting, ordered by severity (highest first) then issue time.
+    /// Not yet spoken, ordered by severity (highest first) then issue time.
     public private(set) var pending: [Bulletin] = []
-    public let waitLimit: TimeInterval
+    /// Bulletins already captured by the current break, excluding the one being spoken.
+    public var remainingInBatch: [Bulletin] { batch }
     /// Spoken or speaking ids with their expiry, so a bulletin is spoken once and the memory is bounded.
     private var spoken: [String: Date] = [:]
-    /// The item changed and program audio has not played since: the next playing moment is a
-    /// boundary between episodes, where a waiting headline may speak.
-    private var atItemBoundary = false
+    /// Remaining bulletins captured at the current ad seam.
+    private var batch: [Bulletin] = []
 
     /// Creates a reducer with ids already spoken on this device and their retention deadlines.
     /// Values whose deadline has passed are removed on the first event.
-    public init(waitLimit: TimeInterval = 60, alreadySpoken: [String: Date] = [:]) {
-        self.waitLimit = max(0, waitLimit)
+    public init(alreadySpoken: [String: Date] = [:]) {
         self.spoken = alreadySpoken
     }
 
     /// Removes queued bulletins that became ineligible while another headline started speaking.
     public mutating func removePendingBulletins(withIDs ids: Set<String>) {
         pending.removeAll { ids.contains($0.id) }
+        batch.removeAll { ids.contains($0.id) }
     }
 
     public mutating func handle(_ event: InterruptionEvent) -> [InterruptionEffect] {
         switch event {
         case let .bulletinArrived(bulletin, snapshot): return arrive(bulletin, snapshot)
-        case let .tick(snapshot): return advance(snapshot)
-        case let .pausePointReached(snapshot): return reachPausePoint(snapshot)
+        case let .tick(snapshot):
+            prune(snapshot.now)
+            return []
+        case let .adBreakReached(snapshot): return beginBatch(snapshot)
         case let .speechFinished(snapshot): return finish(snapshot, stopSpeech: false)
+        case let .speechStartFailed(snapshot): return failedStart(snapshot)
         case let .skip(snapshot): return finish(snapshot, stopSpeech: true)
         case let .seekStarted(snapshot), let .userPaused(snapshot), let .playbackStopped(snapshot), let .routeLost(snapshot):
             return halt(snapshot, resume: false)
@@ -137,100 +138,74 @@ public struct InterruptionReducer: Sendable {
     private mutating func arrive(_ bulletin: Bulletin, _ snapshot: PlaybackSnapshot) -> [InterruptionEffect] {
         prune(snapshot.now)
         let supersededByKnown = knownBulletins.contains { $0.supersedes == bulletin.id }
-        guard !bulletin.isExpired(at: snapshot.now), !isKnown(bulletin.id), !supersededByKnown else {
-            return advance(snapshot)
-        }
+        guard !bulletin.isExpired(at: snapshot.now), !isKnown(bulletin.id), !supersededByKnown else { return [] }
         if let replaced = bulletin.supersedes {
             pending.removeAll { $0.id == replaced }
-            if case let .waiting(waiting, _) = state, waiting.id == replaced { state = .idle }
+            batch.removeAll { $0.id == replaced }
         }
         enqueue(bulletin)
-        return advance(snapshot)
+        return []
     }
 
-    private mutating func reachPausePoint(_ snapshot: PlaybackSnapshot) -> [InterruptionEffect] {
-        var effects = advance(snapshot)
-        if snapshot.isPlaying, case let .waiting(bulletin, _) = state {
-            state = .idle
-            effects += speak(bulletin, snapshot)
-        }
-        return effects
+    private mutating func beginBatch(_ snapshot: PlaybackSnapshot) -> [InterruptionEffect] {
+        prune(snapshot.now)
+        guard snapshot.isPlaying, case .idle = state, !pending.isEmpty else { return [] }
+        batch = pending
+        pending.removeAll(keepingCapacity: true)
+        return speak(batch.removeFirst(), snapshot)
     }
 
     private mutating func finish(_ snapshot: PlaybackSnapshot, stopSpeech: Bool) -> [InterruptionEffect] {
         guard case let .speaking(_, checkpoint) = state else { return [] }
         state = .idle
         prune(snapshot.now)
-        guard snapshot.current(for: checkpoint) else { return stopSpeech ? [.stopSpeech] : [] }
-        if !stopSpeech, let next = pending.first, next.severity == .extreme {
-            // An Extreme alert queued behind the one that just finished is spoken next, from the
-            // same checkpoint, so program audio is restored once at the very end.
-            pending.removeFirst()
+        guard snapshot.current(for: checkpoint) else {
+            returnBatchToPending()
+            return stopSpeech ? [.stopSpeech] : []
+        }
+        if !stopSpeech, !batch.isEmpty {
+            let next = batch.removeFirst()
             return speak(next, checkpoint: checkpoint, now: snapshot.now)
         }
+        if stopSpeech { returnBatchToPending() }
+        else { batch.removeAll(keepingCapacity: true) }
         return (stopSpeech ? [.stopSpeech] : []) + [.restore(checkpoint), .resume]
     }
 
+    private mutating func failedStart(_ snapshot: PlaybackSnapshot) -> [InterruptionEffect] {
+        guard case let .speaking(bulletin, checkpoint) = state else { return [] }
+        state = .idle
+        spoken.removeValue(forKey: bulletin.id)
+        prune(snapshot.now)
+        if !bulletin.isExpired(at: snapshot.now) { enqueue(bulletin) }
+        returnBatchToPending()
+        guard snapshot.current(for: checkpoint) else { return [.stopSpeech] }
+        return [.stopSpeech, .restore(checkpoint), .resume]
+    }
+
     private mutating func halt(_ snapshot: PlaybackSnapshot, resume: Bool) -> [InterruptionEffect] {
-        demoteWaiting()
         guard case let .speaking(_, checkpoint) = state else { return [] }
         state = .idle
+        returnBatchToPending()
         // The pause or interruption is itself the newest command, so only the item must match.
         guard snapshot.sameItem(as: checkpoint) else { return [.stopSpeech] }
         return [.stopSpeech, .restore(checkpoint)] + (resume ? [.resume] : [])
     }
 
+    private mutating func replaceChannel(_ list: [Bulletin], _ snapshot: PlaybackSnapshot) -> [InterruptionEffect] {
+        let activeAlerts = Set(list.filter { $0.kind == .alert }.map(\.id))
+        pending.removeAll { $0.kind == .alert && !activeAlerts.contains($0.id) }
+        batch.removeAll { $0.kind == .alert && !activeAlerts.contains($0.id) }
+        prune(snapshot.now)
+        for bulletin in list { _ = arrive(bulletin, snapshot) }
+        return []
+    }
+
     private mutating func changeItem() -> [InterruptionEffect] {
-        atItemBoundary = true
         guard case .speaking = state else { return [] }
         state = .idle
+        returnBatchToPending()
         return [.stopSpeech]
-    }
-
-    private mutating func replaceChannel(_ list: [Bulletin], _ snapshot: PlaybackSnapshot) -> [InterruptionEffect] {
-        let listed = Set(list.map(\.id))
-        pending.removeAll { !listed.contains($0.id) }
-        if case let .waiting(waiting, _) = state, !listed.contains(waiting.id) { state = .idle }
-        return advance(snapshot)
-    }
-
-    // MARK: Promotion
-
-    private mutating func advance(_ snapshot: PlaybackSnapshot) -> [InterruptionEffect] {
-        prune(snapshot.now)
-        guard snapshot.isPlaying else {
-            demoteWaiting()
-            return []
-        }
-        let boundary = atItemBoundary
-        atItemBoundary = false
-        var effects: [InterruptionEffect] = []
-        switch state {
-        case .speaking:
-            return []
-        case let .waiting(bulletin, deadline):
-            if bulletin.severity != .extreme, pending.first?.severity == .extreme {
-                demoteWaiting()
-            } else if boundary || (snapshot.now >= deadline && bulletin.kind != .headline) {
-                state = .idle
-                effects += speak(bulletin, snapshot)
-            } else {
-                return []
-            }
-        case .idle:
-            break
-        }
-        while case .idle = state, !pending.isEmpty {
-            let next = pending.removeFirst()
-            if next.severity == .extreme || (boundary && next.kind == .headline) {
-                effects += speak(next, snapshot)
-            } else {
-                let deadline = snapshot.now.addingTimeInterval(waitLimit)
-                state = .waiting(next, deadline: deadline)
-                effects.append(.awaitPausePoint(next, deadline: deadline))
-            }
-        }
-        return effects
     }
 
     private mutating func speak(_ bulletin: Bulletin, _ snapshot: PlaybackSnapshot) -> [InterruptionEffect] {
@@ -250,9 +225,9 @@ public struct InterruptionReducer: Sendable {
     // MARK: Bookkeeping
 
     private var knownBulletins: [Bulletin] {
-        var all = pending
+        var all = pending + batch
         switch state {
-        case let .waiting(bulletin, _), let .speaking(bulletin, _): all.append(bulletin)
+        case let .speaking(bulletin, _): all.append(bulletin)
         case .idle: break
         }
         return all
@@ -271,15 +246,15 @@ public struct InterruptionReducer: Sendable {
         }
     }
 
-    private mutating func demoteWaiting() {
-        guard case let .waiting(bulletin, _) = state else { return }
-        state = .idle
-        enqueue(bulletin)
+    private mutating func returnBatchToPending() {
+        let remaining = batch
+        batch.removeAll(keepingCapacity: true)
+        for bulletin in remaining { enqueue(bulletin) }
     }
 
     private mutating func prune(_ now: Date) {
         pending.removeAll { $0.isExpired(at: now) }
+        batch.removeAll { $0.isExpired(at: now) }
         spoken = spoken.filter { $0.value > now }
-        if case let .waiting(bulletin, _) = state, bulletin.isExpired(at: now) { state = .idle }
     }
 }

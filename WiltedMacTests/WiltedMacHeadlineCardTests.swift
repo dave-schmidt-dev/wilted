@@ -45,26 +45,69 @@ final class WiltedMacHeadlineCardTests: XCTestCase {
             id: "recent", title: "Council approves night service", publisherID: "wire",
             publisherName: "City Wire", link: URL(string: "https://wire.example.test/story"),
             publishedAt: now, firstSeenAt: now, lastSeenAt: now)
-        let saved = try LibraryHeadlineStory(
-            id: "saved", title: "Rail service expands", publisherID: "wire", publisherName: "City Wire",
-            link: URL(string: "https://wire.example.test/saved"), publishedAt: now, firstSeenAt: now,
-            lastSeenAt: now, savedAt: now, savedRevision: 1)
+        let savedRecent = try LibraryHeadlineStory(
+            id: "saved-recent", title: "Rail service expands", publisherID: "wire",
+            publisherName: "City Wire", link: URL(string: "https://wire.example.test/saved"),
+            publishedAt: now, firstSeenAt: now, lastSeenAt: now, savedAt: now, savedRevision: 1)
         let publisher = try LibraryHeadlinePublisher(id: "wire", name: "City Wire", isMuted: false, revision: 0)
         let view = WiltedHeadlinesList(
-            recent: [recent], saved: [saved], publishers: [publisher], actionInProgress: false,
+            recent: [recent, savedRecent], publishers: [publisher], actionInProgress: false,
             actionMessage: nil, setSaved: { _, _ in }, setMuted: { _, _ in })
 
         let rendered = try WiltedMacHeadless.recognizedText(
             view, size: CGSize(width: 1_000, height: 900)).joined(separator: " ")
 
         XCTAssertTrue(rendered.contains("Recent headlines"), rendered)
-        XCTAssertTrue(rendered.contains("Saved stories"), rendered)
+        XCTAssertFalse(rendered.contains("Saved stories"), rendered)
         XCTAssertTrue(rendered.contains("Council approves night service"), rendered)
         XCTAssertTrue(rendered.contains("Rail service expands"), rendered)
         XCTAssertTrue(rendered.contains("Read story"), rendered)
-        XCTAssertTrue(rendered.contains("Save"), rendered)
+        XCTAssertTrue(rendered.contains("Save to Notebook"), rendered)
         XCTAssertTrue(rendered.contains("Mute this source"), rendered)
-        XCTAssertTrue(rendered.contains("Unsave"), rendered)
+        XCTAssertTrue(rendered.contains("Remove from Notebook"), rendered)
+    }
+
+    func testNotebookShowsSavedHeadlineWithItsOriginalLinkAndListenNextAction() async throws {
+        let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-ready"])
+        addTeardownBlock { await model.close() }
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let link = try XCTUnwrap(URL(string: "https://wire.example.test/saved"))
+        let story = try LibraryHeadlineStory(
+            id: "saved-headline", title: "Rail service expands", publisherID: "wire",
+            publisherName: "City Wire", link: link, publishedAt: now, firstSeenAt: now,
+            lastSeenAt: now)
+        _ = try model.headlineCatalogStore.mergeRecent([story], at: now)
+        _ = try model.headlineCatalogStore.setSaved(
+            story: story, isSaved: true, basedOnRevision: story.savedRevision,
+            commandID: "save-headline", at: now)
+        model.headlineCatalogState.refresh(at: now)
+
+        let rendered = try WiltedMacHeadless.recognizedText(
+            WiltedMacNotebookView(model: model), size: CGSize(width: 1_000, height: 900)).joined(separator: " ")
+
+        XCTAssertTrue(rendered.contains("Saved stories"), rendered)
+        XCTAssertTrue(rendered.contains("Rail service expands"), rendered)
+        XCTAssertTrue(rendered.contains("Read story"), rendered)
+        XCTAssertTrue(rendered.contains("Remove from Notebook"), rendered)
+        XCTAssertTrue(rendered.contains("Listen next"), rendered)
+        XCTAssertFalse(rendered.contains("Notebook is empty"), rendered)
+    }
+
+    func testNotebookDoesNotReportEmptyWhenSavedHeadlinesCannotLoad() async throws {
+        let directory = wiltedTemporaryDirectory("notebook-headline-load-failure")
+        let catalogURL = directory.appendingPathComponent("headline-catalog.json")
+        try Data("not-json".utf8).write(to: catalogURL)
+        let model = WiltedMacModel(
+            arguments: ["--wilted-ui-fixture-ready"], stateDirectoryOverride: directory,
+            preferences: WiltedMacTestPreferences.ephemeral())
+        await model.waitForFixturePodcastInstallForTesting()
+        addTeardownBlock { await model.close() }
+
+        let rendered = try WiltedMacHeadless.recognizedText(
+            WiltedMacNotebookView(model: model), size: CGSize(width: 1_000, height: 900)).joined(separator: " ")
+
+        XCTAssertTrue(rendered.contains("Saved stories could not be loaded"), rendered)
+        XCTAssertFalse(rendered.contains("Notebook is empty"), rendered)
     }
 
     func testSpeakingCardShowsTheStoryAndAnImmediateStopAction() throws {
@@ -130,11 +173,11 @@ final class WiltedMacHeadlineCardTests: XCTestCase {
         let rendered = try WiltedMacHeadless.recognizedText(
             card, size: CGSize(width: 900, height: 1_000)).joined(separator: " ")
 
-        XCTAssertTrue(rendered.contains("Recent and saved stories"), rendered)
+        XCTAssertTrue(rendered.contains("Recent stories"), rendered)
         XCTAssertTrue(rendered.contains("Weather alerts"), rendered)
         XCTAssertTrue(rendered.contains("Read headlines aloud"), rendered)
         XCTAssertTrue(rendered.contains("Story voice"), rendered)
-        XCTAssertTrue(rendered.contains("Choose a reading voice"), rendered)
+        XCTAssertTrue(rendered.contains("Choose a voice for weather alerts"), rendered)
         XCTAssertFalse(model.automationSettings.alertsEnabled)
         XCTAssertTrue(model.automationSettings.headlinesEnabled)
         XCTAssertFalse(model.automationSettings.interruptionsEnabled)

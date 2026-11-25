@@ -55,12 +55,14 @@ struct LibraryNotebookView: View {
     @ObservedObject var model: LibraryAppModel
     @ObservedObject var player: LibraryPlayer
     @ObservedObject private var notebook: LibraryNotebookPhoneState
+    @ObservedObject private var headlines: LibraryHeadlinePhoneState
     @Environment(\.colorScheme) private var colorScheme
 
     init(model: LibraryAppModel, player: LibraryPlayer) {
         self.model = model
         self.player = player
         _notebook = ObservedObject(wrappedValue: model.notebookPhoneState)
+        _headlines = ObservedObject(wrappedValue: model.headlinePhoneState)
     }
 
     private var orphanedCommands: [LibraryNotebookOutbox.Command] {
@@ -70,8 +72,45 @@ struct LibraryNotebookView: View {
         }
     }
 
+    private var savedHeadlineStories: [LibraryHeadlineStory] {
+        model.notebookSavedHeadlineStories
+    }
+
+    private var headlineAvailabilityMessage: String? {
+        if model.accountQuarantined {
+            return "Saved headlines are hidden while this account is under review."
+        }
+        if headlines.refreshFailed {
+            return model.headlineProjection == nil
+                ? "Saved headlines are unavailable while offline."
+                : "Offline. Showing the last saved stories from your Mac."
+        }
+        if headlines.writeFailed {
+            return "Headline changes could not be saved on this iPhone."
+        }
+        if model.headlineProjection == nil && !headlines.isBoundToLocalOwner {
+            return "Saved headlines appear after this library syncs."
+        }
+        return nil
+    }
+
     var body: some View {
         List {
+            if let headlineAvailabilityMessage {
+                Section {
+                    Text(headlineAvailabilityMessage)
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-notebook-headline-availability")
+                }
+            }
+            if let actionNotice = headlines.actionNotice {
+                Section {
+                    Text(actionNotice)
+                        .wiltedFont(.utility)
+                        .accessibilityIdentifier("wilted-notebook-headline-notice")
+                }
+            }
             if let notice = notebook.notice {
                 Section {
                     Text(notice)
@@ -118,16 +157,28 @@ struct LibraryNotebookView: View {
                     }
                 }
             }
-            if notebook.entries.isEmpty {
+            if !savedHeadlineStories.isEmpty {
+                Section("Saved stories") {
+                    ForEach(savedHeadlineStories) { story in
+                        LibraryHeadlineStoryCard(state: headlines, model: model, story: story)
+                            .listRowInsets(EdgeInsets(
+                                top: WiltedTheme.Spacing.small, leading: WiltedTheme.Spacing.medium,
+                                bottom: WiltedTheme.Spacing.small, trailing: WiltedTheme.Spacing.medium))
+                            .listRowBackground(Color.clear)
+                    }
+                }
+            }
+            if notebook.entries.isEmpty && savedHeadlineStories.isEmpty && headlineAvailabilityMessage == nil {
                 Section {
                     ContentUnavailableView(
-                        "No saved moments",
+                        "Notebook is empty",
                         systemImage: "bookmark",
-                        description: Text("Save a moment while listening to a podcast. It stays here after the episode leaves the Larder.")
+                        description: Text("Save a podcast moment or headline to keep it here.")
                     )
                     .accessibilityIdentifier("wilted-notebook-empty")
                 }
-            } else {
+            }
+            if !notebook.entries.isEmpty {
                 Section("Saved moments") {
                     ForEach(notebook.entries) { entry in
                         LibraryNotebookEntryCard(entry: entry, model: model, player: player, notebook: notebook)

@@ -17,6 +17,10 @@ struct WiltedMacNotebookView: View {
         model.isPodcastPlayback && model.playback?.itemID != nil && model.playback?.revisionID != nil
     }
 
+    private var savedStories: [LibraryHeadlineStory] {
+        model.headlineCatalogState.projection?.saved ?? []
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             HStack(alignment: .firstTextBaseline) {
@@ -39,6 +43,12 @@ struct WiltedMacNotebookView: View {
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-notebook-status")
             }
+            if model.headlineCatalogState.projectionMessage != nil {
+                Text("Saved stories could not be loaded. Try again later.")
+                    .wiltedFont(.caption)
+                    .foregroundStyle(WiltedTheme.color(.degraded, scheme: colorScheme))
+                    .accessibilityIdentifier("wilted-notebook-headline-availability")
+            }
             if model.playbackError == "Original audio unavailable." {
                 Text("Original audio unavailable.")
                     .wiltedFont(.caption)
@@ -55,17 +65,29 @@ struct WiltedMacNotebookView: View {
                 .wiltedFont(.caption)
             }
 
-            if entries.isEmpty {
+            if entries.isEmpty && savedStories.isEmpty && model.headlineCatalogState.projectionMessage == nil {
                 ContentUnavailableView {
-                    Label("No clips yet", systemImage: "book.closed")
+                    Label("Notebook is empty", systemImage: "book.closed")
                 } description: {
-                    Text(canCapture ? "Save a moment from the episode you’re listening to." : "Play a podcast episode to save a moment here.")
+                    Text(canCapture ? "Save a moment from the episode you’re listening to, or save a headline." : "Save a podcast moment or headline to keep it here.")
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
-                        ForEach(entries.filter { !$0.isDeleted }) { entry in
+                        if !savedStories.isEmpty {
+                            sectionTitle("Saved stories")
+                            ForEach(savedStories) { story in
+                                WiltedMacPlayerHeadlineCard(
+                                    model: model, story: story, isSpeakingHeadline: false,
+                                    stopReading: {})
+                            }
+                        }
+                        let savedEntries = entries.filter { !$0.isDeleted }
+                        if !savedEntries.isEmpty {
+                            sectionTitle("Saved moments")
+                        }
+                        ForEach(savedEntries) { entry in
                             clipCard(entry)
                         }
                     }
@@ -77,7 +99,17 @@ struct WiltedMacNotebookView: View {
         .padding(WiltedTheme.Spacing.large)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(WiltedTheme.color(.page, scheme: colorScheme))
-        .task { await reload() }
+        .task {
+            model.headlineCatalogState.refresh()
+            await reload()
+        }
+    }
+
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title)
+            .wiltedFont(.body)
+            .fontWeight(.semibold)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func clipCard(_ entry: LibraryNotebookEntry) -> some View {

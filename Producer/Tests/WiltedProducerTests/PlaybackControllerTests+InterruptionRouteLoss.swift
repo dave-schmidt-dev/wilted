@@ -19,6 +19,7 @@ extension PlaybackControllerTests {
             try rig.controller.play()
             rig.backend.currentTime = 12
             rig.controller.deliverBulletin(try bulletin("loss", at: rig.wall.now))
+            rig.controller.adBreakReached()
             rig.speaker.reentrantStop = true
             let oldCompletion = try XCTUnwrap(rig.speaker.completions.first)
             rig.route.route = loss
@@ -40,6 +41,7 @@ extension PlaybackControllerTests {
         rig.backend.currentTime = 13
         rig.controller.deliverBulletin(try bulletin("one", at: rig.wall.now))
         rig.controller.deliverBulletin(try bulletin("two", at: rig.wall.now))
+        rig.controller.adBreakReached()
         // No notification delivered yet: the completion must query actual hardware.
         rig.route.route = MacAudioRoute(device: 20)
         rig.speaker.finishSpeaking()
@@ -55,6 +57,7 @@ extension PlaybackControllerTests {
         try rig.controller.play()
         rig.backend.currentTime = 17
         rig.controller.deliverBulletin(try bulletin("one", at: rig.wall.now))
+        rig.controller.adBreakReached()
         rig.backend.afterRestore = { rig.route.route = nil }
         rig.speaker.finishSpeaking()
         XCTAssertEqual(rig.backend.playCount, 1)
@@ -71,6 +74,7 @@ extension PlaybackControllerTests {
         rig.backend.currentTime = 9
         rig.controller.deliverBulletin(try bulletin("one", at: rig.wall.now))
         rig.controller.deliverBulletin(try bulletin("two", at: rig.wall.now))
+        rig.controller.adBreakReached()
         let old = try XCTUnwrap(rig.speaker.completions.first)
         let baseline = rig.controller.interruptions?.heldRoute
         rig.backend.currentTime = 9.03
@@ -97,9 +101,9 @@ extension PlaybackControllerTests {
         rig.controller.deliverBulletin(try bulletin("one", at: rig.wall.now))
         rig.route.changed?()
         XCTAssertEqual(rig.speaker.stopCount, 0)
-        rig.speaker.finishSpeaking()
+        XCTAssertTrue(rig.speaker.spoken.isEmpty, "arrival does not start speech away from an ad break")
         XCTAssertTrue(rig.backend.isPlaying)
-        XCTAssertEqual(rig.backend.playCount, 2)
+        XCTAssertEqual(rig.backend.playCount, 1)
     }
 
     func testNonResumingDisableBalancesSourceAndFencesStaleListenerAndSpeaker() async throws {
@@ -108,6 +112,7 @@ extension PlaybackControllerTests {
         try rig.controller.play()
         rig.backend.currentTime = 8
         rig.controller.deliverBulletin(try bulletin("one", at: rig.wall.now))
+        rig.controller.adBreakReached()
         let staleRoute = rig.route.changed
         let staleSpeech = rig.speaker.completions.first
         rig.speaker.reentrantStop = true
@@ -117,10 +122,10 @@ extension PlaybackControllerTests {
         XCTAssertEqual(rig.backend.playCount, 1)
         XCTAssertFalse(rig.backend.isPlaying)
         XCTAssertEqual(rig.backend.currentTime, 8)
-        rig.controller.enableInterruptions(speaker: rig.speaker, waitLimit: 60, clock: rig.wall.clock,
-                                           cues: nil, routeSource: rig.route)
+        rig.controller.enableInterruptions(speaker: rig.speaker, clock: rig.wall.clock, routeSource: rig.route)
         try rig.controller.play()
         rig.controller.deliverBulletin(try bulletin("two", at: rig.wall.now))
+        rig.controller.adBreakReached()
         staleRoute?()
         staleSpeech?()
         XCTAssertEqual(rig.controller.speakingBulletin?.id, "two")
@@ -133,6 +138,7 @@ extension PlaybackControllerTests {
         try rig.controller.play()
         rig.backend.currentTime = 8
         rig.controller.deliverBulletin(try bulletin("one", at: rig.wall.now))
+        rig.controller.adBreakReached()
         rig.speaker.onStop = {
             // A newer command claims the same item while the old stop is on the stack.
             rig.controller.commandGeneration &+= 1
@@ -167,6 +173,7 @@ extension PlaybackControllerTests {
         rig.backend.currentTime = 11
         rig.controller.deliverBulletin(try bulletin("one", at: rig.wall.now))
         rig.controller.deliverBulletin(try bulletin("two", at: rig.wall.now))
+        rig.controller.adBreakReached()
         let beforeChainedSpeak = rig.route.reads + 2
         rig.route.beforeRead = {
             if rig.route.reads == beforeChainedSpeak { rig.route.route = MacAudioRoute(device: 20) }
@@ -179,7 +186,7 @@ extension PlaybackControllerTests {
         XCTAssertNil(rig.controller.speakingBulletin)
     }
 
-    func testDisableCancelsTickerRestartedForPendingBulletins() async throws {
+    func testPendingBulletinsHaveNoTickerAndDisableClearsSpeakerState() async throws {
         for resuming in [true, false] {
             let rig = try await interruptionRig()
             defer { try? FileManager.default.removeItem(at: rig.root) }
@@ -188,11 +195,8 @@ extension PlaybackControllerTests {
             rig.controller.deliverBulletin(try bulletin("pending", .headline, .unknown, at: rig.wall.now))
             let engine = try XCTUnwrap(rig.controller.interruptions)
             XCTAssertFalse(engine.reducer.pending.isEmpty)
-            XCTAssertNotNil(engine.tickTask)
             rig.controller.disableInterruptions(resuming: resuming)
-            XCTAssertNil(engine.tickTask, "ending a hold must not leave a replacement pending ticker")
             XCTAssertNil(engine.watchdog)
-            XCTAssertNil(engine.pausePointTask)
             XCTAssertFalse(rig.controller.interruptionsEnabled)
         }
     }
@@ -205,6 +209,7 @@ extension PlaybackControllerTests {
         try rig.controller.play()
         rig.backend.currentTime = 14
         rig.controller.deliverBulletin(try bulletin("one", at: rig.wall.now))
+        rig.controller.adBreakReached()
         let late = try XCTUnwrap(rig.speaker.completions.first)
         rig.route.monitoringAvailable = false
         rig.route.changed?()

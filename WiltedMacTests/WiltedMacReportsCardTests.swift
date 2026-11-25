@@ -91,7 +91,10 @@ final class WiltedMacReportsCardTests: XCTestCase {
             "a forecast or a working headline feed",
             "does not disable weather alerts",
             "Reads headline announcements and stories you choose with Listen next",
-            "Weather alerts use the Mac system voice"
+            "Weather alerts use the selected story voice",
+            "Headline alert",
+            "15 seconds",
+            "Point to one to keep it open"
         ] {
             XCTAssertTrue(rendered.localizedCaseInsensitiveContains(detail), "Missing \(detail) in: \(rendered)")
         }

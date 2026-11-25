@@ -4,7 +4,7 @@ import XCTest
 import WiltedDomain
 import WiltedLibrary
 import WiltedProducer
-import WiltedWeather
+@testable import WiltedWeather
 
 @MainActor
 final class HubFakeLocationManager: WiltedLocationManaging {
@@ -31,6 +31,7 @@ private final class HubSilentSpeaker: BulletinSpeaking {
 @MainActor
 private final class HubStartingSpeaker: BulletinSpeaking {
     private(set) var texts: [String] = []
+    private(set) var bulletins: [Bulletin] = []
     private var completion: (@MainActor () -> Void)?
 
     func speak(_ text: String, playbackVolume: Float, finished: @escaping @MainActor () -> Void) -> Bool {
@@ -41,7 +42,8 @@ private final class HubStartingSpeaker: BulletinSpeaking {
 
     func speak(_ bulletin: Bulletin, playbackVolume: Float,
                finished: @escaping @MainActor () -> Void) -> Bool {
-        guard bulletin.kind == .headline else { return false }
+        guard bulletin.kind == .headline || bulletin.kind == .alert else { return false }
+        bulletins.append(bulletin)
         return speak(bulletin.text, playbackVolume: playbackVolume, finished: finished)
     }
 
@@ -61,10 +63,17 @@ final class HubCountingSource: NWSAlertSource, @unchecked Sendable {
     struct Failure: Error {}
     private let lock = NSLock()
     private var value = 0
+    private var response: NWSAlertsResponse?
     var calls: Int { lock.withLock { value } }
 
+    func setResponse(_ response: NWSAlertsResponse) { lock.withLock { self.response = response } }
+
     func activeAlerts(lat: Double, lon: Double) async throws -> NWSAlertsResponse {
-        lock.withLock { value += 1 }
+        let response = lock.withLock { () -> NWSAlertsResponse? in
+            value += 1
+            return self.response
+        }
+        if let response { return response }
         throw Failure()
     }
 }
@@ -82,7 +91,8 @@ final class WiltedMacBulletinHubTests: XCTestCase {
 
     private func makeRig(
         speaker: any BulletinSpeaking = HubSilentSpeaker(),
-        narration: WiltedMacHeadlineNarration? = nil
+        narration: WiltedMacHeadlineNarration? = nil,
+        weatherNarration: WiltedMacWeatherAlertNarration? = nil
     ) async throws -> Rig {
         let library = try await AccountingLibrary.make(in: wiltedTemporaryDirectory("bulletin-hub"))
         let model = library.model
@@ -94,9 +104,12 @@ final class WiltedMacBulletinHubTests: XCTestCase {
             model: model, location: provider, makeSpeaker: { speaker },
             makeRouteSource: { HubStableRoute() }, makeAlertSource: { _ in source },
             producerFactory: { producerHarness.producer() },
-            makeHeadlineNarration: { narration ?? WiltedMacHeadlineNarration() })
+            makeHeadlineNarration: { narration ?? WiltedMacHeadlineNarration() },
+            makeWeatherAlertNarration: { weatherNarration ?? WiltedMacWeatherAlertNarration() })
         model.installBulletinHubForTesting(hub)
-        if narration != nil { model.selectReadingVoice(ApprovedReadingVoiceID.caseyKasem.rawValue) }
+        if narration != nil || weatherNarration != nil {
+            model.selectReadingVoice(ApprovedReadingVoiceID.caseyKasem.rawValue)
+        }
         return Rig(library: library, model: model, hub: hub, source: source)
     }
 
@@ -165,6 +178,108 @@ final class WiltedMacBulletinHubTests: XCTestCase {
         XCTAssertFalse(rig.model.playback?.interruptionsEnabled ?? true)
     }
 
+    func testWeatherAlertIsPreRenderedBeforeBecomingAvailableToPlayback() async throws {
+        let gate = HubWeatherRenderGate()
+        let narration = WiltedMacWeatherAlertNarration(
+            render: { _, voiceID, outputURL in
+                try Data(repeating: 0x58, count: 128).write(to: outputURL)
+                return try await gate.wait(voiceID: voiceID, outputURL: outputURL)
+            }, availability: { _ in .available })
+        defer { narration.shutdown() }
+        let speaker = HubStartingSpeaker()
+        let rig = try await makeRig(speaker: speaker, weatherNarration: narration)
+        let now = Date()
+        let issuedAlert = NWSAlert(
+            id: "local-weather-ready", event: "Severe Weather Warning", areaDesc: "Washington",
+            severity: "Extreme", headline: "A severe weather warning is active.",
+            sent: now, expires: now.addingTimeInterval(3_600))
+        rig.source.setResponse(NWSAlertsResponse(alerts: [issuedAlert], pollInterval: 3_600))
+        set(rig.model, interruptions: true)
+        rig.model.playEpisode(rig.library.episodes[0])
+        await rig.model.waitForPlaybackOperationForTesting()
+        await WiltedMacHeadless.eventually("the alert monitor starts") { rig.hub.alertMonitorIsRunning }
+
+        let alert = try Bulletin(
+            id: "local-weather-ready", kind: .alert, text: "A severe weather warning is active.",
+            severity: .extreme, issuedAt: now, expiresAt: now.addingTimeInterval(3_600))
+        try await gate.waitForCount(1)
+        XCTAssertTrue(speaker.bulletins.isEmpty, "the player cannot receive an unprepared weather alert")
+        XCTAssertNil(rig.model.speakingBulletin)
+
+        await gate.resumeFirst()
+        await WiltedMacHeadless.eventually("weather audio finishes local rendering") {
+            narration.readyBulletins.contains(where: { $0.id == alert.id })
+        }
+        XCTAssertTrue(speaker.bulletins.isEmpty, "the hub waits for an actual ad-break signal")
+        XCTAssertNil(rig.model.speakingBulletin)
+        XCTAssertTrue(rig.model.playback?.adBreakReached() == true,
+                      "a ready weather alert starts at the next ad-break snapshot")
+        XCTAssertEqual(speaker.bulletins.map(\.id), [alert.id])
+        set(rig.model, interruptions: false)
+    }
+
+    func testTurningWeatherOffDiscardsACompletedLateRender() async throws {
+        let gate = HubWeatherRenderGate()
+        let narration = WiltedMacWeatherAlertNarration(
+            render: { _, voiceID, outputURL in
+                try Data(repeating: 0x59, count: 128).write(to: outputURL)
+                return try await gate.wait(voiceID: voiceID, outputURL: outputURL)
+            }, availability: { _ in .available })
+        defer { narration.shutdown() }
+        let speaker = HubStartingSpeaker()
+        let rig = try await makeRig(speaker: speaker, weatherNarration: narration)
+        set(rig.model, interruptions: true)
+        rig.model.playEpisode(rig.library.episodes[0])
+        await rig.model.waitForPlaybackOperationForTesting()
+        await WiltedMacHeadless.eventually("the alert monitor starts") { rig.hub.alertMonitorIsRunning }
+
+        let now = Date()
+        let alert = try Bulletin(
+            id: "local-weather-off", kind: .alert, text: "A severe weather warning is active.",
+            severity: .extreme, issuedAt: now, expiresAt: now.addingTimeInterval(3_600))
+        rig.hub.receive(alert: alert)
+        try await gate.waitForCount(1)
+        set(rig.model, interruptions: true, alerts: false)
+        XCTAssertFalse(rig.hub.alertMonitorIsRunning)
+        await gate.resumeFirst()
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertTrue(speaker.bulletins.isEmpty, "an alert rendered after alerts were turned off is discarded")
+        XCTAssertTrue(narration.readyBulletins.isEmpty)
+        set(rig.model, interruptions: false)
+    }
+
+    func testWeatherRenderFailureNeverReachesThePlayerQueue() async throws {
+        let rendered = HubWeatherRenderSignal()
+        let narration = WiltedMacWeatherAlertNarration(
+            render: { _, voiceID, _ in
+                await rendered.record()
+                return ArticleNarrationAudio(
+                    audioURL: URL(fileURLWithPath: "/private/tmp/not-the-requested-alert.m4a"), duration: 1,
+                    voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID))
+            }, availability: { _ in .available })
+        defer { narration.shutdown() }
+        let speaker = HubStartingSpeaker()
+        let rig = try await makeRig(speaker: speaker, weatherNarration: narration)
+        let now = Date()
+        let issuedAlert = NWSAlert(
+            id: "local-weather-failed", event: "Severe Weather Warning", areaDesc: "Washington",
+            severity: "Extreme", headline: "A severe weather warning is active.",
+            sent: now, expires: now.addingTimeInterval(3_600))
+        rig.source.setResponse(NWSAlertsResponse(alerts: [issuedAlert], pollInterval: 3_600))
+        set(rig.model, interruptions: true)
+        rig.model.playEpisode(rig.library.episodes[0])
+        await rig.model.waitForPlaybackOperationForTesting()
+        await WiltedMacHeadless.eventually("the alert monitor starts") { rig.hub.alertMonitorIsRunning }
+        try await rendered.waitForCall()
+
+        XCTAssertTrue(narration.readyBulletins.isEmpty, "a failed local render is never a ready bulletin")
+        XCTAssertFalse(rig.model.playback?.adBreakReached() ?? true,
+                       "the reducer has no alert to mark spoken at this ad break")
+        XCTAssertTrue(speaker.bulletins.isEmpty)
+        XCTAssertNil(rig.model.speakingBulletin)
+        set(rig.model, interruptions: false)
+    }
+
     func testLegacyHeadlineBulletinIDStillBecomesTheFeaturedStory() async throws {
         let speaker = HubStartingSpeaker()
         let now = Date()
@@ -173,7 +288,7 @@ final class WiltedMacBulletinHubTests: XCTestCase {
                 try Data(repeating: 0x39, count: 128).write(to: outputURL)
                 return ArticleNarrationAudio(
                     audioURL: outputURL, duration: 1,
-                    voiceRevision: ArticleNarrationCoordinator.voiceRevision(for: voiceID))
+                    voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID))
             },
             availability: { _ in .available }, now: { now })
         defer { narrator.shutdown() }
@@ -211,6 +326,11 @@ final class WiltedMacBulletinHubTests: XCTestCase {
             link: story.link, publishedAt: story.publishedAt)
         rig.hub.channelUpdated(try LibraryBulletins(
             alertsEnabled: false, headlinesEnabled: true, headlines: [legacy], updatedAt: now))
+        await WiltedMacHeadless.eventually("the eligible story is ready") {
+            narrator.readyBulletins.contains(where: { $0.id == legacy.id })
+        }
+        XCTAssertTrue(speaker.texts.isEmpty, "a ready headline waits for an ad-break snapshot")
+        XCTAssertTrue(rig.model.playback?.adBreakReached() == true)
         await WiltedMacHeadless.eventually("the eligible story is spoken and featured") {
             speaker.texts == [legacy.text] && rig.hub.featuredHeadlineStoryID == story.id
         }
@@ -235,5 +355,52 @@ final class WiltedMacBulletinHubTests: XCTestCase {
         var book = report
         book.audiobook?.sourceFormat = "audio"
         XCTAssertTrue(WiltedMacLarderKind.audiobooks.includes(book), "a real book still shows under Audiobooks")
+    }
+}
+
+private actor HubWeatherRenderGate {
+    private enum Timeout: Error { case waitingForRequest }
+    private var requests: [(
+        voiceID: ApprovedReadingVoiceID,
+        outputURL: URL,
+        continuation: CheckedContinuation<ArticleNarrationAudio, Error>
+    )] = []
+    var count: Int { requests.count }
+
+    func wait(voiceID: ApprovedReadingVoiceID, outputURL: URL) async throws -> ArticleNarrationAudio {
+        try await withCheckedThrowingContinuation { continuation in
+            requests.append((voiceID, outputURL, continuation))
+        }
+    }
+
+    func waitForCount(_ expected: Int) async throws {
+        for _ in 0..<100 {
+            if requests.count >= expected { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        throw Timeout.waitingForRequest
+    }
+
+    func resumeFirst() {
+        guard !requests.isEmpty else { return }
+        let request = requests.removeFirst()
+        request.continuation.resume(returning: ArticleNarrationAudio(
+            audioURL: request.outputURL, duration: 1,
+            voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: request.voiceID)))
+    }
+}
+
+private actor HubWeatherRenderSignal {
+    private enum Timeout: Error { case waitingForRender }
+    private var calls = 0
+
+    func record() { calls += 1 }
+
+    func waitForCall() async throws {
+        for _ in 0..<100 {
+            if calls > 0 { return }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        throw Timeout.waitingForRender
     }
 }

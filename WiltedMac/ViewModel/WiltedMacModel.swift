@@ -105,6 +105,7 @@ final class WiltedMacModel {
     /// rebuild from) loses an in-flight request across a relaunch.
     var preparationRequestSequences: [String: Int] = [:]
     let preferences: UserDefaults
+    @ObservationIgnored var headlineToastPreferenceState: WiltedMacHeadlineToastPreferenceState
     /// The defaults suite a fixture launch owns; removed when the fixture closes.
     let fixturePreferencesSuite: String?
     /// Whether a quiet marker identifies each advertisement seam during playback.
@@ -292,6 +293,7 @@ final class WiltedMacModel {
         fileURL: libraryURL.deletingLastPathComponent().appendingPathComponent(WiltedMacAdFeedbackInbox.fileName)))
     var seamMarkerTask: Task<Void, Never>?
     var lastMarkedSeam: (episodeID: String, seconds: TimeInterval)?
+    var adBreakTracker = WiltedMacAdBreakTracker()
     /// The output is injectable for tests. A prior test-host gate played a
     /// 220 Hz tone from the owner's speakers, so tests and fixtures stay silent.
     var seamMarkerOutput: any WiltedMacSeamMarkerOutput
@@ -635,6 +637,7 @@ final class WiltedMacModel {
         let fixtureSuite = usesFixtureMode ? Self.fixturePreferencesSuiteName() : nil
         fixturePreferencesSuite = fixtureSuite
         self.preferences = fixtureSuite.map { Self.fixturePreferences(suiteName: $0) } ?? preferences
+        headlineToastPreferenceState = WiltedMacHeadlineToastPreferenceState(preferences: self.preferences)
         // Read before the fixture install below, which builds its deferral's
         // policy snapshot from these settings; the rest of the stored
         // preferences are read after it.

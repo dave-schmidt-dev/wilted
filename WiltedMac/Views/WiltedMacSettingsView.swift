@@ -3,6 +3,19 @@ import SwiftUI
 import WiltedDomain
 import WiltedProducer
 
+enum WiltedMacSettingsScrollCoordinateSpace {
+    static let name = "wilted-settings-scroll-viewport"
+}
+
+private struct WiltedMacSettingsSectionPositionKey: PreferenceKey {
+    static let defaultValue: [WiltedMacSettingsSection: CGFloat] = [:]
+
+    static func reduce(value: inout [WiltedMacSettingsSection: CGFloat],
+                       nextValue: () -> [WiltedMacSettingsSection: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, next in next })
+    }
+}
+
 // MARK: - Settings
 
 /// Sync used to sit inside Library, above the article composer, which is both
@@ -17,6 +30,8 @@ struct WiltedMacSettingsView: View {
     /// Read by the preparation worker at each launch (see `WorkerPriority`).
     @AppStorage(WorkerPriority.userSettingKey) private var processesInBackground = true
     @State var feedPolicyBoard: WiltedMacFeedPolicyBoard
+    @State private var scrollTarget: WiltedMacSettingsSection?
+    @State private var sectionChangedByScroll: WiltedMacSettingsSection?
 
     init(
         model: WiltedMacModel,
@@ -26,39 +41,69 @@ struct WiltedMacSettingsView: View {
         self.model = model
         self.location = location ?? model.bulletinHub.location
         _feedPolicyBoard = State(initialValue: policyBoard ?? WiltedMacFeedPolicyBoard(model: model))
+        let savedAnchor = model.scrollAnchor(for: .settings).wrappedValue
+        _scrollTarget = State(initialValue: savedAnchor == nil ? nil : model.settingsSection)
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            settingsTabs
-            GeometryReader { viewport in
-                let position = model.settingsScrollPosition
-                let initialSection = position.wrappedValue.flatMap(WiltedMacSettingsSection.init(rawValue:))
-                ScrollViewReader { reader in
+        ScrollViewReader { reader in
+            VStack(spacing: 0) {
+                settingsTabs { tab in
+                    model.settingsSection = tab.sections[0]
+                }
+                GeometryReader { viewport in
                     WiltedMacDestination(
                         title: WiltedScreenCopy.settings,
                         identifier: "wilted-mac-settings",
                         watermark: true,
-                        scrollAnchor: position
+                        scrollCoordinateSpaceName: WiltedMacSettingsScrollCoordinateSpace.name
                     ) {
-                        settingsTabContent(viewportHeight: viewport.size.height)
+                        settingsContent(viewportHeight: viewport.size.height)
                     }
                     .onAppear {
-                        if let initialSection {
-                            reader.scrollTo(initialSection.rawValue, anchor: .top)
+                        if let scrollTarget {
+                            reader.scrollTo(scrollTarget.rawValue, anchor: .top)
+                        }
+                    }
+                    .onChange(of: model.settingsSection) { _, section in
+                        if sectionChangedByScroll == section {
+                            sectionChangedByScroll = nil
+                            return
+                        }
+                        scrollTarget = section
+                        reader.scrollTo(section.rawValue, anchor: .top)
+                    }
+                    .onPreferenceChange(WiltedMacSettingsSectionPositionKey.self) { positions in
+                        let sections = WiltedMacSettingsTab.allCases.flatMap(\.sections)
+                        if let scrollTarget {
+                            guard (positions[scrollTarget] ?? .greatestFiniteMagnitude) <= 1 else { return }
+                            self.scrollTarget = nil
+                        }
+                        if let current = sections.last(where: {
+                            // Match the target-arrival tolerance. A sub-point positive
+                            // offset is visually at the top and should not clear the
+                            // saved anchor as if the user returned to the page title.
+                            (positions[$0] ?? .greatestFiniteMagnitude) <= 1
+                        }) {
+                            let savedAnchor = model.scrollAnchor(for: .settings).wrappedValue
+                            guard savedAnchor != current.rawValue else { return }
+                            sectionChangedByScroll = current
+                            model.settingsSection = current
+                        } else if model.scrollAnchor(for: .settings).wrappedValue != nil {
+                            sectionChangedByScroll = .general
+                            model.persistSettingsScrollPosition("destination-top")
                         }
                     }
                 }
-                .id(model.settingsTab)
             }
         }
     }
 
-    private var settingsTabs: some View {
+    private func settingsTabs(select: @escaping (WiltedMacSettingsTab) -> Void) -> some View {
         HStack(spacing: WiltedTheme.Spacing.xSmall) {
             ForEach(WiltedMacSettingsTab.allCases) { tab in
                 Button {
-                    model.settingsTab = tab
+                    select(tab)
                 } label: {
                     Text(tab.title)
                         .wiltedFont(.utility)
@@ -82,8 +127,8 @@ struct WiltedMacSettingsView: View {
         .padding(.vertical, WiltedTheme.Spacing.xSmall)
     }
 
-    @ViewBuilder private func settingsTabContent(viewportHeight: CGFloat) -> some View {
-        ForEach(model.settingsTab.sections) { section in
+    @ViewBuilder private func settingsContent(viewportHeight: CGFloat) -> some View {
+        ForEach(WiltedMacSettingsTab.allCases.flatMap(\.sections)) { section in
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                 if section != .reports {
                     Text(section.title)
@@ -96,8 +141,17 @@ struct WiltedMacSettingsView: View {
             .accessibilityIdentifier("wilted-settings-section-\(section.rawValue)")
             .padding(.bottom, WiltedTheme.Spacing.xLarge)
             // A short final section still needs enough scroll range to put its heading at the top.
-            .frame(minHeight: section == model.settingsTab.sections.last ? viewportHeight : nil,
+            .frame(minHeight: section == .about ? viewportHeight : nil,
                    alignment: .topLeading)
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: WiltedMacSettingsSectionPositionKey.self,
+                        value: [section: proxy.frame(
+                            in: .named(WiltedMacSettingsScrollCoordinateSpace.name)).minY]
+                    )
+                }
+            }
             .id(section.rawValue)
         }
     }

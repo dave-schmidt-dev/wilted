@@ -60,7 +60,7 @@ final class BulletinHeadlineTopicTests: XCTestCase {
         XCTAssertEqual(status.skippedHeadlineCount, 2)
     }
 
-    func testWithSportsAllowedTheNewestPostIsRead() async throws {
+    func testWithSportsAllowedAllEligiblePostsAreRead() async throws {
         let h = BulletinProducerHarness()
         let producer = h.producer()
         await producer.poll()
@@ -71,7 +71,7 @@ final class BulletinHeadlineTopicTests: XCTestCase {
                                   publishedAt: h.now.addingTimeInterval(-300)),
         ]
         await producer.poll()
-        XCTAssertEqual(h.published?.headlines.map(\.id), ["headline:s1"])
+        XCTAssertEqual(h.published?.headlines.map(\.id), ["headline:s1", "headline:n1"])
         let status = await producer.status
         XCTAssertEqual(status.skippedHeadlineCount, 0)
     }

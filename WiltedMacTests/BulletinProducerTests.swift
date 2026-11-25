@@ -7,7 +7,7 @@ import XCTest
 final class BulletinProducerHarness: @unchecked Sendable {
     private let lock = NSLock()
     private var _settings = BulletinProducerSettings(
-        interruptionsEnabled: true, alertsEnabled: true, headlinesEnabled: true, headlineMinimumGapMinutes: 30)
+        interruptionsEnabled: true, alertsEnabled: true, headlinesEnabled: true)
     private var _items: [NewsHeadlineCandidate] = []
     private var _published: LibraryBulletins?
     private var _publishCount = 0
@@ -115,34 +115,97 @@ final class BulletinProducerTests: XCTestCase {
         XCTAssertEqual(h.retainedCandidates.last, h.items)
     }
 
-    func testTwoNewsItemsWithinTheGapYieldOneHeadlineBulletin() async throws {
+    func testEveryEligibleFreshStoryPublishesInDeterministicDateOrder() async throws {
         let h = BulletinProducerHarness()
         let producer = h.producer()
         await producer.poll()  // baseline
-        h.items = [h.item("a", minutesAgo: 3), h.item("b", minutesAgo: 1)]
+        h.items = [h.item("c", minutesAgo: 1), h.item("a", minutesAgo: 3), h.item("b", minutesAgo: 2)]
         await producer.poll()
         let headlines = try XCTUnwrap(h.published?.headlines)
-        XCTAssertEqual(headlines.count, 1)
-        XCTAssertEqual(headlines.first?.id, "headline:b", "the newest post wins")
+        XCTAssertEqual(headlines.map(\.id), ["headline:c", "headline:b", "headline:a"])
         XCTAssertEqual(headlines.first?.kind, .headline)
-        XCTAssertEqual(headlines.first?.text, "Wire. Story b")
-        XCTAssertEqual(headlines.first?.headlineStoryID, "b")
+        XCTAssertEqual(headlines.first?.text, "Wire. Story c")
+        XCTAssertEqual(headlines.first?.headlineStoryID, "c")
         XCTAssertEqual(headlines.first?.publisherID, "feed-wire")
         XCTAssertEqual(headlines.first?.publisherName, "Wire")
-        XCTAssertEqual(headlines.first?.link?.absoluteString, "https://example.test/story/b")
+        XCTAssertEqual(headlines.first?.link?.absoluteString, "https://example.test/story/c")
 
-        // A third post inside the gap is dropped for good, not held for later.
         h.advance(minutes: 10)
-        h.items.append(h.item("c"))
-        await producer.poll()
-        XCTAssertEqual(h.published?.headlines.map(\.id), ["headline:b"])
-        h.advance(minutes: 25)
-        await producer.poll()
-        XCTAssertEqual(h.published?.headlines.map(\.id), ["headline:b"], "c was seen inside the gap")
-
         h.items.append(h.item("d"))
         await producer.poll()
-        XCTAssertEqual(Set(h.published?.headlines.map(\.id) ?? []), ["headline:b", "headline:d"])
+        XCTAssertEqual(h.published?.headlines.map(\.id), ["headline:d", "headline:c", "headline:b", "headline:a"])
+    }
+
+    func testEqualPublicationTimesUseStableStoryIDOrder() async throws {
+        let h = BulletinProducerHarness()
+        let producer = h.producer()
+        await producer.poll()  // baseline
+        h.items = [h.item("z", minutesAgo: 1), h.item("a", minutesAgo: 1), h.item("m", minutesAgo: 1)]
+
+        await producer.poll()
+
+        XCTAssertEqual(h.published?.headlines.map(\.id), ["headline:a", "headline:m", "headline:z"])
+    }
+
+    func testPendingHeadlinesRotateThroughTransportLimitAcrossSuccessfulPolls() async throws {
+        let h = BulletinProducerHarness()
+        let producer = h.producer()
+        await producer.poll()  // baseline
+        h.items = (1...23).reversed().map { h.item("story-\($0)", minutesAgo: Double($0)) }
+
+        await producer.poll()
+        let firstBatch = try XCTUnwrap(h.published?.headlines.map(\.id))
+        XCTAssertEqual(firstBatch.count, LibraryBulletins.maximumHeadlines)
+        XCTAssertEqual(Set(firstBatch), Set((4...23).map { "headline:story-\($0)" }))
+
+        await producer.poll()
+        let secondBatch = try XCTUnwrap(h.published?.headlines.map(\.id))
+        XCTAssertEqual(secondBatch.count, LibraryBulletins.maximumHeadlines)
+        XCTAssertEqual(Set(secondBatch), Set((1...20).map { "headline:story-\($0)" }))
+        XCTAssertEqual(Set(firstBatch + secondBatch), Set((1...23).map { "headline:story-\($0)" }))
+    }
+
+    func testPublishFailureRetainsAllFreshStoriesForTheNextPoll() async throws {
+        let h = BulletinProducerHarness()
+        let producer = h.producer()
+        await producer.poll()  // baseline
+        h.items = [h.item("a", minutesAgo: 3), h.item("b", minutesAgo: 2), h.item("c", minutesAgo: 1)]
+        h.publishError = Boom()
+
+        await producer.poll()
+
+        XCTAssertEqual(h.published?.headlines, [])
+        h.publishError = nil
+        await producer.poll()
+        XCTAssertEqual(h.published?.headlines.map(\.id), ["headline:c", "headline:b", "headline:a"])
+    }
+
+    func testMutedPublisherWithdrawsPendingAndPublishedHeadlines() async throws {
+        let h = BulletinProducerHarness()
+        let producer = h.producer()
+        await producer.poll()  // baseline
+        h.items = (1...21).map { h.item("story-\($0)", minutesAgo: Double($0)) }
+        await producer.poll()
+        XCTAssertEqual(h.published?.headlines.count, LibraryBulletins.maximumHeadlines)
+
+        await producer.publisherMuted("feed-wire")
+        await producer.poll()
+
+        XCTAssertEqual(h.published?.headlines, [])
+    }
+
+    func testExpiredPendingHeadlinesAreNeverPublishedLater() async throws {
+        let h = BulletinProducerHarness()
+        let producer = h.producer()
+        await producer.poll()  // baseline
+        h.items = (1...21).map { h.item("story-\($0)", minutesAgo: Double($0)) }
+        await producer.poll()
+        XCTAssertEqual(h.published?.headlines.count, LibraryBulletins.maximumHeadlines)
+
+        h.advance(minutes: 61)
+        await producer.poll()
+
+        XCTAssertEqual(h.published?.headlines, [])
     }
 
     func testAnUnchangedListIsNotRepublished() async throws {

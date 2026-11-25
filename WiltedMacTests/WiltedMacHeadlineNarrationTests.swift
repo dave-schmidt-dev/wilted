@@ -17,7 +17,7 @@ final class WiltedMacHeadlineNarrationTests: XCTestCase {
                 try Data(repeating: 0x39, count: 128).write(to: outputURL)
                 return ArticleNarrationAudio(
                     audioURL: outputURL, duration: 1,
-                    voiceRevision: ArticleNarrationCoordinator.voiceRevision(for: voiceID))
+                    voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID))
             },
             availability: { _ in .available }, now: { now })
         defer { narrator.shutdown() }
@@ -37,7 +37,7 @@ final class WiltedMacHeadlineNarrationTests: XCTestCase {
         XCTAssertTrue(wiredSpeaker.speak(bulletin, playbackVolume: 0.7, finished: {}))
         XCTAssertEqual(player.playCalls, 1)
         XCTAssertEqual(player.url, narrator.audioURL(for: bulletin, accountIdentity: nil))
-        XCTAssertEqual(player.volume, BulletinSpeechGain.volume(forPlaybackVolume: 0.7))
+        XCTAssertEqual(player.volume, BulletinSpeechGain.measuredAudioVolume(forPlaybackVolume: 0.7))
         hub.shutdown()
     }
 
@@ -51,7 +51,7 @@ final class WiltedMacHeadlineNarrationTests: XCTestCase {
                 try Data(repeating: 0x2a, count: 100).write(to: outputURL)
                 return ArticleNarrationAudio(
                     audioURL: outputURL, duration: 1,
-                    voiceRevision: ArticleNarrationCoordinator.voiceRevision(for: voiceID))
+                    voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID))
             },
             availability: { _ in .available }, now: { now })
         defer { narrator.shutdown() }
@@ -72,14 +72,17 @@ final class WiltedMacHeadlineNarrationTests: XCTestCase {
         XCTAssertEqual(storyID, "story-1")
         XCTAssertEqual(bulletinID, bulletin.id)
         XCTAssertEqual(voiceID, .caseyKasem)
-        XCTAssertEqual(revision, ArticleNarrationCoordinator.voiceRevision(for: .caseyKasem))
+        XCTAssertEqual(revision, ArticleNarrationCoordinator.shortTextVoiceRevision(for: .caseyKasem))
         XCTAssertNotNil(narrator.audioURL(for: bulletin, accountIdentity: "owner-a"))
         XCTAssertNil(narrator.audioURL(for: bulletin, accountIdentity: "owner-b"))
 
         narrator.update(current: [], newlyPublished: [], enabled: true,
                         selectedVoice: .caseyKasem, accountIdentity: "owner-a", isEligible: { _ in true })
-        XCTAssertNil(narrator.audioURL(for: bulletin, accountIdentity: "owner-a"))
-        XCTAssertEqual(narrator.state(for: "story-1"), .notScheduled(storyID: "story-1"))
+        XCTAssertNotNil(narrator.audioURL(for: bulletin, accountIdentity: "owner-a"),
+                        "a channel refresh does not discard an eligible rendered bulletin")
+        XCTAssertEqual(narrator.state(for: "story-1"),
+                       .ready(storyID: "story-1", bulletinID: bulletin.id, voiceID: .caseyKasem,
+                              voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: .caseyKasem)))
     }
 
     func testCancelledRenderCannotClearTheNewVoiceRender() async throws {
@@ -123,41 +126,199 @@ final class WiltedMacHeadlineNarrationTests: XCTestCase {
         await gate.resumeFirst()
     }
 
-    func testHeadlineWithoutPreparedAudioNeverFallsBackToSystemVoice() throws {
+    func testMultipleHeadlinesStayReadyAcrossChannelRefreshesUntilSpoken() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let first = try makeHeadline(id: "batch-1", title: "Council approves night service", now: now)
+        let second = try makeHeadline(id: "batch-2", title: "Transit board meets today", now: now.addingTimeInterval(10))
+        let third = try makeHeadline(id: "batch-3", title: "New bridge opens Friday", now: now.addingTimeInterval(20))
+        let fourth = try makeHeadline(id: "batch-4", title: "Library extends weekend hours", now: now.addingTimeInterval(30))
+        var heardIDs = Set<String>()
+        let rendered = WeatherRenderCapture()
+        let narrator = WiltedMacHeadlineNarration(
+            render: { text, voiceID, outputURL in
+                await rendered.record(text)
+                try Data(repeating: 0x39, count: 128).write(to: outputURL)
+                return ArticleNarrationAudio(
+                    audioURL: outputURL, duration: 1,
+                    voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID))
+            }, availability: { _ in .available }, now: { now })
+        defer { narrator.shutdown() }
+        let eligible: @MainActor (Bulletin) -> Bool = { !heardIDs.contains($0.id) }
+
+        narrator.update(current: [first, second, third], newlyPublished: [first, second, third], enabled: true,
+                        selectedVoice: .caseyKasem, accountIdentity: "owner-a", isEligible: eligible)
+        for _ in 0..<100 where narrator.readyBulletins.count < 3 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(narrator.readyBulletins.map(\.id), [first.id, second.id, third.id])
+
+        narrator.update(current: [third, fourth], newlyPublished: [fourth], enabled: true,
+                        selectedVoice: .caseyKasem, accountIdentity: "owner-a", isEligible: eligible)
+        for _ in 0..<100 where narrator.readyBulletins.count < 4 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(narrator.readyBulletins.map(\.id), [first.id, second.id, third.id, fourth.id],
+                       "channel refreshes retain earlier still-eligible ready audio")
+
+        narrator.didStart(first)
+        heardIDs.insert(first.id)
+        narrator.update(current: [first, fourth], newlyPublished: [first], enabled: true,
+                        selectedVoice: .caseyKasem, accountIdentity: "owner-a", isEligible: eligible)
+        XCTAssertNil(narrator.audioURL(for: first, accountIdentity: "owner-a"),
+                     "a started headline cannot be queued again on a later refresh")
+        XCTAssertEqual(narrator.readyBulletins.map(\.id), [second.id, third.id, fourth.id])
+        let renderedTexts = await rendered.texts
+        XCTAssertEqual(renderedTexts, [first.text, second.text, third.text, fourth.text])
+    }
+
+    func testUnpreparedBulletinsAndUntypedTextNeverFallBackToSystemVoice() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let headline = try makeHeadline(id: "story-2", title: "Transit board meets today", now: now)
-        let system = NarrationTestSpeaker()
+        let alert = try makeAlert(id: "alert-unprepared", text: "A warning is active.", now: now)
         let audio = NarrationTestAudioPlayer()
         let speaker = WiltedMacHeadlineBulletinSpeaker(
-            alertSpeaker: system, audioURL: { _ in nil }, audioPlayer: audio)
+            audioURL: { _ in nil }, audioPlayer: audio)
 
         XCTAssertFalse(speaker.speak(headline, playbackVolume: 0.8, finished: {}))
-        XCTAssertFalse(speaker.speak(headline.text, playbackVolume: 0.8, finished: {}),
-                       "untyped text cannot be routed to the system voice")
-        XCTAssertEqual(system.bulletinCalls, 0)
-        XCTAssertEqual(system.textCalls, 0)
+        XCTAssertFalse(speaker.speak(alert, playbackVolume: 0.8, finished: {}))
+        XCTAssertFalse(speaker.speak("Untyped bulletin", playbackVolume: 0.8, finished: {}),
+                       "untyped text without a selected voice cannot be spoken")
         XCTAssertEqual(audio.playCalls, 0)
     }
 
-    func testPreparedHeadlineUsesAttenuatedAudioAndAlertsStayOnSystemSpeaker() throws {
+    func testWeatherAlertMustBePreparedBeforeTheSpeakerCanPlayIt() async throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let headline = try makeHeadline(id: "story-3", title: "Council approves night service", now: now)
-        let alert = try Bulletin(
-            id: "alert-1", kind: .alert, text: "A weather warning is active.", issuedAt: now,
-            expiresAt: now.addingTimeInterval(3_600))
-        let system = NarrationTestSpeaker()
-        let audio = NarrationTestAudioPlayer()
-        let url = URL(fileURLWithPath: "/private/tmp/prepared-headline.m4a")
-        let speaker = WiltedMacHeadlineBulletinSpeaker(
-            alertSpeaker: system, audioURL: { $0.id == headline.id ? url : nil }, audioPlayer: audio)
+        let alert = try makeAlert(id: "alert-ready", text: "A weather warning is active.", now: now)
+        let gate = SuspendedHeadlineRenderGate()
+        let narration = WiltedMacWeatherAlertNarration(
+            render: { _, voiceID, outputURL in
+                try Data(repeating: 0x4b, count: 128).write(to: outputURL)
+                return try await gate.wait(voiceID: voiceID, outputURL: outputURL)
+            }, availability: { _ in .available }, now: { now })
+        defer { narration.shutdown() }
+        narration.update(current: [alert], enabled: true, selectedVoice: .caseyKasem)
 
-        XCTAssertTrue(speaker.speak(headline, playbackVolume: 0.8, finished: {}))
-        XCTAssertEqual(audio.url, url)
-        XCTAssertEqual(audio.volume, BulletinSpeechGain.volume(forPlaybackVolume: 0.8))
-        XCTAssertEqual(system.bulletinCalls, 0)
+        XCTAssertNil(narration.audioURL(for: alert))
+        try await gate.waitForCount(1)
+        XCTAssertTrue(narration.readyBulletins.isEmpty, "an alert is withheld while local audio renders")
+
+        let audio = NarrationTestAudioPlayer()
+        let speaker = WiltedMacHeadlineBulletinSpeaker(
+            audioURL: { narration.audioURL(for: $0) }, audioPlayer: audio,
+            selectedVoice: { .caseyKasem })
+        XCTAssertFalse(speaker.speak(alert, playbackVolume: 0.4, finished: {}))
+
+        await gate.resumeFirst()
+        for _ in 0..<100 where narration.audioURL(for: alert) == nil {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let url = try XCTUnwrap(narration.audioURL(for: alert))
+
         XCTAssertTrue(speaker.speak(alert, playbackVolume: 0.4, finished: {}))
-        XCTAssertEqual(system.bulletinCalls, 1)
-        XCTAssertEqual(audio.stopCalls, 1)
+        XCTAssertEqual(audio.url, url)
+        XCTAssertEqual(audio.volume, BulletinSpeechGain.measuredAudioVolume(forPlaybackVolume: 0.4))
+    }
+
+    func testWeatherAlertsArePreparedInSeverityOrderAndRenderFailuresAreNotReady() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let minor = try makeAlert(id: "alert-minor", text: "Minor alert", severity: .minor, now: now)
+        let extreme = try makeAlert(id: "alert-extreme", text: "Extreme alert", severity: .extreme,
+                                    now: now.addingTimeInterval(1))
+        let rendered = WeatherRenderCapture()
+        let narration = WiltedMacWeatherAlertNarration(
+            render: { text, voiceID, outputURL in
+                await rendered.record(text)
+                try Data(repeating: 0x5c, count: 128).write(to: outputURL)
+                return ArticleNarrationAudio(
+                    audioURL: outputURL, duration: 1,
+                    voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID))
+            }, availability: { _ in .available }, now: { now })
+        defer { narration.shutdown() }
+
+        narration.update(current: [minor, extreme], enabled: true, selectedVoice: .wolfmanJack)
+        for _ in 0..<100 where narration.readyBulletins.count < 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let renderOrder = await rendered.texts
+        XCTAssertEqual(renderOrder, [extreme.text, minor.text])
+        XCTAssertEqual(narration.readyBulletins.map(\.id), [extreme.id, minor.id])
+
+        let failed = try makeAlert(id: "alert-failed", text: "Cannot render", now: now)
+        let invalid = WiltedMacWeatherAlertNarration(
+            render: { _, voiceID, _ in
+                ArticleNarrationAudio(
+                    audioURL: URL(fileURLWithPath: "/private/tmp/not-the-requested-output.m4a"), duration: 1,
+                    voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID))
+            }, availability: { _ in .available }, now: { now })
+        defer { invalid.shutdown() }
+        invalid.update(current: [failed], enabled: true, selectedVoice: .caseyKasem)
+        try await Task.sleep(for: .milliseconds(40))
+        XCTAssertNil(invalid.audioURL(for: failed), "a wrong output path is not ready for delivery")
+        XCTAssertTrue(invalid.readyBulletins.isEmpty)
+    }
+
+    func testExpiredWeatherAlertCancelsItsLocalRender() async throws {
+        let alert = try makeAlert(id: "alert-expiring", text: "Expiring alert", expiresAfter: 0.12)
+        let narration = WiltedMacWeatherAlertNarration(
+            render: { text, voiceID, outputURL in
+                try await Task.sleep(for: .seconds(2))
+                try Data(repeating: 0x6d, count: 128).write(to: outputURL)
+                return ArticleNarrationAudio(
+                    audioURL: outputURL, duration: 1,
+                    voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID))
+            }, availability: { _ in .available })
+        defer { narration.shutdown() }
+        narration.update(current: [alert], enabled: true, selectedVoice: .caseyKasem)
+
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertNil(narration.audioURL(for: alert))
+        XCTAssertTrue(narration.readyBulletins.isEmpty)
+    }
+
+    func testSettingsTestBulletinUsesSelectedVoiceAndCompletesOnWrongOutput() async throws {
+        let library = try await AccountingLibrary.make(in: wiltedTemporaryDirectory("local-test-bulletin"))
+        addTeardownBlock { await library.model.close() }
+        let player = NarrationTestAudioPlayer()
+        let capture = WeatherRenderCapture()
+        library.model.selectReadingVoice(ApprovedReadingVoiceID.paulHarvey.rawValue)
+        let hub = WiltedMacBulletinHub(
+            model: library.model, makeHeadlineAudioPlayer: { player },
+            renderShortTextNarration: { text, voiceID, _ in
+                await capture.record("\(voiceID.rawValue):\(text)")
+                return ArticleNarrationAudio(
+                    audioURL: URL(fileURLWithPath: "/private/tmp/wrong-test-bulletin-output.m4a"), duration: 1,
+                    voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID))
+            })
+        defer { hub.shutdown() }
+
+        XCTAssertTrue(hub.playTestBulletin())
+        XCTAssertTrue(hub.testBulletinIsActive)
+        for _ in 0..<100 where hub.testBulletinIsActive {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let calls = await capture.texts
+        XCTAssertEqual(calls, ["\(ApprovedReadingVoiceID.paulHarvey.rawValue):\(WiltedMacBulletinHub.testBulletinText)"])
+        XCTAssertFalse(hub.testBulletinIsActive, "an invalid local render completes and releases the Settings button")
+        XCTAssertEqual(player.playCalls, 0)
+    }
+
+    func testSettingsTestBulletinCompletesWhenRenderedFileIsMissing() async throws {
+        let library = try await AccountingLibrary.make(in: wiltedTemporaryDirectory("missing-test-bulletin"))
+        addTeardownBlock { await library.model.close() }
+        let player = NarrationTestAudioPlayer()
+        library.model.selectReadingVoice(ApprovedReadingVoiceID.paulHarvey.rawValue)
+        let hub = WiltedMacBulletinHub(
+            model: library.model, makeHeadlineAudioPlayer: { player },
+            renderShortTextNarration: { _, voiceID, outputURL in
+                ArticleNarrationAudio(
+                    audioURL: outputURL, duration: 1,
+                    voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID))
+            })
+        defer { hub.shutdown() }
+
+        XCTAssertTrue(hub.playTestBulletin())
+        await WiltedMacHeadless.eventually("missing test-bulletin audio completes") { !hub.testBulletinIsActive }
+        XCTAssertEqual(player.playCalls, 0)
     }
 
     private func makeHeadline(id: String, title: String, now: Date) throws -> Bulletin {
@@ -165,6 +326,14 @@ final class WiltedMacHeadlineNarrationTests: XCTestCase {
                      issuedAt: now, expiresAt: now.addingTimeInterval(3_600), storyID: id,
                      publisherID: "wire", publisherName: "City Wire", headline: title,
                      link: URL(string: "https://wire.example.test/\(id)"), publishedAt: now)
+    }
+
+    private func makeAlert(
+        id: String, text: String, severity: BulletinSeverity = .extreme,
+        now: Date = Date(timeIntervalSince1970: 1_800_000_000), expiresAfter: TimeInterval = 3_600
+    ) throws -> Bulletin {
+        try Bulletin(id: id, kind: .alert, text: text, severity: severity,
+                     issuedAt: now, expiresAt: now.addingTimeInterval(expiresAfter))
     }
 }
 
@@ -197,23 +366,13 @@ private actor SuspendedHeadlineRenderGate {
         let request = requests.removeFirst()
         request.continuation.resume(returning: ArticleNarrationAudio(
             audioURL: request.outputURL, duration: 1,
-            voiceRevision: ArticleNarrationCoordinator.voiceRevision(for: request.voiceID)))
+            voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: request.voiceID)))
     }
 }
 
-@MainActor
-private final class NarrationTestSpeaker: BulletinSpeaking {
-    private(set) var textCalls = 0
-    private(set) var bulletinCalls = 0
-    func speak(_ text: String, playbackVolume: Float, finished: @escaping @MainActor () -> Void) -> Bool {
-        textCalls += 1
-        return true
-    }
-    func speak(_ bulletin: Bulletin, playbackVolume: Float, finished: @escaping @MainActor () -> Void) -> Bool {
-        bulletinCalls += 1
-        return true
-    }
-    func stop() {}
+private actor WeatherRenderCapture {
+    private(set) var texts: [String] = []
+    func record(_ text: String) { texts.append(text) }
 }
 
 @MainActor
@@ -222,11 +381,14 @@ private final class NarrationTestAudioPlayer: WiltedMacHeadlineAudioPlaying {
     private(set) var stopCalls = 0
     private(set) var url: URL?
     private(set) var volume: Float?
+    private var completion: (@MainActor () -> Void)?
     func play(url: URL, volume: Float, finished: @escaping @MainActor () -> Void) -> Bool {
         playCalls += 1
         self.url = url
         self.volume = volume
+        completion = finished
         return true
     }
-    func stop() { stopCalls += 1 }
+    func stop() { stopCalls += 1; completion = nil }
+    func finish() { let finished = completion; completion = nil; finished?() }
 }

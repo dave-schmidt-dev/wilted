@@ -7,7 +7,7 @@ import WiltedProducer
 
 // MARK: - Reports
 
-/// Settings > Reports: spoken weather alerts and headlines at pause points, the daily report, and
+/// Settings > Reports: spoken weather alerts and headlines at ad breaks, the daily report, and
 /// the location that weather needs. Interruptions are off until the listener turns them on.
 struct WiltedMacReportsCard: View {
     let model: WiltedMacModel
@@ -75,7 +75,7 @@ struct WiltedMacReportsCard: View {
                              id: "wilted-reports-weather-explanation")
                         Toggle("Read headlines aloud", isOn: reportsBinding(\.headlinesEnabled))
                             .accessibilityIdentifier("wilted-reports-headlines")
-                        note("Reads eligible posts from your headline feeds at a playback break.",
+                        note("Reads eligible posts from your headline feeds at an ad break.",
                              id: "wilted-reports-headlines-explanation")
                         #if canImport(WiltedProducer)
                         readingVoiceSection
@@ -83,22 +83,18 @@ struct WiltedMacReportsCard: View {
                         topicsSection
                             .padding(.leading, WiltedTheme.Spacing.large)
                             .disabled(!settings.reportEnabled && !(settings.interruptionsEnabled && settings.headlinesEnabled))
-                        Stepper(value: reportsBinding(\.waitLimitSeconds), in: WiltedAutomationSettings.waitLimitRange, step: 10) {
-                            labeledValue("Wait for a break", "\(settings.waitLimitSeconds) seconds")
+                        Stepper(
+                            value: Binding(
+                                get: { model.headlineToastDurationSeconds },
+                                set: { model.headlineToastDurationSeconds = $0 }),
+                            in: WiltedMacHeadlineToastPreference.durationRange,
+                            step: WiltedMacHeadlineToastPreference.durationStep
+                        ) {
+                            labeledValue("Headline alert", "\(model.headlineToastDurationSeconds) seconds")
                         }
-                        .disabled(!settings.interruptionsEnabled)
-                        .accessibilityIdentifier("wilted-reports-wait-limit")
-                        note("Alerts wait this long for a playback break, then can interrupt. "
-                             + "Headlines always wait for a break.",
-                             id: "wilted-reports-wait-limit-explanation")
-                        Stepper(value: reportsBinding(\.headlineMinimumGapMinutes),
-                                in: WiltedAutomationSettings.headlineGapRange, step: 5) {
-                            labeledValue("Between headlines", "\(settings.headlineMinimumGapMinutes) minutes")
-                        }
-                        .disabled(!settings.interruptionsEnabled)
-                        .accessibilityIdentifier("wilted-reports-headline-gap")
-                        note("Minimum time between spoken headlines, across all feeds.",
-                             id: "wilted-reports-headline-gap-explanation")
+                        .accessibilityIdentifier("wilted-reports-headline-toast-duration")
+                        note("New stories appear over the window, then fade. Point to one to keep it open.",
+                             id: "wilted-reports-headline-toast-duration-explanation")
                         if let line = WiltedMacBulletinHub.statusLine(model.bulletinHub.status) {
                             note(line, id: "wilted-reports-bulletin-status")
                         }
@@ -183,7 +179,7 @@ struct WiltedMacReportsCard: View {
             .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("wilted-reports-reading-voice-status")
-        note("Reads headline announcements and stories you choose with Listen next. Without a voice, headlines still appear on screen. Weather alerts use the Mac system voice.",
+        note("Reads headline announcements and stories you choose with Listen next. Weather alerts use the selected story voice. Without an available local voice, weather alerts and headlines are not spoken; headlines still appear on screen.",
              id: "wilted-reports-reading-voice-explanation")
     }
 
@@ -420,8 +416,7 @@ struct WiltedMacReportsCard: View {
         }
     }
 
-    static let interruptionsSummary = "Pauses playback at a break, reads a weather alert or headline, then resumes. "
-        + "Alerts may interrupt after the wait limit."
+    static let interruptionsSummary = "Reads weather alerts and headlines at an ad break, then resumes playback."
 
     static let dailyReportSummary = "Uses today’s local National Weather Service forecast and up to five titles from followed headline feeds "
         + "published in the last hour that pass your headline filters. The spoken report is up to five minutes and is saved in Larder > All. "
@@ -432,7 +427,7 @@ struct WiltedMacReportsCard: View {
         + "using its version and public project URL; leaving this blank does not disable weather alerts. Press Return to save."
 
     static let help = WiltedMacHelpContent(title: "Reports", text:
-        "Playback pauses at a natural break, reads the bulletin, then resumes. Interruptions are off until you turn them on. "
+        "Playback pauses at an ad break, reads ready bulletins, then resumes. Interruptions are off until you turn them on. "
         + "Headlines about sports, or containing any word you list under Also skip, are never read. "
         + "Typed coordinates take priority over Mac location; press Return to save them, or clear both to use Mac location. "
         + "The optional weather contact is sent in requests to the National Weather Service. Leaving it blank does not turn off weather alerts.")

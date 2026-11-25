@@ -28,6 +28,9 @@ struct WiltedMacRootView: View {
     @State private var playerFocusRequest: WiltedMacPlayerSection?
     @State private var windowWidth: CGFloat = 0
     @State private var paneState = WiltedMacPaneState()
+    @State private var headlineToastState = WiltedMacHeadlineToastState()
+    @State private var isHoveringHeadlineToast = false
+    @State private var headlineToastTimer = WiltedMacHeadlineToastTimer()
     /// Outlives each Feeds visit, so a revisit draws cached capacity while Feeds refreshes it.
     @State private var feedPolicyBoard: WiltedMacFeedPolicyBoard
 
@@ -86,6 +89,27 @@ struct WiltedMacRootView: View {
             guard !WiltedMacModel.hostsTests else { return }
             await feedPolicyBoard.reload()
         }
+        .overlay(alignment: .top) { headlineToast }
+        .onAppear { considerHeadlineToast(headlineToastCandidate) }
+        .onChange(of: headlineToastEventID) { _, _ in
+            considerHeadlineToast(headlineToastCandidate)
+        }
+        .onChange(of: headlineToastState.presentationID) { _, presentationID in
+            guard presentationID != nil else {
+                headlineToastTimer.cancel()
+                return
+            }
+            startHeadlineToastTimer(after: Double(model.headlineToastDurationSeconds))
+        }
+        .onChange(of: model.headlineToastDurationSeconds) { _, duration in
+            guard headlineToastState.story != nil else { return }
+            startHeadlineToastTimer(after: Double(duration))
+        }
+        .onChange(of: model.libraryAccountStatus) { _, _ in
+            headlineToastTimer.cancel()
+            withAnimation(.easeOut(duration: 0.2)) { headlineToastState.reset() }
+        }
+        .onDisappear { headlineToastTimer.cancel() }
     }
 
     private var sidebarColumnWidth: CGFloat {
@@ -95,13 +119,22 @@ struct WiltedMacRootView: View {
     }
 
 #if canImport(WiltedProducer)
-    /// The exact pending or announced story stays available across every destination and player layout.
-    private var activeHeadlineStory: LibraryHeadlineStory? {
-        WiltedMacPlayerContent.selectHeadlineCard(
-            speaking: model.speakingBulletin,
-            lastSpokenStoryID: model.bulletinHub.featuredHeadlineStoryID,
-            pendingStoryID: model.bulletinHub.latestHeadlineNarrationStoryID,
+    /// A headline starts its toast only when playback reaches its break.
+    private var headlineToastCandidate: LibraryHeadlineStory? {
+        guard let bulletin = model.speakingBulletin, bulletin.kind == .headline else { return nil }
+        return WiltedMacPlayerContent.selectHeadlineCard(
+            speaking: bulletin,
+            lastSpokenStoryID: nil,
+            pendingStoryID: nil,
             projection: model.headlineCatalogState.projection)
+    }
+
+    private var headlineToastEventID: String? {
+        if let bulletin = model.speakingBulletin, bulletin.kind == .headline,
+           let storyID = bulletin.headlineStoryID {
+            return "speaking:\(storyID)"
+        }
+        return nil
     }
 
     static func narrationStatus(
@@ -121,30 +154,73 @@ struct WiltedMacRootView: View {
 #endif
 
     @ViewBuilder
-    private var activeHeadlineCard: some View {
+    private var headlineToast: some View {
 #if canImport(WiltedProducer)
-        if let story = activeHeadlineStory {
-            WiltedMacPlayerHeadlineCard(
-                model: model, story: story,
-                isSpeakingHeadline: model.speakingBulletin?.kind == .headline
-                    && model.speakingBulletin?.headlineStoryID == story.id,
-                stopReading: model.skipSpokenBulletin,
-                narrationStatus: Self.narrationStatus(
-                    for: model.bulletinHub.headlineNarrationState(for: story.id)))
-                .id(story.id)
-                .padding(.horizontal, WiltedTheme.Spacing.medium)
-                .padding(.vertical, WiltedTheme.Spacing.small)
-                .accessibilityIdentifier("wilted-active-headline")
+        if let story = headlineToastState.currentStory(in: model.headlineCatalogState.projection) {
+            HStack(alignment: .top, spacing: WiltedTheme.Spacing.small) {
+                WiltedMacPlayerHeadlineCard(
+                    model: model, story: story,
+                    isSpeakingHeadline: model.speakingBulletin?.kind == .headline
+                        && model.speakingBulletin?.headlineStoryID == story.id,
+                    stopReading: model.skipSpokenBulletin,
+                    narrationStatus: Self.narrationStatus(
+                        for: model.bulletinHub.headlineNarrationState(for: story.id)))
+                    .id(story.id)
+
+                Button {
+                    withAnimation(.easeOut(duration: 0.2)) { headlineToastState.dismiss() }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss headline")
+                .accessibilityIdentifier("wilted-headline-toast-dismiss")
+            }
+            .padding(WiltedTheme.Spacing.small)
+            .frame(maxWidth: 760)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+            .padding(.horizontal, WiltedTheme.Spacing.large)
+            .padding(.top, WiltedTheme.Spacing.medium)
+            .onHover(perform: setHeadlineToastHover)
+            .accessibilityIdentifier("wilted-headline-toast")
+            .transition(.move(edge: .top).combined(with: .opacity))
         }
 #endif
     }
 
     private var detail: some View {
-        VStack(spacing: 0) {
-            activeHeadlineCard
-            detailContent
+        detailContent
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func considerHeadlineToast(_ story: LibraryHeadlineStory?) {
+        guard let story, let eventID = headlineToastEventID else { return }
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+            _ = headlineToastState.present(story, eventID: eventID)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func startHeadlineToastTimer(after seconds: Double) {
+        headlineToastTimer.start(after: seconds) {
+            guard headlineToastState.story != nil else { return }
+            withAnimation(.easeOut(duration: 0.35)) { headlineToastState.dismiss() }
+        }
+        if isHoveringHeadlineToast { headlineToastTimer.pause() }
+    }
+
+    private func setHeadlineToastHover(_ isHovering: Bool) {
+        guard isHoveringHeadlineToast != isHovering else { return }
+        isHoveringHeadlineToast = isHovering
+        guard headlineToastState.story != nil else { return }
+        if isHovering { headlineToastTimer.pause() } else { headlineToastTimer.resume() }
     }
 
     private var detailContent: some View {
