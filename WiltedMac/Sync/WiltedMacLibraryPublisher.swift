@@ -496,7 +496,7 @@ actor WiltedMacLibraryPublisher {
     /// only what it sees listed. `addLink` lets the Mac classify a pasted address once.
     static let supportedIntentActions = [
         "subscribe", "addArticle", "addLink", "adFeedback", "setHeadlineSaved", "setHeadlinePublisherMuted",
-        "setNotebookEntry", "setShowStartOffset", "setShowPlaybackSpeed", "decideNewEpisode"
+        "setNotebookEntry", "setShowStartOffset", "setShowPlaybackSpeed", "decideNewEpisode", "requestBulletinAudio"
     ]
 
     // MARK: - Intents

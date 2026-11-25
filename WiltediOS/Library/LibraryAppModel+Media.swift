@@ -233,7 +233,7 @@ extension LibraryAppModel {
             guard !Task.isCancelled else { return }
             if accountQuarantined { dropMediaJobsForHeldAccount() }
             media = media.filter { $0.value != .onPhone }
-            handoffState.player?.invalidateLoadedItem()
+            handoffState.player?.invalidateLoadedItem(reason: .accountUnavailable)
             return
         }
         // Audio that can never play again (no proof, or revoked) is deleted so Storage only
@@ -277,7 +277,7 @@ extension LibraryAppModel {
     func discardMediaAfterAccountChange() async {
         mediaJobStore.removeAll(ownerToken: nil)
         try? await mediaCache.bindOwner(ownerToken: nil, libraryScope: Self.mediaLibraryScope, held: true)
-        handoffState.player?.invalidateLoadedItem()
+        handoffState.player?.invalidateLoadedItem(reason: .accountChanged)
         for run in mediaRuns.values { run.task?.cancel() }
         mediaRuns = [:]
         mediaRevocations = []
@@ -381,7 +381,9 @@ extension LibraryAppModel {
     func setNotPrepared(_ entryID: ItemID, _ runID: UUID) {
         guard isCurrent(entryID, runID) else { return }
         media[entryID] = .notPrepared
-        if handoffState.player?.item?.entryID == entryID { handoffState.player?.invalidateLoadedItem() }
+        if handoffState.player?.item?.entryID == entryID {
+            handoffState.player?.invalidateLoadedItem(reason: .mediaNotPrepared)
+        }
         dropOffer(entryID)
     }
 

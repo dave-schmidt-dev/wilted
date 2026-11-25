@@ -226,9 +226,10 @@ enum LibraryUITestFixture {
             ]
         }
 
-        /// Installs a local bulletin channel and waits for the next synthetic ad seam.
-        func speakFixtureBulletin() async {
-            guard (scenario == .pixelInterruptions || scenario == .spokenHeadlines), interruptions == nil else { return }
+        /// Installs the interruption controller before playback can cross its fixture seam.
+        func prepareFixtureBulletinController() async {
+            guard scenario == .pixelInterruptions || scenario == .spokenHeadlines,
+                  interruptions == nil else { return }
             do {
                 let clock = scenario.isPixel ? LibraryUITestFixture.pixelClock : Date()
                 let headlines: [Bulletin]
@@ -256,10 +257,15 @@ enum LibraryUITestFixture {
                 }
                 let channel = try LibraryBulletins(
                     alertsEnabled: false, headlinesEnabled: true, headlines: headlines, updatedAt: clock)
-                let cache = cache
+                // The controller must already know the current revision when playback starts.
+                // Looking it up after the UI test taps Play can miss the short synthetic seam.
+                let cachedRevisions = await cache.cachedEntries().mapValues(\.revisionID)
                 let isSpokenHeadlineScenario = self.scenario == .spokenHeadlines
-                let firstSeam = player.position + 4
-                let fixtureSeams = isSpokenHeadlineScenario ? [firstSeam, firstSeam + 5] : [firstSeam]
+                // The fixture engine starts at zero. Keep these seams tied to its deterministic timeline.
+                let firstSeam = 4.0
+                // The journey skips the first spoken story with the player's 30-second Forward control.
+                let laterSeam = firstSeam + Double(player.skipForwardSeconds) + 5
+                let fixtureSeams = isSpokenHeadlineScenario ? [firstSeam, laterSeam] : [firstSeam]
                 let speaker = LibraryUITestSpeaker()
                 let controller = LibraryInterruptionController(
                     player: player,
@@ -267,20 +273,26 @@ enum LibraryUITestFixture {
                         speaker: speaker, preferences: LibraryInterruptionPreferences(defaults: defaults),
                         fetchBulletins: { channel }, makeMonitor: { _ in LibraryUITestAlertMonitor() }, location: nil,
                         adBreakSeams: { _, _ in fixtureSeams },
-                        revision: { await cache.cachedEntries()[$0]?.revisionID }, now: { clock },
+                        revision: { cachedRevisions[$0] }, now: { clock },
                         isForeground: { true }, maximumSpeech: .seconds(86_400)))
                 interruptions = controller
-                model.handoffState.interruptions = controller
-                // The revision lookup is asynchronous; ask again until the bulletin is being spoken.
-                for _ in 0..<50 {
-                    await controller.syncTick()
-                    if case .speaking = controller.state { return }
-                    try? await Task.sleep(for: .milliseconds(200))
-                }
-                NSLog("Library UI fixture bulletin did not reach an ad seam before timeout")
+                model.attachPlayer(player, interruptions: controller)
             } catch {
                 NSLog("Library UI fixture bulletin setup failed: %@", String(describing: error))
             }
+        }
+
+        /// Reads the seeded bulletin channel while playing until the synthetic seam is spoken.
+        func speakFixtureBulletin() async {
+            guard scenario == .pixelInterruptions || scenario == .spokenHeadlines else { return }
+            await prepareFixtureBulletinController()
+            guard let controller = interruptions else { return }
+            for _ in 0..<50 {
+                await controller.syncTick()
+                if case .speaking = controller.state { return }
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            NSLog("Library UI fixture bulletin did not reach an ad seam before timeout")
         }
 
         /// Queues the seeded episodes on the in-memory Mac and puts their audio on the phone. Runs once.
@@ -440,6 +452,7 @@ struct LibraryUITestFixtureHost: View {
                 .accessibilityIdentifier(LibraryUITestFixture.loadingMarker)
                 .task {
                     await stack.seed()
+                    await stack.prepareFixtureBulletinController()
                     isSeeded = true
                 }
         }
@@ -538,6 +551,10 @@ final class LibraryUITestNowPlaying: ListenerNowPlaying, @unchecked Sendable {
 
 /// A speaker that never speaks and never finishes, so a bulletin stays "being spoken" for a pixel capture.
 @MainActor final class LibraryUITestSpeaker: LibrarySpeaking {
+    func prepare(_ bulletin: Bulletin) {}
+    func refreshPreparedAudio() async {}
+    func canSpeak(_ bulletin: Bulletin) -> Bool { true }
+    func speak(_ bulletin: Bulletin, onFinish: @escaping @MainActor () -> Void) -> Bool { true }
     func speak(_ text: String, onFinish: @escaping @MainActor () -> Void) -> Bool { true }
     func stop() {}
 }

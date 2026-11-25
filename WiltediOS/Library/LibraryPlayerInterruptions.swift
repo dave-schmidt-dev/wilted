@@ -45,6 +45,7 @@ extension LibraryPlayer {
         guard status == .playing, item != nil, !isRemoteSeeking else { return false }
         do { try session.activate() } catch { return false }
         accrueListening()
+        engineStoppedAt = nil
         engine.pause()
         lastAccrual = nil
         position = min(max(0, engine.currentTime), duration)
@@ -67,9 +68,23 @@ extension LibraryPlayer {
     func releaseSpeechHold(resume: Bool) {
         guard speechHold != nil else { return }
         speechHold = nil
-        guard resume, status == .playing, item != nil else { publishNowPlaying(); return }
-        do { try session.activate() } catch { _ = fail(.audioSession); return }
-        guard engine.play() else { _ = fail(.engineRefused); return }
+        guard resume, status == .playing, item != nil else {
+            journal?.note("bulletin-resume outcome=skipped reason=playback-no-longer-active")
+            publishNowPlaying()
+            return
+        }
+        do { try session.activate() } catch {
+            journal?.note("bulletin-resume outcome=failed reason=audio-session")
+            _ = fail(.audioSession)
+            return
+        }
+        engineStoppedAt = nil
+        guard engine.play() else {
+            journal?.note("bulletin-resume outcome=failed reason=engine-refused")
+            _ = fail(.engineRefused)
+            return
+        }
+        journal?.note("bulletin-resume outcome=started")
         lastAccrual = .now
         publishNowPlaying()
     }
@@ -273,6 +288,7 @@ final class LibraryInterruptionController: ObservableObject {
         reconcileMonitor()
         await refreshActiveAlerts()
         applyChannel()
+        await deps.speaker.refreshPreparedAudio()
     }
 
     func appBecameActive() {
@@ -286,6 +302,7 @@ final class LibraryInterruptionController: ObservableObject {
         discardDisabledBulletins()
         let headlines = channel.headlinesEnabled ? channel.headlines : []
         let local = channel.alertsEnabled ? alerts.values.filter { activeAlertIDs.contains($0.id) } : []
+        for bulletin in headlines + local { deps.speaker.prepare(bulletin) }
         send { .channelReplaced(headlines + local, $0) }
         for headline in headlines { send { .bulletinArrived(headline, $0) } }
     }
@@ -360,6 +377,7 @@ final class LibraryInterruptionController: ObservableObject {
     func alertArrived(_ bulletin: Bulletin) {
         guard deps.preferences.speaks, channel?.alertsEnabled == true else { return }
         alerts[bulletin.id] = bulletin
+        deps.speaker.prepare(bulletin)
         send { .bulletinArrived(bulletin, $0) }
     }
 
@@ -487,7 +505,12 @@ final class LibraryInterruptionController: ObservableObject {
             switch effect {
             case let .speak(bulletin, _): speak(bulletin)
             case .stopSpeech: stopSpeaker()
-            case let .restore(checkpoint): player.restoreFromSpeech(to: checkpoint.positionSeconds)
+            case let .restore(checkpoint):
+                // A speaker may be unavailable before the hold starts. In that case the engine
+                // never stopped, so restoring the checkpoint would rewind audible playback.
+                if player.isHoldingForSpeech || player.status != .playing {
+                    player.restoreFromSpeech(to: checkpoint.positionSeconds)
+                }
             case .resume: player.releaseSpeechHold(resume: true)
             }
         }
@@ -529,12 +552,17 @@ final class LibraryInterruptionController: ObservableObject {
         stopSpeaker()
         let token = speechToken
         let title = bulletin.kind == .alert ? "Weather alert" : "News headline"
+        guard deps.speaker.canSpeak(bulletin) else {
+            interruptionLog.info("Prepared bulletin audio is unavailable; leaving it queued")
+            send { .speechStartFailed($0) }
+            return
+        }
         guard player.holdForSpeech(title: title) else {
             interruptionLog.error("Could not hold playback for a bulletin; keeping it queued")
             send { .speechStartFailed($0) }
             return
         }
-        let started = deps.speaker.speak(bulletin.text) { [weak self] in self?.speechEnded(token) }
+        let started = deps.speaker.speak(bulletin) { [weak self] in self?.speechEnded(token) }
         guard started else {
             interruptionLog.error("Speech could not start; keeping it queued")
             send { .speechStartFailed($0) }

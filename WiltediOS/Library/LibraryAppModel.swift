@@ -172,6 +172,9 @@ final class LibraryAppModel: ObservableObject {
     /// The durable record of commands, decisions and starts; nil in tests and previews.
     var journal: LibraryJournal?
 
+    /// Reuses verified Mac-rendered audio for automatic bulletin interruptions.
+    lazy var bulletinAudioManager = LibraryBulletinAudioManager(model: self)
+
     /// Current CloudKit operation summary snapshot, or nil when counters are unavailable.
     var operationSummary: CloudKitOperationSummary? {
         operationCounters?.summary(now: now())

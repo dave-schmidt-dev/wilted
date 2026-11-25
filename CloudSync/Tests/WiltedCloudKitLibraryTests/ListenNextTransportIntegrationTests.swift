@@ -65,6 +65,40 @@ final class ListenNextTransportIntegrationTests: XCTestCase {
         XCTAssertTrue(ordinaryOffers.isEmpty)
     }
 
+    func testMacCanPublishAudioForAnIDOnlyBulletinIntent() async throws {
+        let fixture = try MediaFixture()
+        let mac = try await endpoint(fixture, id: "mac", writer: true)
+        let phone = try await endpoint(fixture, id: "phone")
+        let file = try fixture.audioFile()
+        let base = try offer(for: file)
+        let requestID = "bulletin-audio-request"
+        let bulletinID = "headline:fixture-42"
+        let offer = try LibraryStoryAudioOffer(
+            requestID: requestID, storyID: bulletinID, requesterDeviceID: "phone",
+            voiceID: "casey-kasem", voiceRevision: "casey-kasem-short-v1",
+            audioRevision: base.audioRevision, contentHash: base.contentHash,
+            byteCount: base.byteCount, mediaType: base.mediaType, durationSeconds: base.durationSeconds)
+        let request = try LibraryIntent.requestBulletinAudio(
+            bulletinID: bulletinID, deviceID: "phone", createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            id: requestID)
+
+        try await phone.send(intent: request)
+        let wrongStory = try LibraryStoryAudioOffer(
+            requestID: requestID, storyID: "headline:another-story", requesterDeviceID: "phone",
+            voiceID: offer.voiceID, voiceRevision: offer.voiceRevision, audioRevision: offer.audioRevision,
+            contentHash: offer.contentHash, byteCount: offer.byteCount,
+            mediaType: offer.mediaType, durationSeconds: offer.durationSeconds)
+        do {
+            try await mac.publishStoryAudio(offer: wrongStory, fileURL: file, expectedOwner: owner)
+            XCTFail("An audio offer for another bulletin must not match the phone's request.")
+        } catch LibraryTransportError.ownershipViolation {}
+
+        try await mac.publishStoryAudio(offer: offer, fileURL: file, expectedOwner: owner)
+        let fetched = try await phone.fetchStoryAudio(offer, expectedOwner: owner) { _ in }
+        defer { try? FileManager.default.removeItem(at: fetched) }
+        XCTAssertEqual(try Data(contentsOf: file), try Data(contentsOf: fetched))
+    }
+
     func testOnlyRequesterSeesProgressAndAnOlderStatusCannotRestoreCancelledAudio() async throws {
         let fixture = try MediaFixture()
         let mac = try await endpoint(fixture, id: "mac", writer: true)

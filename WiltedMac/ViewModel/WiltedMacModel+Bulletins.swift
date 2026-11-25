@@ -124,6 +124,23 @@ final class WiltedMacBulletinHub {
 
     var latestHeadlineNarrationStoryID: String? { narration.latestCandidateStoryID }
 
+    /// Returns only a bulletin this Mac currently owns; weather text is never requested from or
+    /// uploaded by the phone.
+    func localBulletin(id: String) -> Bulletin? {
+        if let bulletin = (headlines + Array(activeAlerts.values)).first(where: { $0.id == id }) {
+            return bulletin
+        }
+        return LibraryBulletinAudioTestSample.make(id: id, at: now())
+    }
+
+    /// Uses the exact local asset already prepared for the active bulletin and selected voice.
+    func narrationAudioURL(for bulletin: Bulletin) -> URL? {
+        if bulletin.kind == .headline {
+            return narration.audioURL(for: bulletin, accountIdentity: approvedPublicationOwner)
+        }
+        return weatherAlertNarration?.audioURL(for: bulletin)
+    }
+
     func headlineNarrationState(for storyID: String) -> WiltedMacHeadlineNarrationState {
         narration.state(for: storyID)
     }

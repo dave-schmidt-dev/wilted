@@ -145,7 +145,9 @@ extension LibraryAppModel {
         unacknowledgedMedia[entryID] = nil
         transcripts[entryID] = nil
         media[entryID] = .notPrepared
-        if handoffState.player?.item?.entryID == entryID { handoffState.player?.invalidateLoadedItem() }
+        if handoffState.player?.item?.entryID == entryID {
+            handoffState.player?.invalidateLoadedItem(reason: .mediaRevoked)
+        }
         do { try await mediaCache.revokePreparation(entryID: entryID) }
         catch { mediaAdmissionFailed("The audio preparation withdrawal could not be saved."); return false }
         guard await mediaContextIsCurrent(context, live: true) else { return false }
@@ -171,8 +173,8 @@ extension LibraryAppModel {
             handoffState.lastItemEntry = entryID
             handoffState.unpublished[entryID] = (player.position, stoppedAt)
             saveLoadedPositionLocally(player.position)
-            journal?.note("stop reason=withdraw entry=\(entryID.rawValue) position=\(String(format: "%.1f", player.position))")
-            player.invalidateLoadedItem()
+            journal?.note("stop reason=withdraw trigger=queue-removed entry=\(entryID.rawValue) position=\(String(format: "%.1f", player.position))")
+            player.invalidateLoadedItem(reason: .queueRemoved)
         }
         media[entryID] = nil
     }

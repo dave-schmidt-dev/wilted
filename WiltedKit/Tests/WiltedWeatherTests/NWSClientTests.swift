@@ -137,6 +137,61 @@ struct NWSClientTests {
         #expect(try await client.activeAlerts(zones: ["KSZ009"]).pollInterval == 300)
     }
 
+    @Test func exactAlertLookupUsesOnlyTheFixedNWSHostAndPublicIdentity() async throws {
+        let source = try fixture("nws-alerts")
+        let root = try #require(try JSONSerialization.jsonObject(with: source) as? [String: Any])
+        let features = try #require(root["features"] as? [[String: Any]])
+        var feature = try #require(features.first)
+        let id = "urn:oid:2.49.0.1.840.0.12345"
+        feature["id"] = "https://api.weather.gov/alerts/\(id)"
+        var properties = try #require(feature["properties"] as? [String: Any])
+        properties["id"] = id
+        feature["properties"] = properties
+        let detail = try JSONSerialization.data(withJSONObject: feature)
+        let transport = StubTransport([.init(body: detail)])
+        let client = makeClient(transport)
+
+        let alert = try await client.alert(id: id)
+
+        let request = try #require(transport.requests.first)
+        #expect(alert.id == id)
+        #expect(alert.messageType == "Update")
+        #expect(request.url?.host == NWSClient.host)
+        #expect(request.url?.path == "/alerts/\(id)")
+        #expect(request.url?.query == nil)
+        #expect(request.httpBody == nil)
+        #expect(request.httpMethod == "GET")
+
+        let canonical = "https://api.weather.gov/alerts/\(id)"
+        let canonicalTransport = StubTransport([.init(body: detail)])
+        #expect(try await makeClient(canonicalTransport).alert(id: canonical).id == id)
+    }
+
+    @Test func exactAlertLookupRejectsUnsafeAndMismatchedIdentities() async throws {
+        let transport = StubTransport([])
+        let client = makeClient(transport)
+        for id in ["", "https://evil.example/alerts/urn:oid:2.49", "urn:oid:2.49/../other",
+                   "urn:oid:2.49?host=evil.example", "urn:oid:not-numeric"] {
+            await #expect(throws: NWSError.invalidAlertIdentity) { try await client.alert(id: id) }
+        }
+        #expect(transport.requests.isEmpty)
+
+        let source = try fixture("nws-alerts")
+        let root = try #require(try JSONSerialization.jsonObject(with: source) as? [String: Any])
+        let features = try #require(root["features"] as? [[String: Any]])
+        var otherFeature = try #require(features.last)
+        let otherID = "urn:oid:2.49.0.1.840.0.12346"
+        otherFeature["id"] = "https://api.weather.gov/alerts/\(otherID)"
+        var properties = try #require(otherFeature["properties"] as? [String: Any])
+        properties["id"] = otherID
+        otherFeature["properties"] = properties
+        let detail = try JSONSerialization.data(withJSONObject: otherFeature)
+        let mismatch = makeClient(StubTransport([.init(body: detail)]))
+        await #expect(throws: NWSError.alertIdentityMismatch) {
+            try await mismatch.alert(id: "urn:oid:2.49.0.1.840.0.12345")
+        }
+    }
+
     @Test func badZonesAndCoordinatesAreRejected() async throws {
         let client = makeClient(StubTransport([]))
         await #expect(throws: NWSError.invalidZone("KS&x=1")) { try await client.activeAlerts(zones: ["KS&x=1"]) }

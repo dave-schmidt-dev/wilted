@@ -102,7 +102,11 @@ extension LibraryPlayer {
         let admitted = await authorizePlayback?(item) ?? true
         guard ownedSeekRequest?.id == holdID, ownedSeekRequest?.sessionID == sessionID,
               seekSessionID == sessionID, self.item == item, admissionEpoch == epoch else { return false }
-        guard admitted else { ownedSeekRequest = nil; invalidateLoadedItem(); return false }
+        guard admitted else {
+            ownedSeekRequest = nil
+            invalidateLoadedItem(reason: .seekAdmissionDenied)
+            return false
+        }
         return beginRemoteSeeking(direction, ownerHoldID: holdID)
     }
 

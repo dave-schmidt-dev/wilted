@@ -136,8 +136,10 @@ final class LibraryRuntime {
             .sink { [weak self] queued, media in
                 MainActor.assumeIsolated {
                     guard let player = self?.player, let playing = player.item else { return }
-                    if !queued.contains(where: { $0.id == playing.entryID }) || media[playing.entryID] != .onPhone {
-                        player.invalidateLoadedItem()
+                    if !queued.contains(where: { $0.id == playing.entryID }) {
+                        player.invalidateLoadedItem(reason: .queueRemoved)
+                    } else if media[playing.entryID] != .onPhone {
+                        player.invalidateLoadedItem(reason: .mediaUnavailable)
                     }
                 }
             }

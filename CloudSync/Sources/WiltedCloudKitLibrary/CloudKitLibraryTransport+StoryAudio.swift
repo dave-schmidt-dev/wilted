@@ -87,7 +87,10 @@ extension CloudKitLibraryTransport: LibraryStoryAudioTransport {
 
 private extension LibraryStoryAudioOffer {
     func matchesRequest(_ intent: LibraryIntent) -> Bool {
-        guard case let .listenNext(story, _) = intent.action else { return false }
-        return story.id == storyID
+        switch intent.action {
+        case let .listenNext(story, _): return story.id == storyID
+        case let .requestBulletinAudio(bulletinID): return bulletinID == storyID
+        default: return false
+        }
     }
 }

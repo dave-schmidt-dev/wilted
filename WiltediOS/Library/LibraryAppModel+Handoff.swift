@@ -102,7 +102,7 @@ extension LibraryAppModel {
 
     /// Starts driving the coordinator from `player`. Lock-screen and headset commands go to the
     /// player directly, so its published state is the source of truth, not the buttons.
-    func attachPlayer(_ player: LibraryPlayer) {
+    func attachPlayer(_ player: LibraryPlayer, interruptions fixtureInterruptions: LibraryInterruptionController? = nil) {
         guard handoffState.player !== player else { return }
         if player.journal == nil { player.journal = journal }
         player.onListened = { [phoneStats] wall, rate in phoneStats.recordListening(wall: wall, rate: rate) }
@@ -146,8 +146,8 @@ extension LibraryAppModel {
         }
         handoffState.subscriptions.removeAll()
         handoffState.player = player
-        handoffState.interruptions = NSClassFromString("XCTestCase") == nil
-            ? LibraryInterruptionController.live(player: player, model: self) : nil
+        handoffState.interruptions = fixtureInterruptions ?? (NSClassFromString("XCTestCase") == nil
+            ? LibraryInterruptionController.live(player: player, model: self) : nil)
         if let interruptions = handoffState.interruptions {
             interruptions.objectWillChange.sink { [weak self] in
                 MainActor.assumeIsolated { self?.objectWillChange.send() }

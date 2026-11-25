@@ -5,9 +5,18 @@ import WiltedLibrary
 /// The phone reports the Mac's bulletin settings and this device's alert location.
 struct LibrarySettingsBulletinsCard: View {
     @ObservedObject var model: LibraryAppModel
+    @StateObject private var testBulletinPlayer: LibrarySettingsTestBulletinPlayer
 
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage(LibraryInterruptionPreferences.speakKey) private var speaksInterruptions = true
+
+    init(model: LibraryAppModel) {
+        self.model = model
+        _testBulletinPlayer = StateObject(wrappedValue: LibrarySettingsTestBulletinPlayer(
+            audio: model.bulletinAudioManager,
+            speaker: LibraryBulletinAudioSpeaker(model: model),
+            now: model.now))
+    }
 
     var body: some View {
         WiltedSettingsCard(title: LibrarySettingsSection.reports.title) {
@@ -19,13 +28,22 @@ struct LibrarySettingsBulletinsCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("wilted-library-settings-bulletins-line-\(index)")
                 }
-                Button(action: playTestBulletin) {
-                    Text("Play a test bulletin").wiltedFont(.body)
+                Button(action: { testBulletinPlayer.play() }) {
+                    Text(testBulletinPlayer.state == .preparing ? "Preparing…" : "Play a test bulletin")
+                        .wiltedFont(.body)
                         .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget - 16)
                 }
                 .buttonStyle(.bordered)
-                .disabled(model.handoffState.interruptions?.canSpeakTestBulletin != true)
+                .disabled(testBulletinPlayer.isWorking
+                    || model.handoffState.interruptions?.canSpeakTestBulletin != true)
                 .accessibilityIdentifier("wilted-library-settings-test-bulletin")
+                if let message = testBulletinPlayer.message {
+                    Text(message)
+                        .wiltedFont(.utility)
+                        .foregroundStyle(messageColor)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("wilted-library-settings-test-bulletin-status")
+                }
             } else {
                 Text("Spoken interruptions is off under Playback, so no bulletin is read.")
                     .wiltedFont(.utility)
@@ -39,9 +57,9 @@ struct LibrarySettingsBulletinsCard: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-library-settings-reports")
-        .onDisappear(perform: stopTestBulletin)
+        .onDisappear { testBulletinPlayer.stop() }
         .onChange(of: speaksInterruptions) { _, enabled in
-            if !enabled { stopTestBulletin() }
+            if !enabled { testBulletinPlayer.stop() }
         }
     }
 
@@ -73,11 +91,14 @@ struct LibrarySettingsBulletinsCard: View {
         return WiltedTheme.color(.degraded, scheme: colorScheme)
     }
 
-    private func playTestBulletin() {
-        model.handoffState.interruptions?.speakTestBulletin()
-    }
-
-    private func stopTestBulletin() {
-        model.handoffState.interruptions?.stopTestBulletin()
+    private var messageColor: Color {
+        switch testBulletinPlayer.state {
+        case .playing, .completed:
+            WiltedStatusTone.positive.color(colorScheme)
+        case .failed, .waiting:
+            WiltedTheme.color(.degraded, scheme: colorScheme)
+        case .idle, .preparing:
+            WiltedTheme.color(.secondaryText, scheme: colorScheme)
+        }
     }
 }

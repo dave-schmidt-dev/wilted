@@ -9,6 +9,9 @@ actor ListenNextAudioFixture: LibraryStoryAudioTransport {
     private let owner: String
     private let sourceFile: URL
     private var holdFetch: Bool
+    private var downloadFailuresRemaining: Int
+    private var fetchAttempts = 0
+    private var statusReadAttempts = 0
     private var statuses: [String: LibraryListenNextStatus] = [:]
     private var downloadedOffers: [LibraryStoryAudioOffer] = []
     private var fetchStarted = false
@@ -16,15 +19,35 @@ actor ListenNextAudioFixture: LibraryStoryAudioTransport {
     private var startedRequestIDs: Set<String> = []
     private var cancelledRequestIDs: Set<String> = []
 
-    init(owner: String, sourceFile: URL, holdFetch: Bool = false) {
+    init(owner: String, sourceFile: URL, holdFetch: Bool = false, downloadFailures: Int = 0) {
         self.owner = owner
         self.sourceFile = sourceFile
         self.holdFetch = holdFetch
+        downloadFailuresRemaining = max(0, downloadFailures)
     }
 
     func setStatus(_ status: LibraryListenNextStatus) { statuses[status.requestID] = status }
+    func publishReadyBulletinStatus(for intent: LibraryIntent, at date: Date, revision: UInt64 = 1) throws {
+        guard case let .requestBulletinAudio(bulletinID) = intent.action else { return }
+        let attributes = try FileManager.default.attributesOfItem(atPath: sourceFile.path)
+        guard let byteCount = (attributes[.size] as? NSNumber)?.int64Value else {
+            throw LibraryTransportError.transport("the bulletin audio fixture has no size")
+        }
+        let offer = try LibraryStoryAudioOffer(
+            requestID: intent.id, storyID: bulletinID, requesterDeviceID: intent.deviceID,
+            voiceID: "casey-kasem", voiceRevision: "casey-kasem-short-v1",
+            audioRevision: RevisionID(rawValue: "rev-bulletin-audio"),
+            contentHash: try MediaHash.sha256(fileAt: sourceFile), byteCount: byteCount,
+            mediaType: "audio/mp4", durationSeconds: 2)
+        statuses[intent.id] = try LibraryListenNextStatus(
+            requestID: intent.id, storyID: bulletinID, requesterDeviceID: intent.deviceID,
+            phase: .ready, statusRevision: revision, updatedAt: date,
+            voiceID: offer.voiceID, voiceRevision: offer.voiceRevision, audioOffer: offer)
+    }
     func setHoldFetch(_ hold: Bool) { holdFetch = hold }
     var fetchedOffers: [LibraryStoryAudioOffer] { downloadedOffers }
+    var fetchAttemptCount: Int { fetchAttempts }
+    var statusReadCount: Int { statusReadAttempts }
     var didStartFetch: Bool { fetchStarted }
     var wasFetchCancelled: Bool { fetchCancelled }
     func didStartFetch(requestID: String) -> Bool { startedRequestIDs.contains(requestID) }
@@ -41,6 +64,11 @@ actor ListenNextAudioFixture: LibraryStoryAudioTransport {
     ) async throws -> URL {
         guard expectedOwner == owner, offer.requesterDeviceID == "phone-1" else {
             throw LibraryTransportError.ownershipViolation("The story offer is outside this phone's scope.")
+        }
+        fetchAttempts += 1
+        if downloadFailuresRemaining > 0 {
+            downloadFailuresRemaining -= 1
+            throw LibraryTransportError.transport("a transient story audio transfer failure")
         }
         let attributes = try FileManager.default.attributesOfItem(atPath: sourceFile.path)
         guard (attributes[.size] as? NSNumber)?.int64Value == offer.byteCount,
@@ -75,6 +103,7 @@ actor ListenNextAudioFixture: LibraryStoryAudioTransport {
 
     func listenNextStatuses(requestIDs: Set<String>, expectedOwner: String) async throws -> [LibraryListenNextStatus] {
         guard expectedOwner == owner else { throw LibraryTransportError.superseded }
+        statusReadAttempts += 1
         return requestIDs.compactMap { statuses[$0] }
     }
 }
@@ -84,6 +113,7 @@ struct ListenNextPhoneTransport: LibraryTransport, LibraryStoryAudioTransport {
     let sendScript: OutboxSendScript
     let audio: ListenNextAudioFixture
     let identity: ListenNextPhoneIdentity
+    let autoReadyBulletinAudio: Bool
 
     func operationGeneration() async -> UInt64 { await identity.operationGeneration() }
     func verifiedOwnerToken() async -> String? { await identity.ownerToken() }
@@ -91,6 +121,7 @@ struct ListenNextPhoneTransport: LibraryTransport, LibraryStoryAudioTransport {
         await inner.invalidateOperations()
         await identity.switchAccount(to: owner)
     }
+    func disconnect() async { await identity.disconnect() }
     func verifyOwner() async throws { try await inner.verifyOwner() }
     func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
         try await inner.fetchChanges(since: token)
@@ -98,7 +129,11 @@ struct ListenNextPhoneTransport: LibraryTransport, LibraryStoryAudioTransport {
     func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { try await inner.push(changes: changes) }
     func send(intent: LibraryIntent) async throws {
         switch sendScript.begin(intent.id) {
-        case .deliver: try await inner.send(intent: intent)
+        case .deliver:
+            try await inner.send(intent: intent)
+            if autoReadyBulletinAudio {
+                try await audio.publishReadyBulletinStatus(for: intent, at: Date())
+            }
         case .fail: throw LibraryTransportError.transport("the Mac is unreachable")
         case .deliverThenFail:
             try await inner.send(intent: intent)
@@ -147,6 +182,7 @@ actor ListenNextPhoneIdentity {
     func operationGeneration() -> UInt64 { generation }
     func ownerToken() -> String? { owner }
     func advanceGeneration() { generation &+= 1 }
+    func disconnect() { owner = nil; generation &+= 1 }
     func switchAccount(to owner: String) {
         generation &+= 1
         self.owner = owner
@@ -169,10 +205,30 @@ actor ListenNextPhoneStore: LibraryStore {
     func resolveConflict(_ key: LibraryRecordKey, keepLocal: Bool) { saved.resolveConflict(key, keepLocal: keepLocal) }
 }
 
+final class ListenNextPhoneTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var date: Date
+
+    init(start: Date) { date = start }
+
+    func current() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return date
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.lock()
+        defer { lock.unlock() }
+        date = date.addingTimeInterval(interval)
+    }
+}
+
 @MainActor
 final class LibraryListenNextPhoneModelTests: XCTestCase {
     let owner = "listen-next-owner"
-    let now = Date(timeIntervalSince1970: 1_700_000_000)
+    let clock = ListenNextPhoneTestClock(start: Date(timeIntervalSince1970: 1_700_000_000))
+    var now: Date { clock.current() }
     var scratch: URL!
     var sourceFile: URL!
     var defaults: UserDefaults!
@@ -202,12 +258,16 @@ final class LibraryListenNextPhoneModelTests: XCTestCase {
         )
     }
 
-    func transport(_ script: OutboxSendScript, holdFetch: Bool = false) -> ListenNextPhoneTransport {
+    func transport(
+        _ script: OutboxSendScript, holdFetch: Bool = false,
+        downloadFailures: Int = 0, autoReadyBulletinAudio: Bool = false
+    ) -> ListenNextPhoneTransport {
         ListenNextPhoneTransport(
             inner: InMemoryLibraryTransport(deviceID: "phone-1", server: server, verifiedOwnerToken: owner),
             sendScript: script,
-            audio: ListenNextAudioFixture(owner: owner, sourceFile: sourceFile, holdFetch: holdFetch),
-            identity: ListenNextPhoneIdentity(owner: owner)
+            audio: ListenNextAudioFixture(
+                owner: owner, sourceFile: sourceFile, holdFetch: holdFetch, downloadFailures: downloadFailures),
+            identity: ListenNextPhoneIdentity(owner: owner), autoReadyBulletinAudio: autoReadyBulletinAudio
         )
     }
 
@@ -215,13 +275,13 @@ final class LibraryListenNextPhoneModelTests: XCTestCase {
         _ transport: ListenNextPhoneTransport,
         recovery: LibraryAccountRecovery? = nil
     ) -> LibraryAppModel {
-        let fixedNow = now
+        let clock = self.clock
         let model = LibraryAppModel(
             transport: transport, store: ListenNextPhoneStore(owner: owner), deviceID: "phone-1", recovery: recovery,
             mediaCache: FileMediaCache(rootURL: scratch.appendingPathComponent("media-cache")),
             preferences: defaults, outboxURL: scratch.appendingPathComponent("pending-intents.json"),
             listenNextURL: scratch.appendingPathComponent("pending-listen-next-v1.json"),
-            now: { fixedNow }, timeZone: TimeZone(identifier: "UTC")!
+            now: { clock.current() }, timeZone: TimeZone(identifier: "UTC")!
         )
         model.macAddActions = ["listenNext", "cancelListenNext"]
         return model

@@ -3,6 +3,8 @@ import Foundation
 /// Failures of the NWS client. None carries a response body.
 public enum NWSError: Error, Equatable, Sendable {
     case invalidURL(String)
+    case invalidAlertIdentity
+    case alertIdentityMismatch
     case invalidCoordinates
     case invalidZone(String)
     case redirectRejected
@@ -180,6 +182,21 @@ public actor NWSClient {
                                  pollInterval: max(Self.minimumPollInterval, maxAge))
     }
 
+    /// Fetches one public NWS alert by its exact ID. Only the NWS URN identity or its canonical
+    /// `api.weather.gov/alerts/<URN>` URL is accepted; the request always targets the fixed NWS
+    /// host and never uses a caller-supplied URL, coordinates, or alert text.
+    public func alert(id: String) async throws -> NWSAlert {
+        let urn = try Self.alertURN(from: id)
+        guard let url = URL(string: "https://\(Self.host)/alerts/\(urn)") else {
+            throw NWSError.invalidURL("alert")
+        }
+        let (data, _) = try await get(url)
+        let alert = try Self.decodeAlert(data)
+        let canonicalURL = "https://\(Self.host)/alerts/\(alert.id)"
+        guard alert.id == id || canonicalURL == id else { throw NWSError.alertIdentityMismatch }
+        return alert
+    }
+
     /// Forecast for a location. A 404 means the office or grid mapping moved, so the point is
     /// looked up again once before giving up.
     public func forecast(lat: Double, lon: Double) async throws -> [NWSForecastPeriod] {
@@ -209,6 +226,24 @@ public actor NWSClient {
             throw NWSError.invalidCoordinates
         }
         return String(format: "%.2f,%.2f", rounded(lat), rounded(lon))
+    }
+
+    private static func alertURN(from identity: String) throws -> String {
+        let urlPrefix = "https://\(host)/alerts/"
+        let urn: String
+        if identity.hasPrefix(urlPrefix) {
+            urn = String(identity.dropFirst(urlPrefix.count))
+        } else {
+            urn = identity
+        }
+        let prefix = "urn:oid:"
+        guard identity.count <= 1_024, urn.hasPrefix(prefix) else { throw NWSError.invalidAlertIdentity }
+        let components = urn.dropFirst(prefix.count).split(separator: ".", omittingEmptySubsequences: false)
+        guard !components.isEmpty,
+              components.allSatisfy({ component in
+                  !component.isEmpty && component.unicodeScalars.allSatisfy { (48...57).contains($0.value) }
+              }) else { throw NWSError.invalidAlertIdentity }
+        return urn
     }
 
     private func fetchPoint(key: String) async throws -> NWSPoint {
@@ -297,19 +332,39 @@ public actor NWSClient {
     private static func decodeAlerts(_ data: Data) throws -> [NWSAlert] {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let features = root["features"] as? [[String: Any]] else { throw NWSError.malformed("alerts") }
+        return features.compactMap(decodeAlertFeature)
+    }
+
+    private static func decodeAlert(_ data: Data) throws -> NWSAlert {
+        guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw NWSError.malformed("alert")
+        }
+        let features: [[String: Any]]
+        if root["properties"] is [String: Any] {
+            features = [root]
+        } else if let collection = root["features"] as? [[String: Any]] {
+            features = collection
+        } else {
+            throw NWSError.malformed("alert")
+        }
+        guard features.count == 1, let alert = features.first.flatMap(decodeAlertFeature) else {
+            throw NWSError.malformed("alert")
+        }
+        return alert
+    }
+
+    private static func decodeAlertFeature(_ feature: [String: Any]) -> NWSAlert? {
         let formatter = ISO8601DateFormatter()
         func date(_ value: Any?) -> Date? { (value as? String).flatMap { formatter.date(from: $0) } }
-        return features.compactMap { feature in
-            guard let props = feature["properties"] as? [String: Any],
-                  let id = (props["id"] as? String) ?? (feature["id"] as? String),
-                  let event = props["event"] as? String else { return nil }
-            let references = (props["references"] as? [[String: Any]])?.compactMap { $0["identifier"] as? String } ?? []
-            return NWSAlert(
-                id: id, event: event, areaDesc: props["areaDesc"] as? String ?? "",
-                severity: props["severity"] as? String ?? "Unknown",
-                messageType: props["messageType"] as? String ?? "Alert",
-                headline: props["headline"] as? String, sent: date(props["sent"]),
-                expires: date(props["expires"]), ends: date(props["ends"]), references: references)
-        }
+        guard let props = feature["properties"] as? [String: Any],
+              let id = (props["id"] as? String) ?? (feature["id"] as? String),
+              let event = props["event"] as? String else { return nil }
+        let references = (props["references"] as? [[String: Any]])?.compactMap { $0["identifier"] as? String } ?? []
+        return NWSAlert(
+            id: id, event: event, areaDesc: props["areaDesc"] as? String ?? "",
+            severity: props["severity"] as? String ?? "Unknown",
+            messageType: props["messageType"] as? String ?? "Alert",
+            headline: props["headline"] as? String, sent: date(props["sent"]),
+            expires: date(props["expires"]), ends: date(props["ends"]), references: references)
     }
 }

@@ -14,6 +14,8 @@ All notable changes to this project are documented in this file.
 ### Fixed
 
 - Mac weather announcements use the selected story voice. Spoken weather and headlines use the podcast loudness target and respect the player volume.
+- iPhone and CarPlay weather alerts and headlines use the Mac's selected Story voice. The phone plays only verified narration clips cached on the phone; if a clip is not ready, the bulletin waits instead of using an iPhone system voice.
+- iPhone playback preserves its last confirmed position when an audio-session interruption stops the audio engine, then resumes when iOS allows playback again.
 
 ## [0.8.0] - 2026-11-24
 

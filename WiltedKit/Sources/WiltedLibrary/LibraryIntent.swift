@@ -33,6 +33,8 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         case addArticle(url: URL)
         /// Ask the Mac to narrate a retained headline and send only its audio back to this device.
         case listenNext(story: LibraryHeadlineStory, anchorID: ItemID?)
+        /// Ask the Mac to narrate one current automatic bulletin, without sending its text or location.
+        case requestBulletinAudio(bulletinID: String)
         /// Persistently cancel one Listen next request, including one already accepted by the Mac.
         case cancelListenNext(requestID: String)
         /// Ask the Mac to classify and add an HTTPS link as a feed or article.
@@ -71,7 +73,7 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
             case let .listenNext(story, _):
                 guard let link = story.link else { return Self.invalidURLEntryID }
                 return (try? ItemID.derive(from: link)) ?? Self.invalidURLEntryID
-            case .cancelListenNext:
+            case .cancelListenNext, .requestBulletinAudio:
                 return Self.invalidURLEntryID
             case let .requestMedia(entryID), let .mediaCached(entryID, _, _), let .keep(entryID), let .skip(entryID),
                  let .decideNewEpisode(entryID, _),
@@ -94,7 +96,7 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         public var isDecision: Bool {
             switch self {
             case .keep, .skip, .decideNewEpisode, .markDone, .removeFromLarder, .restore, .reorder, .subscribe, .addArticle,
-                 .listenNext, .cancelListenNext, .addLink, .adFeedback,
+                 .listenNext, .requestBulletinAudio, .cancelListenNext, .addLink, .adFeedback,
                  .setHeadlineSaved, .setHeadlinePublisherMuted, .setNotebookEntry, .setShowStartOffset, .setShowPlaybackSpeed: return true
             case .requestMedia, .mediaCached: return false
             case .unsupported: return true
@@ -140,6 +142,11 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         case let .cancelListenNext(requestID):
             guard !requestID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw DomainError.invalidValue(field: "requestID", reason: "must not be empty")
+            }
+        case let .requestBulletinAudio(bulletinID):
+            guard !bulletinID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  bulletinID.count <= 1_024 else {
+                throw DomainError.invalidValue(field: "bulletinID", reason: "must be a non-empty bulletin identity")
             }
         default:
             break
@@ -260,6 +267,19 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         try LibraryIntent(
             id: id, deviceID: deviceID, createdAt: createdAt,
             action: .cancelListenNext(requestID: requestID)
+        )
+    }
+
+    /// Requests a Mac-rendered, owner-scoped audio clip for a currently active bulletin.
+    public static func requestBulletinAudio(
+        bulletinID: String,
+        deviceID: String,
+        createdAt: Date = Date(),
+        id: String = UUID().uuidString
+    ) throws -> LibraryIntent {
+        try LibraryIntent(
+            id: id, deviceID: deviceID, createdAt: createdAt,
+            action: .requestBulletinAudio(bulletinID: bulletinID)
         )
     }
 
@@ -462,7 +482,7 @@ public enum IntentRetention {
     /// Feedback, headline edits, and durable story request/cancel commands remain valid offline.
     public static func isExpired(_ intent: LibraryIntent, now: Date) -> Bool {
         switch intent.action {
-        case .adFeedback, .setHeadlineSaved, .setHeadlinePublisherMuted, .listenNext, .cancelListenNext,
+        case .adFeedback, .setHeadlineSaved, .setHeadlinePublisherMuted, .listenNext, .requestBulletinAudio, .cancelListenNext,
              .setShowStartOffset, .setShowPlaybackSpeed: return false
         default: break
         }

@@ -216,6 +216,10 @@ final class WiltedMacIntentApplier {
             try await applyListenNext(intent)
             return
         }
+        if case .requestBulletinAudio = intent.action {
+            try await applyListenNext(intent)
+            return
+        }
         if case .cancelListenNext = intent.action {
             try await applyListenNext(intent)
             return
@@ -390,6 +394,7 @@ final class WiltedMacIntentApplier {
 
         if case .unsupported = intent.action { return try rejected(IntentOutcome.reasonUnsupportedAction) }
         if case .listenNext = intent.action { return try rejected(IntentOutcome.reasonFailed) }
+        if case .requestBulletinAudio = intent.action { return try rejected(IntentOutcome.reasonFailed) }
         if case .cancelListenNext = intent.action { return try rejected(IntentOutcome.reasonFailed) }
         if case .setNotebookEntry = intent.action { return try rejected(IntentOutcome.reasonFailed) }
         guard let host else { return try rejected(IntentOutcome.reasonFailed) }
@@ -482,7 +487,7 @@ final class WiltedMacIntentApplier {
         case .unsupported:
             return try rejected(IntentOutcome.reasonUnsupportedAction)
         case .requestMedia, .mediaCached, .subscribe, .addArticle, .addLink, .adFeedback,
-             .decideNewEpisode, .listenNext, .cancelListenNext,
+             .decideNewEpisode, .listenNext, .requestBulletinAudio, .cancelListenNext,
              .setHeadlineSaved, .setHeadlinePublisherMuted, .setNotebookEntry, .setShowStartOffset, .setShowPlaybackSpeed:
             return try rejected(notApplicable)
         }

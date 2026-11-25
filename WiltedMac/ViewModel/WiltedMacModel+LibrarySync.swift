@@ -6,6 +6,7 @@ import WiltedCloudKit
 import WiltedCloudKitLibrary
 import WiltedDomain
 import WiltedLibrary
+import WiltedWeather
 
 #if canImport(WiltedProducer)
 import WiltedProducer
@@ -53,6 +54,8 @@ actor WiltedMacLibraryIntentSink: LibraryIntentSink {
             try await record(intent, describing: "unclassified add-link intent")
         case .listenNext:
             try await record(intent, describing: "Listen next request")
+        case .requestBulletinAudio:
+            try await record(intent, describing: "automatic bulletin audio request")
         case .cancelListenNext:
             try await record(intent, describing: "Listen next cancellation")
         case .setHeadlineSaved:
@@ -171,6 +174,23 @@ extension WiltedMacModel {
             model: self, transport: resolvedTransport, directory: storyAudioDirectory,
             deviceID: deviceID, store: phoneRequestStore)
         listenNextRemoteCoordinator = listenNextRuntime
+        let bulletinAudioRuntime = (resolvedTransport as? any LibraryStoryAudioTransport).map { audioTransport in
+            WiltedMacBulletinAudioCoordinator(
+                audioTransport: audioTransport, deviceID: deviceID,
+                directory: storyAudioDirectory.appending(path: "automatic-bulletin-audio", directoryHint: .isDirectory),
+                currentOwner: { await resolvedTransport.verifiedOwnerToken() },
+                currentGeneration: { await resolvedTransport.operationGeneration() },
+                bulletin: { [weak self] id in self?.bulletinHub.localBulletin(id: id) },
+                bulletinFallback: { id in
+                    await WiltedMacPublicNWSBulletinLookup().bulletin(id: id)
+                },
+                readyAudioURL: { [weak self] bulletin, voice in
+                    guard let self, self.readingVoiceSelection.selectedVoice == voice else { return nil }
+                    return self.bulletinHub.narrationAudioURL(for: bulletin)
+                },
+                selectedVoice: { [weak self] in self?.readingVoiceSelection.selectedVoice })
+        }
+        Task { await bulletinAudioRuntime?.cleanupExpiredOffers() }
         if listenNextRuntime == nil {
             librarySyncLog.error("Listen next is unavailable because the active transport has no scoped story-audio service")
         }
@@ -199,7 +219,15 @@ extension WiltedMacModel {
         // the media service's ledger; media intents keep their existing route.
         let listenNextHandler: (@MainActor (LibraryIntent) async throws -> IntentOutcome)?
         if let listenNextRuntime {
-            listenNextHandler = { intent in try await listenNextRuntime.handle(intent) }
+            listenNextHandler = { intent in
+                if case .requestBulletinAudio = intent.action {
+                    guard let bulletinAudioRuntime else {
+                        return try .rejected(for: intent, reason: IntentOutcome.reasonFailed, at: Date())
+                    }
+                    return try await bulletinAudioRuntime.handle(intent)
+                }
+                return try await listenNextRuntime.handle(intent)
+            }
         } else {
             listenNextHandler = nil
         }
@@ -313,10 +341,12 @@ extension WiltedMacModel {
                 startPolling()
                 controller?.requestPublish()
                 Task { await listenNextRuntime?.activateAndResume() }
+                Task { await bulletinAudioRuntime?.cleanupExpiredOffers() }
             }
             account.didClose = { [weak self, weak controller] in
                 _ = inbound.stop(); controller?.publicationHydration?.cancel()
                 listenNextRuntime?.invalidate()
+                bulletinAudioRuntime?.invalidate()
                 self?.librarySyncActivity.publicationOwner = nil
             }
             account.onStatus = { [weak self] status in self?.libraryAccountStatus = status }

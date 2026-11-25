@@ -431,6 +431,7 @@ extension LibrarySettingsTests {
             "wilted-library-settings-sync-progress",
             "wilted-library-settings-sync-status",
             "wilted-library-settings-test-bulletin",
+            "wilted-library-settings-test-bulletin-status",
             "wilted-library-settings-text-scale",
             "wilted-library-settings-version",
             "wilted-library-settings-voice-routing-log",

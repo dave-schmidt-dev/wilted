@@ -170,6 +170,28 @@ struct AlertMonitorTests {
         #expect(sink.bulletins.first?.text == "Tornado Warning for Washington.")
     }
 
+    @Test func sharedBulletinConversionKeepsPlainNarrationAndRejectsWithdrawnAlerts() throws {
+        let initial = try #require(AlertMonitor.bulletin(for: warning("a1"), now: nowDate))
+        #expect(initial.text == "Tornado Warning for Washington")
+
+        let update = NWSAlert(
+            id: "a2", event: "Tornado Warning", areaDesc: "Washington", severity: "Extreme",
+            messageType: "Update", headline: nil, sent: nowDate,
+            expires: nowDate.addingTimeInterval(600), references: ["a1"])
+        let updated = try #require(AlertMonitor.bulletin(for: update, now: nowDate))
+        #expect(updated.text == "Tornado Warning for Washington.")
+        #expect(updated.supersedes == "a1")
+
+        for messageType in ["Cancel", "Ack", "Error"] {
+            let withdrawn = NWSAlert(
+                id: "withdrawn-\(messageType)", event: "Tornado Warning", areaDesc: "Washington",
+                severity: "Severe", messageType: messageType, headline: "Do not narrate",
+                sent: nowDate, expires: nowDate.addingTimeInterval(600))
+            #expect(AlertMonitor.bulletin(for: withdrawn, now: nowDate) == nil)
+        }
+        #expect(AlertMonitor.bulletin(for: warning("expired", expiresIn: -1), now: nowDate) == nil)
+    }
+
     @Test func failureBacksOffAndRecovers() async throws {
         struct Down: Error {}
         final class Failing: NWSAlertSource, @unchecked Sendable {

@@ -1,4 +1,3 @@
-import AVFoundation
 import CryptoKit
 import Foundation
 import WiltedDomain
@@ -58,9 +57,23 @@ final class InterruptionNowPlaying: ListenerNowPlaying, @unchecked Sendable {
 /// Never speaks: records what it was asked and finishes only when a test says so.
 @MainActor final class StubSpeaker: LibrarySpeaking {
     var canStart = true
+    var canSpeakBulletins = true
     private(set) var spoken: [String] = []
+    private(set) var spokenBulletins: [Bulletin] = []
+    private(set) var preparedBulletins: [Bulletin] = []
+    private(set) var preparedAudioRefreshes = 0
     private(set) var stops = 0
     private var finish: (@MainActor () -> Void)?
+
+    func prepare(_ bulletin: Bulletin) { preparedBulletins.append(bulletin) }
+    func refreshPreparedAudio() async { preparedAudioRefreshes += 1 }
+    func canSpeak(_ bulletin: Bulletin) -> Bool { canSpeakBulletins }
+
+    func speak(_ bulletin: Bulletin, onFinish: @escaping @MainActor () -> Void) -> Bool {
+        spokenBulletins.append(bulletin)
+        return speak(bulletin.text, onFinish: onFinish)
+    }
+
     func speak(_ text: String, onFinish: @escaping @MainActor () -> Void) -> Bool {
         guard canStart else { return false }
         spoken.append(text)
@@ -195,10 +208,13 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
         let rig = makeInterruptionRig(channel: headlineChannel(alerts: true), defaults: defaults)
         await rig.play(at: 42)
         await rig.controller.syncTick()
+        XCTAssertEqual(rig.speaker.preparedAudioRefreshes, 1)
+        XCTAssertEqual(rig.speaker.preparedBulletins.map(\.id), ["headline-1"])
         let urgentAlert = try! Bulletin(
             id: "alert-urgent", kind: .alert, text: "Spoken text for alert-urgent.", severity: .extreme,
             issuedAt: Date(timeIntervalSinceNow: -600), expiresAt: Date(timeIntervalSinceNow: 3_600))
         rig.controller.alertArrived(urgentAlert)
+        XCTAssertEqual(rig.speaker.preparedBulletins.map(\.id), ["headline-1", "alert-urgent"])
 
         XCTAssertTrue(rig.speaker.spoken.isEmpty, "channel arrival and extreme severity never interrupt playback")
         XCTAssertTrue(rig.engine.isPlaying)
@@ -398,6 +414,35 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
         XCTAssertEqual(rig.player.position, 42.75)
     }
 
+    func testMediaInterruptionAfterHeadlineResumesFromPostBulletinPosition() async throws {
+        let rig = makeInterruptionRig(channel: headlineChannel(), defaults: defaults)
+        let journalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("interruption-resume-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: journalURL) }
+        rig.player.journal = LibraryJournal(url: journalURL)
+        await rig.play(at: 42)
+        await rig.controller.syncTick()
+        rig.crossAdBreak()
+        rig.speaker.completeSpeech()
+        rig.engine.currentTime = 48
+        rig.player.refreshPosition()
+
+        rig.events.send(.interruptionBegan)
+        XCTAssertEqual(rig.player.status, .paused)
+        XCTAssertEqual(rig.player.position, 48)
+        rig.events.send(.interruptionEnded(shouldResume: true))
+
+        XCTAssertEqual(rig.player.status, .playing)
+        XCTAssertTrue(rig.engine.isPlaying)
+        XCTAssertEqual(rig.engine.currentTime, 48)
+
+        let journal = try String(contentsOf: journalURL, encoding: .utf8)
+        XCTAssertTrue(journal.contains("bulletin-resume outcome=started"))
+        XCTAssertTrue(journal.contains("audio-session event=interruption-began"))
+        XCTAssertTrue(journal.contains("audio-session event=interruption-ended should-resume=true resume-requested=true"))
+        XCTAssertFalse(journal.contains("Spoken text for headline-1"), "journal records outcomes, never bulletin content")
+    }
+
     func testNextTrackAdvancesAsBeforeWhenNothingIsSpokenAndSkipsOnlyWhileSpeaking() async throws {
         let rig = makeInterruptionRig(channel: headlineChannel(), defaults: defaults, adBreakSeams: [40.5])
         await rig.play(at: 10)
@@ -448,6 +493,49 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
         XCTAssertEqual(rig.speaker.spoken, ["Spoken text for headline-1."],
                        "a failed start is not marked read and remains queued for the next break")
         XCTAssertEqual(rig.controller.activeSpokenHeadline?.id, "headline-1")
+    }
+
+    func testUnavailablePreparedAudioLeavesPlaybackRunningAndRequeuesStory() async {
+        let rig = makeInterruptionRig(
+            channel: headlineChannel(), defaults: defaults, adBreakSeams: [42.5, 80])
+        rig.speaker.canSpeakBulletins = false
+        await rig.play(at: 42)
+        await rig.controller.syncTick()
+        rig.crossAdBreak()
+
+        XCTAssertEqual(rig.player.status, .playing)
+        XCTAssertFalse(rig.player.isHoldingForSpeech)
+        XCTAssertTrue(rig.engine.isPlaying)
+        XCTAssertEqual(rig.player.position, 42.75, "an unavailable story must not rewind playback to the seam")
+        XCTAssertTrue(rig.speaker.spokenBulletins.isEmpty)
+
+        rig.speaker.canSpeakBulletins = true
+        rig.crossAdBreak(to: 79.5)
+        rig.crossAdBreak(to: 80.25)
+        XCTAssertEqual(rig.speaker.spokenBulletins.map(\.id), ["headline-1"])
+        XCTAssertTrue(rig.player.isHoldingForSpeech)
+    }
+
+    func testMediaInterruptionDuringBulletinResumesOnlyWhenSystemAllows() async {
+        let rig = makeInterruptionRig(channel: headlineChannel(), defaults: defaults)
+        await rig.play(at: 42)
+        await rig.controller.syncTick()
+        rig.crossAdBreak()
+        XCTAssertTrue(rig.player.isHoldingForSpeech)
+
+        rig.events.send(.interruptionBegan)
+        XCTAssertEqual(rig.player.status, .paused)
+        XCTAssertFalse(rig.player.isHoldingForSpeech)
+        XCTAssertEqual(rig.speaker.stops, 2)
+        rig.events.send(.interruptionEnded(shouldResume: true))
+        XCTAssertEqual(rig.player.status, .playing)
+        XCTAssertTrue(rig.engine.isPlaying)
+        XCTAssertEqual(rig.engine.currentTime, 42.75)
+
+        rig.events.send(.interruptionBegan)
+        rig.events.send(.interruptionEnded(shouldResume: false))
+        XCTAssertEqual(rig.player.status, .paused, "a later media interruption obeys iOS's no-resume decision")
+        XCTAssertFalse(rig.engine.isPlaying)
     }
 
     func testStatusStaysPlayingAndListeningDoesNotGrowDuringSpeechWithTheRealTimer() async throws {
@@ -533,29 +621,20 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
         XCTAssertEqual(LibraryRowBuilder.showTitle(entry, sources: [:]), "Morning report")
     }
 
-    func testLateCancelForUtteranceADoesNotFinishUtteranceB() async throws {
-        let speaker = LibrarySpeechSynthesizer()
-        var finishedA = false
-        var finishedB = false
+    func testBulletinSpeakerSkipsWithoutVerifiedAudioAndNeverFallsBackToSystemVoice() async throws {
+        let handoff = try await HandoffSpeechRig.make(defaults: defaults)
+        defer { try? FileManager.default.removeItem(at: handoff.scratch) }
+        let speaker = LibraryBulletinAudioSpeaker(model: handoff.model)
+        let bulletin = interruptionBulletin()
+        var finished = false
 
-        XCTAssertTrue(speaker.speak("First utterance") { finishedA = true })
-        let uttA = try XCTUnwrap(speaker.currentUtterance)
-
-        XCTAssertTrue(speaker.speak("Second utterance") { finishedB = true })
-        let uttB = try XCTUnwrap(speaker.currentUtterance)
-        XCTAssertNotEqual(ObjectIdentifier(uttA), ObjectIdentifier(uttB))
-
-        // Late cancel for utterance A arrives
-        speaker.speechSynthesizer(AVSpeechSynthesizer(), didCancel: uttA)
-        try? await Task.sleep(for: .milliseconds(50))
-        XCTAssertFalse(finishedA)
-        XCTAssertFalse(finishedB)
-
-        // Utterance B finishes normally
-        speaker.speechSynthesizer(AVSpeechSynthesizer(), didFinish: uttB)
-        try? await Task.sleep(for: .milliseconds(50))
-        XCTAssertFalse(finishedA)
-        XCTAssertTrue(finishedB)
+        speaker.prepare(bulletin)
+        await speaker.refreshPreparedAudio()
+        XCTAssertFalse(speaker.canSpeak(bulletin), "no verified, owner-scoped audio is cached for this bulletin")
+        XCTAssertFalse(speaker.speak(bulletin) { finished = true })
+        XCTAssertFalse(speaker.speak("This is a test bulletin.") { finished = true },
+                       "generic preview text has no approved narration clip")
+        XCTAssertFalse(finished, "unavailable audio must not announce completion or substitute system speech")
     }
 }
 

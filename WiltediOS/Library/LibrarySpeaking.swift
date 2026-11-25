@@ -1,87 +1,94 @@
 import AVFoundation
 import Foundation
-import OSLog
+import WiltedLibrary
 
-/// Speaks one bulletin. Injected so tests never speak.
+/// Plays a bulletin through the approved, Mac-rendered narration path. Implementations never
+/// substitute the phone's default system voice when a clip is unavailable.
 @MainActor
 protocol LibrarySpeaking: AnyObject {
-    /// Starts speaking and calls `onFinish` once on the main actor when the speech ends or fails.
-    /// Returns false, never calling `onFinish`, when speech cannot start.
+    func prepare(_ bulletin: Bulletin)
+    func refreshPreparedAudio() async
+    func canSpeak(_ bulletin: Bulletin) -> Bool
+    func speak(_ bulletin: Bulletin, onFinish: @escaping @MainActor () -> Void) -> Bool
+    /// Kept for the generic settings preview; production returns false because it has no approved clip.
     func speak(_ text: String, onFinish: @escaping @MainActor () -> Void) -> Bool
-    /// Stops silently: `onFinish` is not called.
     func stop()
 }
 
-private let librarySpeechLog = Logger(subsystem: "com.zerodelta.wilted", category: "LibraryInterruptions")
+extension LibrarySpeaking {
+    func prepare(_ bulletin: Bulletin) {}
+    func refreshPreparedAudio() async {}
+    func canSpeak(_ bulletin: Bulletin) -> Bool { true }
+    func speak(_ bulletin: Bulletin, onFinish: @escaping @MainActor () -> Void) -> Bool {
+        speak(bulletin.text, onFinish: onFinish)
+    }
+}
 
-/// Gives up if speech has not started within the deadline so playback can continue.
+/// Plays only verified, owner-scoped audio previously rendered by the Mac.
 @MainActor
-final class LibrarySpeechSynthesizer: NSObject, LibrarySpeaking, AVSpeechSynthesizerDelegate {
-    static let startTimeout: Duration = .seconds(3)
-    private let synthesizer = AVSpeechSynthesizer()
-    private var current: (id: ObjectIdentifier, finish: @MainActor () -> Void)?
-    private var startedUtterance: ObjectIdentifier?
-    private var startWatch: Task<Void, Never>?
-    private(set) var currentUtterance: AVSpeechUtterance?
+final class LibraryBulletinAudioSpeaker: NSObject, LibrarySpeaking, AVAudioPlayerDelegate {
+    private let audio: LibraryBulletinAudioManager
+    private var player: AVAudioPlayer?
+    private var completion: (@MainActor () -> Void)?
+    private var playingID: ObjectIdentifier?
 
-    init(usesApplicationAudioSession: Bool = true) {
+    init(model: LibraryAppModel) {
+        audio = model.bulletinAudioManager
         super.init()
-        synthesizer.usesApplicationAudioSession = usesApplicationAudioSession
-        synthesizer.delegate = self
     }
 
-    func speak(_ text: String, onFinish: @escaping @MainActor () -> Void) -> Bool {
-        guard !text.isEmpty else { return false }
+    func prepare(_ bulletin: Bulletin) { audio.prepare(bulletin) }
+
+    func refreshPreparedAudio() async { await audio.refreshPreparedAudio() }
+
+    func canSpeak(_ bulletin: Bulletin) -> Bool { audio.canSpeak(bulletin) }
+
+    func speak(_ bulletin: Bulletin, onFinish: @escaping @MainActor () -> Void) -> Bool {
+        guard let url = audio.audioURL(for: bulletin) else { return false }
         stop()
-        let utterance = AVSpeechUtterance(string: text)
-        let id = ObjectIdentifier(utterance)
-        current = (id, onFinish)
-        currentUtterance = utterance
-        startedUtterance = nil
-        synthesizer.speak(utterance)
-        startWatch = Task { [weak self] in
-            try? await Task.sleep(for: Self.startTimeout)
-            guard !Task.isCancelled, let self, self.current?.id == id, self.startedUtterance != id else { return }
-            librarySpeechLog.error("Speech did not start; giving up on this bulletin")
-            self.synthesizer.stopSpeaking(at: .immediate)
-            self.complete(id)
+        guard let player = try? AVAudioPlayer(contentsOf: url) else { return false }
+        self.player = player
+        completion = onFinish
+        player.volume = 1
+        player.delegate = self
+        guard player.prepareToPlay(), player.play() else {
+            self.player = nil
+            completion = nil
+            return false
         }
+        playingID = ObjectIdentifier(player)
         return true
     }
 
+    func speak(_ text: String, onFinish: @escaping @MainActor () -> Void) -> Bool {
+        false
+    }
+
     func stop() {
-        guard current != nil else { return }
-        current = nil
-        currentUtterance = nil
-        startedUtterance = nil
-        startWatch?.cancel()
-        synthesizer.stopSpeaking(at: .immediate)
+        player?.stop()
+        player?.delegate = nil
+        player = nil
+        completion = nil
+        playingID = nil
     }
 
-    private func complete(_ id: ObjectIdentifier) {
-        guard let current, current.id == id else { return }
-        self.current = nil
-        self.currentUtterance = nil
-        self.startedUtterance = nil
-        startWatch?.cancel()
-        current.finish()
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        let id = ObjectIdentifier(player)
+        Task { @MainActor [weak self] in self?.finish(id) }
     }
 
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
-        let id = ObjectIdentifier(utterance)
-        Task { @MainActor [weak self] in
-            guard let self, self.current?.id == id else { return }
-            self.startedUtterance = id
-        }
+    nonisolated func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        let id = ObjectIdentifier(player)
+        Task { @MainActor [weak self] in self?.finish(id) }
     }
 
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        let id = ObjectIdentifier(utterance)
-        Task { @MainActor [weak self] in self?.complete(id) }
-    }
-
-    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        let id = ObjectIdentifier(utterance)
-        Task { @MainActor [weak self] in self?.complete(id) }
+    private func finish(_ id: ObjectIdentifier) {
+        guard playingID == id else { return }
+        playingID = nil
+        player?.delegate = nil
+        player = nil
+        let finished = completion
+        completion = nil
+        finished?()
     }
 }

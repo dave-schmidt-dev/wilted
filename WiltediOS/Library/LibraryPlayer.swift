@@ -42,6 +42,20 @@ enum LibrarySessionEvent: Equatable, Sendable {
 /// responses the legacy controller declares but nothing ever called.
 @MainActor
 final class LibraryPlayer: ObservableObject {
+    /// A bounded local cause for forgetting the currently loaded item.
+    enum UnloadReason: String {
+        case explicitStop = "explicit-stop"
+        case eligibilityChanged = "eligibility-changed"
+        case queueRemoved = "queue-removed"
+        case mediaUnavailable = "media-unavailable"
+        case mediaNotPrepared = "media-not-prepared"
+        case mediaRevoked = "media-revoked"
+        case accountUnavailable = "account-unavailable"
+        case accountChanged = "account-changed"
+        case playbackAdmissionDenied = "playback-admission-denied"
+        case seekAdmissionDenied = "seek-admission-denied"
+    }
+
     /// A cached file ready to play.
     struct Item: Equatable, Sendable {
         let entryID: ItemID
@@ -73,6 +87,8 @@ final class LibraryPlayer: ObservableObject {
     nonisolated static let skipBackSeconds: TimeInterval = 15
     nonisolated static let skipForwardSeconds: TimeInterval = 30
     private static let maxAccrual: TimeInterval = 5
+    /// Lets AVAudioSession's interruption notification reach the main queue before a stopped engine is called paused.
+    static let defaultEngineStopGrace: Duration = .seconds(1)
 
     @Published private(set) var item: Item?
     /// Identity hint needed when several publisher chapters collapse to one prepared-time point.
@@ -80,6 +96,7 @@ final class LibraryPlayer: ObservableObject {
     @Published private(set) var status: Status = .idle {
         // Anything that leaves `.playing` (pause, stop, a new item, a failure) also ends a spoken-bulletin hold.
         didSet {
+            if status != .playing { engineStoppedAt = nil }
             if status != .playing, speechHold != nil { speechHold = nil; onSpeechHoldEnded?() }
             if status != .paused { pausedPositionSetAt = nil } else if oldValue != .paused { pausedPositionSetAt = Date() }
         }
@@ -154,6 +171,8 @@ final class LibraryPlayer: ObservableObject {
     private var artworkObserver: AnyCancellable?
 
     var isPlaying: Bool { status == .playing }
+    /// True when published playback has stopped in the engine, without a speech or seek hold.
+    var engineStopPending: Bool { status == .playing && speechHold == nil && !isRemoteSeeking && !engine.isPlaying }
     /// False for an engine with no speed control, so the UI can hide the picker.
     var supportsRate: Bool { engine is LibraryRateAdjustable }
 
@@ -166,6 +185,9 @@ final class LibraryPlayer: ObservableObject {
     /// Where a play or play/pause command goes when nothing is loaded. Set by the runtime, which knows the library.
     var onIdleRemoteCommand: (@MainActor (LibraryRemoteCommand) -> Bool)?
     private let tickInterval: Duration
+    /// Shared with same-module extensions so all explicit resumes clear one stop observation.
+    let engineStopGrace: Duration
+    var engineStoppedAt: ContinuousClock.Instant?
     private var loadGeneration: UInt64 = 0
     private let seekInstanceID = UUID()
     var seekSessionID: String? { item == nil ? nil : "\(seekInstanceID.uuidString):\(loadGeneration)" }
@@ -197,6 +219,7 @@ final class LibraryPlayer: ObservableObject {
         sessionEvents: any LibrarySessionEvents,
         artwork: LibraryArtworkCache? = nil,
         tickInterval: Duration = .milliseconds(500),
+        engineStopGrace: Duration = LibraryPlayer.defaultEngineStopGrace,
         remoteSeekSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         remoteSeekNow: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
@@ -206,6 +229,7 @@ final class LibraryPlayer: ObservableObject {
         self.nowPlaying = nowPlaying
         self.remoteCommands = remoteCommands
         self.tickInterval = tickInterval
+        self.engineStopGrace = engineStopGrace
         self.remoteSeekSleep = remoteSeekSleep
         self.remoteSeekNow = remoteSeekNow
         if let completing = engine as? any LibraryCompletingAudioEngine {
@@ -316,7 +340,9 @@ final class LibraryPlayer: ObservableObject {
             return fail(.audioSession)
         }
         LibraryPlaybackTrace.shared.record(.sessionActivated, token: traceToken)
-        if status == .ended { engine.currentTime = 0 } else if holdsOwnPosition { engine.currentTime = position }
+        if status == .ended { engine.currentTime = 0 }
+        else if holdsOwnPosition || engineStopPending { engine.currentTime = position }
+        engineStoppedAt = nil
         guard engine.play() else { return fail(.engineRefused) }
         journal?.note("play entry=\(item?.entryID.rawValue ?? "") position=\(String(format: "%.1f", engine.currentTime))")
         LibraryPlaybackTrace.shared.record(.playCalled, token: traceToken)
@@ -340,11 +366,13 @@ final class LibraryPlayer: ObservableObject {
         guard item != nil else { return }
         resumeAfterInterruption = false
         accrueListening()
+        let engineWasPlaying = engine.isPlaying
         engine.pause()
         stopTicking()
         lastAccrual = nil
-        if !holdsOwnPosition { position = min(engine.currentTime, duration) }
+        if !holdsOwnPosition, engineWasPlaying { position = min(engine.currentTime, duration) }
         journal?.note("stop reason=pause pause-reason=\(reason) entry=\(item?.entryID.rawValue ?? "") position=\(String(format: "%.1f", position))")
+        engineStoppedAt = nil
         if status == .playing { status = .paused }
         publishNowPlaying()
     }
@@ -366,6 +394,7 @@ final class LibraryPlayer: ObservableObject {
         guard item != nil else { return }
         selectedPodcastChapterIndex = nil
         let target = min(max(0, seconds), duration)
+        engineStoppedAt = nil
         engine.currentTime = target
         position = target
         if status == .ended, target < duration { status = .paused } else if status == .paused { pausedPositionSetAt = Date() }
@@ -420,12 +449,12 @@ final class LibraryPlayer: ObservableObject {
 
     /// Stops and forgets the item and releases the audio session. The system command handlers stay
     /// registered, so a play command can still start something from the library.
-    func stop() {
+    func stop(reason: UnloadReason = .explicitStop) {
         onCommand?()
         transportCount &+= 1; cancelAdmission()
         storyAutoStartEpoch &+= 1
         onStoryQueueHold?(storyAutoStartEpoch)
-        clearLoadedItem()
+        clearLoadedItem(reason: reason)
     }
 
     private func rearmStoryQueueForExplicitStart() {
@@ -445,15 +474,15 @@ final class LibraryPlayer: ObservableObject {
 
     /// Library eligibility loss clears resume access immediately. An untouched natural finish
     /// still owns its automatic successor; unloading it is not a listener transport command.
-    func invalidateLoadedItem() {
+    func invalidateLoadedItem(reason: UnloadReason = .eligibilityChanged) {
         guard let entryID = item?.entryID, naturalCompletion(after: entryID) != nil else {
-            stop()
+            stop(reason: reason)
             return
         }
-        clearLoadedItem()
+        clearLoadedItem(reason: reason)
     }
 
-    private func clearLoadedItem() {
+    private func clearLoadedItem(reason: UnloadReason) {
         _ = cancelRemoteSeeking()
         stopsAfterCurrentItem = false
         guard item != nil || status != .idle else { return }
@@ -464,7 +493,9 @@ final class LibraryPlayer: ObservableObject {
         stopTicking()
         lastAccrual = nil
         resumeAfterInterruption = false
-        if let item { journal?.note("stop reason=unload entry=\(item.entryID.rawValue) position=\(String(format: "%.1f", position))") }
+        if let item {
+            journal?.note("stop reason=unload trigger=\(reason.rawValue) entry=\(item.entryID.rawValue) position=\(String(format: "%.1f", position))")
+        }
         item = nil
         status = .idle
         position = 0
@@ -489,16 +520,29 @@ final class LibraryPlayer: ObservableObject {
     func refreshPosition() {
         // A spoken bulletin holds the position as the checkpoint and its time is not listening time.
         guard item != nil, !isRemoteSeeking, speechHold == nil, !holdsOwnPosition else { return }
-        accrueListening()
-        position = min(max(0, engine.currentTime), duration)
-        // The engine stopped on its own without a completion (something else took the output).
-        if status == .playing, !engine.isPlaying {
+        guard status == .playing else { return }
+        if !engine.isPlaying {
+            if engineStoppedAt == nil {
+                engineStoppedAt = ContinuousClock.now
+                accrueListening()
+                lastAccrual = nil
+            }
+            // Do not copy a stopped engine's stale or reset playhead into the saved checkpoint.
+            guard let stoppedAt = engineStoppedAt,
+                  stoppedAt.duration(to: .now) >= engineStopGrace else { return }
+            engineStoppedAt = nil
             autoPausedAt = (loadGeneration, transportCount)
+            journal?.note("playback-stop outcome=paused reason=engine-stopped")
             status = .paused
             stopTicking()
             lastAccrual = nil
             publishNowPlaying()
+            return
         }
+        if engineStoppedAt != nil { lastAccrual = .now }
+        engineStoppedAt = nil
+        accrueListening()
+        position = min(max(0, engine.currentTime), duration)
     }
 
     /// Reports the time played since the last report. A gap longer than `maxAccrual` (a suspended
@@ -518,14 +562,17 @@ final class LibraryPlayer: ObservableObject {
         switch event {
         case .interruptionBegan:
             let wasPlaying = isPlaying
+            journal?.note("audio-session event=interruption-began playback-intended=\(wasPlaying) engine-playing=\(engine.isPlaying) speech-hold=\(speechHold != nil)")
             pause(reason: "interruption")
             resumeAfterInterruption = wasPlaying
         case let .interruptionEnded(shouldResume):
             let resume = resumeAfterInterruption && shouldResume && item != nil
+            journal?.note("audio-session event=interruption-ended should-resume=\(shouldResume) resume-requested=\(resume) item-loaded=\(item != nil)")
             resumeAfterInterruption = false
             if resume { handle(LibraryRemoteCommand.play) }
         case .routeLost:
             // Never resumes on its own: audio must not jump to the speaker when headphones leave.
+            journal?.note("audio-session event=route-lost playback-intended=\(isPlaying) speech-hold=\(speechHold != nil)")
             pause(reason: "routeLost")
         }
     }
@@ -586,7 +633,7 @@ final class LibraryPlayer: ObservableObject {
         guard item != nil, status == .playing || status == .paused, duration.isFinite, duration > 0 else { return false }
         skipSpeechForCommand()
         onCommand?(); transportCount &+= 1; cancelAdmission()
-        accrueListening(); engine.pause(); stopTicking(); lastAccrual = nil
+        accrueListening(); engineStoppedAt = nil; engine.pause(); stopTicking(); lastAccrual = nil
         return true
     }
 
@@ -600,6 +647,7 @@ final class LibraryPlayer: ObservableObject {
 
     func restoreRemoteSeekingPlayback(resume: Bool) -> Bool {
         if resume, status == .playing {
+            engineStoppedAt = nil
             guard engine.play() else { return fail(.engineRefused) }
             lastAccrual = .now; startTicking()
         } else if status == .playing { status = .paused }

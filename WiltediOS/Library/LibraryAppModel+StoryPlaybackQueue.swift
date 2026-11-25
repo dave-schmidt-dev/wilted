@@ -293,7 +293,9 @@ extension LibraryAppModel {
 
     /// Drops only playback metadata; request-owned audio cleanup stays with the request cache.
     func discardStoryPlaybackLedgerAfterAccountChange() {
-        if handoffState.player?.item?.storyRequestID != nil { handoffState.player?.stop() }
+        if handoffState.player?.item?.storyRequestID != nil {
+            handoffState.player?.stop(reason: .accountChanged)
+        }
         preferences.removeObject(forKey: Self.listenNextPlaybackLedgerKey)
         preferences.removeObject(forKey: Self.listenNextPlaybackHoldKey)
         preferences.removeObject(forKey: Self.listenNextPlaybackHeldKey)

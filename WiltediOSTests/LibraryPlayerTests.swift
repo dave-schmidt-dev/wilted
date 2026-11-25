@@ -114,12 +114,32 @@ final class LibraryPlayerTests: XCTestCase {
         let events: PlayerFakeEvents
     }
 
-    private func makeRig(engine: PlayerFakeEngine = PlayerFakeEngine(), tick: Duration = .seconds(3600)) -> Rig {
+    private func makeRig(
+        engine: PlayerFakeEngine = PlayerFakeEngine(), tick: Duration = .seconds(3600),
+        engineStopGrace: Duration = LibraryPlayer.defaultEngineStopGrace
+    ) -> Rig {
         let session = PlayerFakeSession(), nowPlaying = PlayerFakeNowPlaying(), remote = PlayerFakeRemote(), events = PlayerFakeEvents()
         let player = LibraryPlayer(
             engine: engine, session: session, nowPlaying: nowPlaying, remoteCommands: remote,
-            sessionEvents: events, tickInterval: tick)
+            sessionEvents: events, tickInterval: tick, engineStopGrace: engineStopGrace)
         return Rig(player: player, engine: engine, session: session, nowPlaying: nowPlaying, remote: remote, events: events)
+    }
+
+    func testUnloadJournalRecordsBoundedStopAndInvalidationReasons() throws {
+        let journalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("player-unload-reasons-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: journalURL) }
+        let rig = makeRig()
+        rig.player.journal = LibraryJournal(url: journalURL)
+
+        XCTAssertTrue(rig.player.start(item, at: 42))
+        rig.player.invalidateLoadedItem(reason: .queueRemoved)
+        XCTAssertTrue(rig.player.start(item, at: 51))
+        rig.player.stop(reason: .explicitStop)
+
+        let journal = try String(contentsOf: journalURL, encoding: .utf8)
+        XCTAssertTrue(journal.contains("stop reason=unload trigger=queue-removed entry=entry-1 position=42.0"))
+        XCTAssertTrue(journal.contains("stop reason=unload trigger=explicit-stop entry=entry-1 position=51.0"))
     }
 
     private func waitUntil(_ condition: @escaping @MainActor () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {
@@ -445,6 +465,67 @@ final class LibraryPlayerTests: XCTestCase {
         XCTAssertEqual(rig.engine.currentTime, 200, "resumes where it stopped")
     }
 
+    func testInterruptionNotificationWinsRaceWithTransientEngineStop() {
+        let rig = makeRig()
+        rig.player.start(item, at: 200)
+        rig.engine.isPlaying = false
+        rig.engine.currentTime = 0
+        rig.player.refreshPosition()
+        XCTAssertEqual(rig.player.status, .playing, "one false engine sample is not yet a user pause")
+        XCTAssertEqual(rig.player.position, 200, "a stopped engine's reset playhead must not replace the saved checkpoint")
+
+        rig.events.send(.interruptionBegan)
+        XCTAssertEqual(rig.player.status, .paused)
+        rig.events.send(.interruptionEnded(shouldResume: true))
+        XCTAssertEqual(rig.player.status, .playing)
+        XCTAssertTrue(rig.engine.isPlaying)
+        XCTAssertEqual(rig.engine.currentTime, 200)
+    }
+
+    func testCarPlayPlayAndToggleDuringStopGraceResumeFromLastConfirmedPosition() async throws {
+        for command in [LibraryRemoteCommand.play, .togglePlayPause] {
+            let rig = makeRig()
+            rig.player.authorizePlayback = { _ in true }
+            rig.player.start(item, at: 200)
+            rig.engine.isPlaying = false
+            rig.engine.currentTime = 0
+            rig.player.refreshPosition()
+            XCTAssertEqual(rig.player.status, .playing)
+            XCTAssertEqual(rig.player.position, 200)
+
+            let handler = try XCTUnwrap(rig.remote.handler)
+            XCTAssertTrue(handler(command))
+            await waitUntil { rig.engine.isPlaying }
+            XCTAssertEqual(rig.engine.currentTime, 200, "\(command) must restore the saved playhead before resume")
+        }
+    }
+
+    func testExplicitRemotePauseDuringStopGraceStillPauses() throws {
+        let rig = makeRig()
+        rig.player.start(item, at: 200)
+        rig.engine.isPlaying = false
+        rig.engine.currentTime = 0
+        rig.player.refreshPosition()
+
+        let handler = try XCTUnwrap(rig.remote.handler)
+        XCTAssertTrue(handler(.pause))
+        XCTAssertEqual(rig.player.status, .paused)
+        XCTAssertFalse(rig.engine.isPlaying)
+        XCTAssertEqual(rig.player.position, 200)
+    }
+
+    func testRemotePlayDuringActivePlaybackDoesNotRewindLiveEnginePosition() throws {
+        let rig = makeRig()
+        rig.player.start(item, at: 200)
+        rig.engine.currentTime = 240
+        rig.player.position = 200
+
+        let handler = try XCTUnwrap(rig.remote.handler)
+        XCTAssertTrue(handler(.play))
+        XCTAssertEqual(rig.engine.currentTime, 240, "ordinary Play leaves a currently running engine at its live position")
+        XCTAssertEqual(rig.player.position, 240)
+    }
+
     func testInterruptionEndedWithoutHintStaysPaused() {
         let rig = makeRig()
         rig.player.start(item)
@@ -551,12 +632,25 @@ final class LibraryPlayerTests: XCTestCase {
         rig.player.pause()
     }
 
-    func testRefreshNoticesAnEngineThatStoppedOnItsOwn() {
+    func testRefreshNoticesAnEngineThatStoppedOnItsOwnAfterGrace() async {
+        let rig = makeRig(engineStopGrace: .milliseconds(20))
+        rig.player.start(item)
+        rig.engine.isPlaying = false
+        rig.player.refreshPosition()
+        XCTAssertEqual(rig.player.status, .playing, "a brief engine stop waits for interruption notification")
+        try? await Task.sleep(for: .milliseconds(30))
+        rig.player.refreshPosition()
+        XCTAssertEqual(rig.player.status, .paused)
+    }
+
+    func testEngineStopGraceClearsWhenPlaybackReturns() {
         let rig = makeRig()
         rig.player.start(item)
         rig.engine.isPlaying = false
         rig.player.refreshPosition()
-        XCTAssertEqual(rig.player.status, .paused)
+        rig.engine.isPlaying = true
+        rig.player.refreshPosition()
+        XCTAssertEqual(rig.player.status, .playing)
     }
 
     func testStatusWordingNeverDependsOnColor() {
@@ -604,13 +698,15 @@ final class LibraryPlayerTests: XCTestCase {
     // MARK: - Natural finish and auto-pause
 
     func testTickAutoPauseThenSuccessfulFinishReachesEndedAndCallsOnFinishedOnce() async throws {
-        let rig = makeRig()
+        let rig = makeRig(engineStopGrace: .milliseconds(10))
         var finishedCount = 0
         rig.player.onFinished = { _, _ in finishedCount += 1 }
         XCTAssertTrue(rig.player.start(item, at: 0))
         XCTAssertEqual(rig.player.status, .playing)
 
         rig.engine.isPlaying = false
+        rig.player.refreshPosition()
+        try? await Task.sleep(for: .milliseconds(15))
         rig.player.refreshPosition()
         XCTAssertEqual(rig.player.status, .paused)
 
@@ -637,13 +733,15 @@ final class LibraryPlayerTests: XCTestCase {
     }
 
     func testFinishAfterUserSeekDoesNotReachEnded() async throws {
-        let rig = makeRig()
+        let rig = makeRig(engineStopGrace: .milliseconds(10))
         var finishedCount = 0
         rig.player.onFinished = { _, _ in finishedCount += 1 }
         XCTAssertTrue(rig.player.start(item, at: 0))
         XCTAssertEqual(rig.player.status, .playing)
 
         rig.engine.isPlaying = false
+        rig.player.refreshPosition()
+        try? await Task.sleep(for: .milliseconds(15))
         rig.player.refreshPosition()
         XCTAssertEqual(rig.player.status, .paused)
 

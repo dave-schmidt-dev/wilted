@@ -11,9 +11,9 @@ extension LibraryInterruptionController {
         return LibraryInterruptionController(
             player: player,
             dependencies: Dependencies(
-                speaker: LibrarySpeechSynthesizer(),
-                previewSpeaker: LibrarySpeechSynthesizer(usesApplicationAudioSession: false),
-                playingPreviewSpeaker: LibrarySpeechSynthesizer(),
+                speaker: LibraryBulletinAudioSpeaker(model: model),
+                previewSpeaker: LibraryBulletinAudioSpeaker(model: model),
+                playingPreviewSpeaker: LibraryBulletinAudioSpeaker(model: model),
                 fetchBulletins: { try await transport.fetchBulletins() },
                 makeMonitor: { deliver in
                     AlertMonitor(

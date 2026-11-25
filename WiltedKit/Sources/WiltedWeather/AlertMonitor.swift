@@ -134,7 +134,12 @@ public actor AlertMonitor {
         alert.ends ?? alert.expires ?? issuedAt.addingTimeInterval(defaultAlertLifetime)
     }
 
-    static func bulletin(for alert: NWSAlert, now: Date) -> Bulletin? {
+    /// Converts an eligible alert into the same plain bulletin used for local narration.
+    /// Updates remain eligible and retain their `references` relation. Cancel, Ack, Error and
+    /// expired alerts are excluded so a remote request cannot revive withdrawn content.
+    public static func bulletin(for alert: NWSAlert, now: Date) -> Bulletin? {
+        guard !["cancel", "ack", "error"].contains(alert.messageType.lowercased()),
+              expiry(of: alert, issuedAt: now) > now else { return nil }
         let issued = alert.sent ?? now
         let area = alert.areaDesc.isEmpty ? "" : " for \(alert.areaDesc)"
         var text = alert.headline.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }

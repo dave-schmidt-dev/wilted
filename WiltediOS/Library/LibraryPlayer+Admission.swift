@@ -20,7 +20,7 @@ extension LibraryPlayer {
         var needsAdmission = false
         switch command {
         case .play, .beginSeeking: needsAdmission = true
-        case .togglePlayPause: needsAdmission = !isPlaying
+        case .togglePlayPause: needsAdmission = !isPlaying || engineStopPending
         case .skipForward, .skipBackward, .seek:
             needsAdmission = remoteSeekState?.wasPlaying == true
         case let .endSeeking(direction):
@@ -36,7 +36,7 @@ extension LibraryPlayer {
         let epoch = admissionEpoch
         var resumes = false
         switch command {
-        case .play, .togglePlayPause: resumes = status == .paused
+        case .play, .togglePlayPause: resumes = status == .paused || engineStopPending
         default: break
         }
         admissionTask = Task { @MainActor [weak self] in
@@ -47,7 +47,7 @@ extension LibraryPlayer {
             let target = await moved?.value ?? nil
             guard !Task.isCancelled, self.admissionEpoch == epoch, self.item == item else { return }
             self.admissionTask = nil
-            guard admitted else { self.invalidateLoadedItem(); return }
+            guard admitted else { self.invalidateLoadedItem(reason: .playbackAdmissionDenied); return }
             if let target { self.adoptPausedPosition(target) }
             _ = self.performAdmitted(command)
         }
@@ -70,7 +70,9 @@ extension LibraryPlayer {
         switch command {
         case .play: playAdmitted()
         case .pause: pause(reason: "remote-command")
-        case .togglePlayPause: if isPlaying { pause(reason: "remote-command") } else { _ = playAdmitted() }
+        case .togglePlayPause:
+            if isPlaying, !engineStopPending { pause(reason: "remote-command") }
+            else { _ = playAdmitted() }
         case let .skipForward(seconds): seekAdmitted(to: position + seconds)
         case let .skipBackward(seconds): seekAdmitted(to: position - seconds)
         case let .seek(seconds): seekAdmitted(to: seconds)
