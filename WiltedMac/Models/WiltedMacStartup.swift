@@ -15,6 +15,7 @@ import CloudKit
 enum WiltedMacNavigation: RawRepresentable, CaseIterable, Hashable, Identifiable, Sendable {
     case larder
     case feeds
+    case notebook
     case settings
     /// A user playlist, by its store ID. Never a sidebar destination of its own: the sidebar lists
     /// playlists in their own section, so `allCases` stays the three permanent destinations.
@@ -29,6 +30,7 @@ enum WiltedMacNavigation: RawRepresentable, CaseIterable, Hashable, Identifiable
         switch self {
         case .larder: "larder"
         case .feeds: "feeds"
+        case .notebook: "notebook"
         case .settings: "settings"
         case let .playlist(id): Self.playlistPrefix + id
         }
@@ -38,6 +40,7 @@ enum WiltedMacNavigation: RawRepresentable, CaseIterable, Hashable, Identifiable
         switch rawValue {
         case "larder": self = .larder
         case "feeds": self = .feeds
+        case "notebook": self = .notebook
         case "settings": self = .settings
         default:
             guard rawValue.hasPrefix(Self.playlistPrefix), rawValue.count > Self.playlistPrefix.count else { return nil }
@@ -45,13 +48,14 @@ enum WiltedMacNavigation: RawRepresentable, CaseIterable, Hashable, Identifiable
         }
     }
 
-    /// The three permanent destinations, in sidebar order.
-    static var allCases: [WiltedMacNavigation] { [.larder, .feeds, .settings] }
+    /// The permanent destinations, in sidebar order.
+    static var allCases: [WiltedMacNavigation] { [.larder, .feeds, .notebook, .settings] }
 
     var title: String {
         switch self {
         case .feeds: WiltedScreenCopy.feeds
         case .larder: WiltedScreenCopy.library
+        case .notebook: "Notebook"
         case .settings: WiltedScreenCopy.settings
         case .playlist: "Playlist"
         }
@@ -61,6 +65,7 @@ enum WiltedMacNavigation: RawRepresentable, CaseIterable, Hashable, Identifiable
         switch self {
         case .feeds: WiltedSymbol.broccoli.rawValue
         case .larder: WiltedSymbol.larder.rawValue
+        case .notebook: "book.closed"
         case .settings: "gearshape"
         case .playlist: "music.note.list"
         }

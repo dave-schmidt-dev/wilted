@@ -102,6 +102,19 @@ extension WiltedPixelSnapshotTests {
         XCTAssertTrue(shown.contains(book.presentation.publicationLabel), shown)
     }
 
+    func testTimeSavedLineRendersInLarderRow() throws {
+        let model = larderModel("larder-time-saved")
+        var book = try XCTUnwrap(model.episodes.first { $0.id == "book-dune-0" })
+        book.preparationStamp = WiltedMacPreparationStamp(
+            prepared: "Ready", timeSavedSummary: "Saved 7 min: 5 of ads, 2 of pauses",
+            preparedRevisionID: "fixture-revision", lastFailure: nil, failureDetail: nil)
+        let row = WiltedMacLarderView(model: model, paneMode: .side)
+            .larderRow(book, position: 1, count: 1, showsGroupName: false)
+        let shown = try WiltedMacHeadless.recognizedText(row, size: CGSize(width: 760, height: 110))
+            .joined(separator: " ")
+        XCTAssertTrue(shown.contains("Saved 7 min: 5 of ads, 2 of pauses"), shown)
+    }
+
     /// The player while a book plays: the chapter under the playhead and the previous and next steps.
     func testPlayerChaptersPixelBaselines() throws {
         for appearance in WiltedAppearance.allCases {

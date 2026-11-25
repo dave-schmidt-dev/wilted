@@ -147,6 +147,10 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
     /// transcript URL must not re-identify an episode already in the Larder,
     /// with its download and playback position attached.
     public let transcriptSources: [PodcastTranscriptSource]
+    /// The feed's optional Podcasting 2.0 JSON chapters document. Outside
+    /// `itemID` derivation: a publisher can add or replace chapters without
+    /// changing the episode's download or playback identity.
+    public let chapterSource: PodcastChapterSource?
     /// The show notes the feed publishes for this episode, as plain text with
     /// paragraph breaks; nil when the feed publishes none.
     ///
@@ -203,6 +207,7 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
         durationSeconds: Double? = nil,
         artworkURL: URL? = nil,
         transcriptSources: [PodcastTranscriptSource] = [],
+        chapterSource: PodcastChapterSource? = nil,
         notes: String? = nil,
         episodeLink: URL? = nil,
         createdAt: Timestamp
@@ -268,13 +273,14 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
         self.durationSeconds = durationSeconds
         self.artworkURL = normalizedArtworkURL
         self.transcriptSources = transcriptSources
+        self.chapterSource = chapterSource
         self.episodeLink = episodeLink
         self.createdAt = createdAt
     }
 
     private enum CodingKeys: CodingKey {
         case itemID, feedID, feedURL, rssGUID, title, author, publishedTime, enclosureURL
-        case enclosureMediaType, enclosureByteCount, durationSeconds, artworkURL, transcriptSources, notes
+        case enclosureMediaType, enclosureByteCount, durationSeconds, artworkURL, transcriptSources, chapterSource, notes
         case episodeLink, createdAt
     }
 
@@ -294,6 +300,7 @@ public struct PodcastEpisode: Codable, Equatable, Sendable {
             durationSeconds: container.decodeIfPresent(Double.self, forKey: .durationSeconds),
             artworkURL: container.decodeIfPresent(URL.self, forKey: .artworkURL),
             transcriptSources: container.decodeIfPresent([PodcastTranscriptSource].self, forKey: .transcriptSources) ?? [],
+            chapterSource: container.decodeIfPresent(PodcastChapterSource.self, forKey: .chapterSource),
             notes: container.decodeIfPresent(String.self, forKey: .notes),
             episodeLink: container.decodeIfPresent(URL.self, forKey: .episodeLink),
             createdAt: container.decode(Timestamp.self, forKey: .createdAt)

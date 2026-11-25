@@ -67,6 +67,7 @@ struct WiltedMacAccountGatedLibraryTransport: LibraryTransport {
     let inner: any LibraryTransport
     let gate: WiltedMacLibraryAccountGate
     var supportsHeadlineProjection: Bool { inner.supportsHeadlineProjection }
+    var notebookCloudWriteMode: NotebookCloudWriteMode { inner.notebookCloudWriteMode }
 
     /// Runs `operation` under the gate; used for calls made outside the protocol (discovery).
     func run<Result: Sendable>(_ operation: () async throws -> Result) async throws -> Result {

@@ -220,6 +220,7 @@ extension LocalLibraryStore {
             itemID: revision.itemID.rawValue,
             revisionIDs: [superseded.rawValue],
             includingOutcomes: false,
+            preservingTranscriptHistory: true,
             in: context
         )
         if let playback {
@@ -243,15 +244,15 @@ extension LocalLibraryStore {
         try context.save()
     }
 
-    /// Stages deletion of the revision, transcript, and playback rows scoped to
-    /// `revisionIDs` of one item. Preparation outcome rows are retained by the
-    /// superseding paths as preparation history; they are removed only when the
-    /// revision's audio is gone (`includingOutcomes`), because content-derived
-    /// revision IDs would otherwise meet a stale `.current` outcome after a
-    /// re-download of the same bytes. Item-scoped rows are untouched, and the
+    /// Stages deletion of revision audio and playback rows scoped to `revisionIDs`.
+    /// `preservingTranscriptHistory` keeps only the exact revision's cues after a
+    /// replacement, so a later offline Notebook capture cannot inherit newer words.
+    /// Preparation outcomes remain on superseding paths and are removed only when
+    /// the audio itself is reclaimed. Item-scoped rows are untouched, and the
     /// caller performs the single `context.save()`.
     func deleteRevisionScopedRecords(
-        itemID: String, revisionIDs: Set<String>, includingOutcomes: Bool, in context: ModelContext
+        itemID: String, revisionIDs: Set<String>, includingOutcomes: Bool,
+        preservingTranscriptHistory: Bool = false, in context: ModelContext
     ) throws {
         guard !revisionIDs.isEmpty else { return }
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
@@ -260,6 +261,9 @@ extension LocalLibraryStore {
         }
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
         where record.itemID == itemID && revisionIDs.contains(record.revisionID) {
+            if preservingTranscriptHistory, let cues = record.cues {
+                context.insert(LocalLibrarySchemaV23Models.NotebookRevisionCuesRecord(id: record.id, cues: cues))
+            }
             context.delete(record)
         }
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.PlaybackRecord>())

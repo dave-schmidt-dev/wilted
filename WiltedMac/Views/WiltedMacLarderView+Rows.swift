@@ -59,9 +59,8 @@ extension WiltedMacLarderView {
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .accessibilityIdentifier("wilted-larder-metadata-\(episode.id)")
-                    // The row keeps three lines, so listening progress from any
-                    // device rides on the date line. Without it the only sign of
-                    // a started episode was the Mark completed button.
+                    // Listening progress shares the date line so publication
+                    // and listening state stay together.
                     HStack(spacing: WiltedTheme.Spacing.small) {
                         Text(episode.presentation.publicationLabel)
                             .lineLimit(1)
@@ -85,6 +84,10 @@ extension WiltedMacLarderView {
                         prepareAgainStatus(episode, again, scheme: colorScheme)
                     }
                 }
+                WiltedMacSavedTimeLine(
+                    text: episode.preparationStamp?.timeSavedSummary,
+                    identifier: "wilted-larder-time-saved-\(episode.id)"
+                )
                 // Shown whatever the row is doing, so a flagged episode that is already
                 // downloading or preparing still offers its two answers.
                 if let earlier = episode.possibleDuplicateOf {

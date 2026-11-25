@@ -35,6 +35,7 @@ struct LibraryRoot: View {
             LibraryListView(
                 model: model, playingID: player.status == .playing ? player.item?.entryID : nil,
                 onPlay: { row in Task { await model.playCached(row) } }, player: player,
+                defaultSpeed: settings.defaultSpeed,
                 sort: settings.listSort, group: settings.listGroup,
                 onOrganize: { sort, group in settings.listSort = sort; settings.listGroup = group })
                 .toolbar {
@@ -122,6 +123,10 @@ struct LibraryRoot: View {
     }
 }
 
+struct LibraryShowSettingsRoute: Hashable {
+    let showID: ItemID
+}
+
 struct LibraryListView: View {
     @ObservedObject var model: LibraryAppModel
     @Environment(\.colorScheme) private var colorScheme
@@ -136,6 +141,7 @@ struct LibraryListView: View {
     var onPlay: ((LibraryRow) -> Void)?
     /// Lets the episode detail's transcript follow playback.
     var player: LibraryPlayer?
+    var defaultSpeed: Double = 1.25
     /// How the list is laid out; display only, playback keeps the play order.
     var sort: LibrarySortOption = .playOrder
     var group: LibraryGroupOption = .none
@@ -163,7 +169,19 @@ struct LibraryListView: View {
             if model.showsMacLinkNotice {
                 Section { LibraryMacLinkNotice(deviceKind: model.deviceKind) }
             }
+            if let player {
+                Section {
+                    NavigationLink {
+                        LibraryNotebookView(model: model, player: player)
+                    } label: {
+                        Label("Notebook", systemImage: "bookmark")
+                            .frame(maxWidth: .infinity, minHeight: WiltedTheme.Spacing.minimumTouchTarget, alignment: .leading)
+                    }
+                    .accessibilityIdentifier("wilted-library-notebook-button")
+                }
+            }
             LibraryStoryCardsSection(state: model.headlinePhoneState, model: model)
+            LibraryNewEpisodesSection(model: model)
             if rows.isEmpty {
                 emptyState
             } else {
@@ -208,6 +226,8 @@ struct LibraryListView: View {
                 }
                 .wiltedFont(.title)
                 .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("wilted-library-navigation-title")
                 .accessibilityAddTraits(.isHeader)
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
@@ -225,7 +245,16 @@ struct LibraryListView: View {
             Text(question.message)
         }
         .navigationDestination(item: $opened) { id in
-            LibraryEpisodeDetailView(model: model, entryID: id, playingID: playingID, onPlay: onPlay, player: player)
+            LibraryEpisodeDetailView(
+                model: model, entryID: id, playingID: playingID, onPlay: onPlay,
+                player: player, defaultSpeed: defaultSpeed)
+        }
+        .navigationDestination(for: LibraryShowSettingsRoute.self) { route in
+            if let source = model.decisionContent.sources[route.showID], source.kind == .podcastFeed {
+                LibraryShowSettingsView(model: model, source: source, defaultSpeed: defaultSpeed)
+            } else {
+                ContentUnavailableView("Show unavailable", systemImage: "questionmark.folder")
+            }
         }
         .accessibilityIdentifier("wilted-library-list")
     }
@@ -248,7 +277,8 @@ struct LibraryListView: View {
             player: player, deviceKind: model.deviceKind, progress: progress,
             isCompleted: LibraryListing.completionDate(row, finished: finished) != nil,
             voiceOverActions: voiceOverActions(for: row),
-            showsShowName: showsShowName)
+            showsShowName: showsShowName,
+            showSettingsRoute: showSettingsRoute(for: row))
         .contentShape(Rectangle())
         .onTapGesture { opened = row.id }
         .accessibilityAddTraits(.isButton)
@@ -289,6 +319,12 @@ struct LibraryListView: View {
         let swipes = leading(for: row) + trailing(for: row)
         return [LibraryRowVoiceAction(name: "Open episode") { opened = row.id }]
             + swipes.map { item in LibraryRowVoiceAction(name: item.title) { perform(item, row: row) } }
+    }
+
+    private func showSettingsRoute(for row: LibraryRow) -> LibraryShowSettingsRoute? {
+        guard row.kind == .podcastEpisode, let showID = row.showID,
+              model.decisionContent.sources[showID]?.kind == .podcastFeed else { return nil }
+        return LibraryShowSettingsRoute(showID: showID)
     }
 
     @ViewBuilder

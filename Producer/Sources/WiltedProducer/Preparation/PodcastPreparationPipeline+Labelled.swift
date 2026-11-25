@@ -6,7 +6,7 @@ import WiltedDomain
 /// so the real client conforms with an empty extension and tests can stub it.
 public protocol LabellerSending: Sendable {
     /// Performs one labelling request. `onRequestStarted` fires exactly once,
-    /// immediately before the HTTP request starts, including for calls that
+    /// immediately before the provider request starts, including for calls that
     /// then fail.
     func send(
         _ request: LabellerRequest,
@@ -152,12 +152,13 @@ extension PodcastPreparationPipeline {
     static let labellingNotSetUp = RemoteLabellingContext(
         switchOn: false, hasKey: false, confirmedFeedIDs: [], adFreeFeedIDs: [], dailyCapReached: false)
 
-    /// `policy` with ad removal off; the transcript and self-promotion choices are kept.
+    /// `policy` with ad removal off; other admitted processing choices remain.
     static func adRemovalOff(_ policy: PodcastPreparationPolicySnapshot) -> PodcastPreparationPolicySnapshot {
         PodcastPreparationPolicySnapshot(
             transcriptPolicy: policy.transcriptPolicy,
             removeAds: false,
-            removeSelfPromotion: policy.removeSelfPromotion)
+            removeSelfPromotion: policy.removeSelfPromotion,
+            evenOutVoiceLoudness: policy.evenOutVoiceLoudness)
     }
 
     /// Provenance folded into a labelled outcome; shared so digest-in-force cannot drift.
@@ -411,12 +412,14 @@ extension PodcastPreparationPipeline {
         payload.adRemovalOutcome = outcome
         payload.warning = warning
         payload.adsMayRemain = outcome == "uncertain"
-        payload.audioChanged = false
         payload.adSegments = []
         payload.removedSeconds = 0
-        payload.keepIntervals = []
         payload.silenceTrims = []
-        payload.timeline = try PreparationStatus.PreparationTimeline(removed: [], kept: [])
+        if !policy.evenOutVoiceLoudness || outcome == "uncertain" {
+            payload.audioChanged = false
+            payload.keepIntervals = []
+            payload.timeline = try PreparationStatus.PreparationTimeline(removed: [], kept: [])
+        }
         return payload
     }
 

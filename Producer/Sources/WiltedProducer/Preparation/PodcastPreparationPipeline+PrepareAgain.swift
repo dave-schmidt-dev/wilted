@@ -154,6 +154,7 @@ extension PodcastPreparationPipeline {
             evidence: provenanceEvidence(sourceRevisionID: stagedRevisionID, sourceHash: staged.contentHash,
                                          codeRevision: codeRevision, policyDigest: attemptDigest)))
         do {
+            let sourceChapters = try await chapterMarks(for: episode, audioURL: staged.url)
             let preparedURL = preparedAudioURL(for: staged.url)
             store.inFlightMedia.begin(preparedURL)
             defer { store.inFlightMedia.end(preparedURL) }
@@ -186,6 +187,7 @@ extension PodcastPreparationPipeline {
                                                stagedRevision: stagedRevision, old: old, kept: kept,
                                                exact: exact, policy: policy,
                                                labelledProvenance: run.labelledProvenance,
+                                               sourceChapters: sourceChapters,
                                                mayReplace: mayReplace, onStatus: report)
             await writes.drain()
             await journalTerminal(episodeID: episodeID, requestID: requestID, attempt: attempt, error: nil,
@@ -230,6 +232,7 @@ extension PodcastPreparationPipeline {
         exact: Bool,
         policy: PodcastPreparationPolicySnapshot,
         labelledProvenance: LabelledRunProvenance? = nil,
+        sourceChapters: [PodcastChapterMark],
         mayReplace: @escaping @Sendable () async -> Bool,
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> PodcastPreparationResult {
@@ -321,6 +324,8 @@ extension PodcastPreparationPipeline {
             if isSameAsCut {
                 try await store.saveReadyRevision(revision, mediaURL: finalURL, transcript: transcript,
                                                   outcome: outcome, lifetimeStatistics: lifetimeStatistics)
+                await savePreparedChapterMarks(sourceChapters, for: itemID, revisionID: revisionID,
+                                               keepIntervals: payload.keepIntervals)
             } else {
                 let download = try PodcastDownload(episodeID: itemID, status: .completed, bytesReceived: byteCount,
                                                    expectedByteCount: byteCount, localURL: finalURL, contentHash: hash,
@@ -346,6 +351,8 @@ extension PodcastPreparationPipeline {
                                                                exact: exact, forward: forward)
                     }
                 }
+                await savePreparedChapterMarks(sourceChapters, for: itemID, revisionID: revisionID,
+                                               keepIntervals: payload.keepIntervals)
             }
             store.inFlightMedia.end(finalURL)
         } catch {

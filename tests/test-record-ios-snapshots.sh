@@ -28,6 +28,8 @@ for package in WiltedKit Producer CloudSync Playback; do
   mkdir -p "$fixture/$package/Sources" "$fixture/$package/Tests"
   touch "$fixture/$package/Package.swift"
 done
+mkdir -p "$fixture/Producer/Runtime/src/wilted"
+printf '%s\n' '"""Recorder fixture module."""' >"$fixture/Producer/Runtime/src/wilted/article_voice.py"
 for name in library-larder-light library-larder-dark library-settings-light; do
   printf 'old-%s\n' "$name" >"$fixture/$snapshots/$name.png"
 done

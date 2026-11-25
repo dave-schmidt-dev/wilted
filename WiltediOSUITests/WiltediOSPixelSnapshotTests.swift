@@ -221,15 +221,65 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
             XCTAssertTrue(any["wilted-library-settings"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.staticTexts["wilted-library-settings-sync-status"].waitForExistence(timeout: 5))
         }
+        switch screen {
+        case .larder, .larderGrouped, .filterArticles, .bookRow, .reportRow, .nowPlayingBulletin:
+            let navigationTitle = any["wilted-library-navigation-title"].firstMatch
+            XCTAssertTrue(navigationTitle.waitForExistence(timeout: 5))
+            let notebookLink = any["wilted-library-notebook-button"].firstMatch
+            XCTAssertTrue(notebookLink.waitForExistence(timeout: 5))
+            XCTAssertTrue(notebookLink.isHittable, "Notebook remains a visible one-tap destination")
+            XCTAssertGreaterThanOrEqual(notebookLink.frame.height, 44, "Notebook keeps a 44-point tap target")
+        default:
+            break
+        }
         // Let the menu dismissal, sheet presentation and list layout finish before the capture.
         Thread.sleep(forTimeInterval: 1.5)
         let screenshot = app.screenshot().image
+        assertLibraryTitleBounds(screen, in: app, image: screenshot)
+        assertLibraryTitleIsVisible(screen, dark: dark, in: screenshot)
         let attachment = XCTAttachment(image: screenshot)
         attachment.name = "shipping-\(screen)-\(dark ? "dark" : "light")"
         attachment.lifetime = .keepAlways
         add(attachment)
         assertShippingFacts(screen, app: app, image: screenshot)
         return normalized(screenshot)
+    }
+
+    /// Confirms the title is painted in the navigation bar, independent of its accessibility grouping.
+    private func assertLibraryTitleIsVisible(_ screen: LibraryScreen, dark: Bool, in image: UIImage) {
+        guard screen == .larder, !dark else {
+            return
+        }
+        do {
+            let cgImage = try XCTUnwrap(image.cgImage)
+            let region = CGRect(x: 0, y: 45, width: image.size.width, height: 70)
+            let scale = CGFloat(cgImage.width) / image.size.width
+            let crop = try XCTUnwrap(cgImage.cropping(to: CGRect(
+                x: region.minX * scale, y: region.minY * scale,
+                width: region.width * scale, height: region.height * scale).integral))
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.recognitionLanguages = ["en-US"]
+            request.usesLanguageCorrection = false
+            try VNImageRequestHandler(cgImage: crop, options: [:]).perform([request])
+            let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+                .joined(separator: " ").lowercased()
+            XCTAssertTrue(text.contains("larder"), "The navigation bar paints the Larder title; pixels: \(text)")
+        } catch {
+            XCTFail("The navigation bar title could not be checked: \(error)")
+        }
+    }
+
+    /// Checks that the accessible title is laid out in the navigation bar for every list capture.
+    private func assertLibraryTitleBounds(_ screen: LibraryScreen, in app: XCUIApplication, image: UIImage) {
+        switch screen {
+        case .larder, .larderGrouped, .filterArticles, .bookRow, .reportRow, .nowPlayingBulletin:
+            let title = app.descendants(matching: .any)["wilted-library-navigation-title"].firstMatch
+            let navigationBar = CGRect(x: 0, y: 30, width: image.size.width, height: 90)
+            XCTAssertTrue(navigationBar.contains(title.frame), "The accessible Larder title is bounded by the navigation bar")
+        default:
+            break
+        }
     }
 
     /// Opens the Add sheet and types into it, as a listener would, until `screen`'s state shows. Search
@@ -271,7 +321,9 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
     private func assertShippingFacts(_ screen: LibraryScreen, app: XCUIApplication, image: UIImage) {
         guard screen == .larder || screen == .settings || screen == .bookRow else { return }
         do {
-            func assertPaintedLine(_ expected: String, frame: CGRect, in screenshot: UIImage) throws {
+            func assertPaintedLine(
+                _ expected: String, frame: CGRect, in screenshot: UIImage
+            ) throws {
                 let bounds = CGRect(origin: .zero, size: screenshot.size)
                 XCTAssertTrue(bounds.contains(frame), "Factual text stays inside the shipping screen")
                 guard bounds.contains(frame) else { return }
@@ -297,6 +349,33 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
                 XCTAssertLessThanOrEqual((centers.max() ?? 0) - (centers.min() ?? 0), 6,
                     "Recognized tokens belong to one painted line, including a separately recognized year")
             }
+            func assertPaintedWrappedMetadata(
+                _ expectedWords: [String], frame: CGRect, in screenshot: UIImage
+            ) throws {
+                let bounds = CGRect(origin: .zero, size: screenshot.size)
+                XCTAssertTrue(bounds.contains(frame), "Factual text stays inside the shipping screen")
+                guard bounds.contains(frame) else { return }
+                let region = frame.insetBy(dx: -2, dy: -3).intersection(bounds)
+                let cgImage = try XCTUnwrap(screenshot.cgImage)
+                let scale = CGFloat(cgImage.width) / screenshot.size.width
+                let crop = try XCTUnwrap(cgImage.cropping(to: CGRect(
+                    x: region.minX * scale, y: region.minY * scale,
+                    width: region.width * scale, height: region.height * scale).integral))
+                let request = VNRecognizeTextRequest()
+                request.recognitionLevel = .accurate
+                request.recognitionLanguages = ["en-US"]
+                request.usesLanguageCorrection = false
+                try VNImageRequestHandler(cgImage: crop, options: [:]).perform([request])
+                let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+                    .joined(separator: " ").lowercased()
+                func compact(_ value: String) -> String {
+                    value.lowercased().filter { $0.isLetter || $0.isNumber }
+                }
+                for word in expectedWords {
+                    XCTAssertTrue(compact(text).contains(compact(word)),
+                        "The wrapped show and duration must be painted: expected \(word), pixels \(text)")
+                }
+            }
             if screen == .bookRow {
                 // The book row names its author and its length, painted whole.
                 let metadata = app.descendants(matching: .any)["wilted-library-meta-fixture-book-1"].firstMatch
@@ -310,6 +389,10 @@ final class WiltediOSPixelSnapshotTests: XCTestCase {
                     let metadata = app.descendants(matching: .any)["wilted-library-meta-fixture-episode-\(episode)"].firstMatch
                     let date = app.descendants(matching: .any)["wilted-library-date-fixture-episode-\(episode)"].firstMatch
                     XCTAssertTrue(metadata.exists && date.exists)
+                    let showName = episode == 3 ? "Second Fixture Show" : "Fixture Show"
+                    try assertPaintedWrappedMetadata(
+                        (showName + " 10:00").split(separator: " ").map(String.init),
+                        frame: metadata.frame, in: image)
                     XCTAssertGreaterThanOrEqual(date.frame.minY, metadata.frame.maxY - 1,
                         "The date is its own line under the show and duration")
                     try assertPaintedLine("Nov 14, 2023", frame: date.frame, in: image)

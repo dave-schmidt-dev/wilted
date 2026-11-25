@@ -5,14 +5,52 @@ optin_leg_fns+=(leg_watchos_build)
 optin_leg_reports+=(count)
 
 leg_watchos_build() {
-  local udid result_bundle="$tmp_root/watchos-build.xcresult"
+  local udid result_bundle="$tmp_root/watchos-build.xcresult" test_results="$tmp_root/watch-tests.json"
   [[ -f "$integration_root/WiltedWatch/Info.plist" ]] || fail 'missing WiltedWatch sources in the integration root'
   udid="$(create_watch_gate_simulator)" || return $?
   xcode_test_leg watchos-build "$integration_root/WiltedWatchTests" WiltedWatch \
     "platform=watchOS Simulator,id=$udid" WiltedWatchTests || return $?
   assert_result_bundle_tests watchos-build "$result_bundle" || return $?
+  run_bounded_native_command xcrun xcresulttool get test-results tests --path "$result_bundle" --compact >"$test_results" || return $?
+  assert_watch_capture_test_results "$test_results" || return $?
   export_watch_captures "$result_bundle" || return $?
   printf 'native.watchos.tests scheme=WiltedWatch captures=4 destination=45mm-watch-simulator\n'
+}
+
+assert_watch_capture_test_results() {
+  local test_results="$1"
+  python3 - "$test_results" <<'PYCODE'
+import json
+from pathlib import Path
+import sys
+
+required = {
+    "NotebookCaptureIntentTests/testNotebookWatchIntentSendsOnePhoneCommandAndShowsAcknowledgement()",
+    "NotebookCaptureIntentTests/testNotebookWatchIntentReportsTypedFailureAndAllowsRetry()",
+    "NotebookCaptureIntentTests/testNotebookWatchIntentRequiresAnActiveEpisode()",
+    "NotebookCaptureIntentTests/testNotebookWatchIntentMapsPhoneRefusalsToHonestFeedback()",
+}
+try:
+    data = json.loads(Path(sys.argv[1]).read_text())
+except (OSError, json.JSONDecodeError) as exc:
+    raise SystemExit("native.watch-tests.error unreadable result details: " + str(exc))
+
+def nodes(items):
+    for item in items:
+        yield item
+        yield from nodes(item.get("children", []))
+
+cases = [node for node in nodes(data.get("testNodes", [])) if node.get("nodeType") == "Test Case"]
+passed = {node.get("nodeIdentifier", "") for node in cases if node.get("result") == "Passed"}
+missing = sorted(name for name in required if not any(identifier.endswith(name) for identifier in passed))
+if missing:
+    failed = sorted(node.get("nodeIdentifier", "?") for node in cases
+                    if "NotebookCaptureIntentTests/" in node.get("nodeIdentifier", "")
+                    and node.get("result") != "Passed")
+    raise SystemExit("native.watch-tests.error missing or failed NotebookCaptureIntentTests: "
+                     + ", ".join(missing) + ("; failed=" + ", ".join(failed) if failed else ""))
+print("native.watch-tests.passed suite=NotebookCaptureIntentTests cases=" + str(len(required)), flush=True)
+PYCODE
 }
 
 export_watch_captures() {

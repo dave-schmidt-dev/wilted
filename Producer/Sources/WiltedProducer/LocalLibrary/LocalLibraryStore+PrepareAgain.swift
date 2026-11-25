@@ -69,7 +69,9 @@ extension LocalLibraryStore {
     /// `restoringCutsOnFeeds` names feeds the owner has since marked as having
     /// no ads. On those, an episode the current engine already prepared is
     /// offered too, but only while its journal proves the ready audio had
-    /// something removed: running it again with ad removal off puts that back.
+    /// advertisement intervals removed: running it again with ad removal off
+    /// puts those back. An audio rewrite alone is not proof because voice
+    /// leveling also rewrites audio without removing programme.
     /// The proof is the producing attempt's own report, never the fallback that
     /// treats an unprovable file as a cut, so a restored episode stops being
     /// offered.
@@ -82,11 +84,17 @@ extension LocalLibraryStore {
     /// ready revision's outcome row). An empty recorded digest is judged by
     /// engine version only.
     ///
+    /// `preparationPolicyDigestsInForce` supplies the current policy digest
+    /// and the same policy with voice leveling flipped. A leveling preference
+    /// change alone does not make previously prepared audio stale; a recorded
+    /// digest that differs from both still represents another policy change.
+    ///
     /// One context and one fetch per table, because every Larder load asks
     /// this: the read cost stays flat as the library grows.
     public func podcastEpisodesToPrepareAgain(
         restoringCutsOnFeeds adFreeFeedIDs: Set<ItemID> = [],
-        labelledDigestInForce: (@Sendable (_ feedID: ItemID, _ audioURL: URL) -> String?)? = nil
+        labelledDigestInForce: (@Sendable (_ feedID: ItemID, _ audioURL: URL) -> String?)? = nil,
+        preparationPolicyDigestsInForce: (@Sendable (_ feedID: ItemID, _ audioURL: URL) -> (current: String, alternateVoiceLevel: String)?)? = nil
     ) throws -> [PodcastPrepareAgainCandidate] {
         let adFreeFeeds = Set(adFreeFeedIDs.map(\.rawValue))
         let context = ModelContext(container)
@@ -119,10 +127,8 @@ extension LocalLibraryStore {
             let producing = Self.attemptProducing(ready.revisionID, in: attempts)
             if let newest = Self.newestFinishedAttempt(attempts),
                let engine = newest.engineVersion, engine == PodcastPreparationPipeline.semanticVersion {
-                let removedSomething = producing.map {
-                    $0.audioChanged == true || !($0.timeline?.removed.isEmpty ?? true)
-                } ?? false
-                let restoreCuts = adFreeFeeds.contains(record.feedID) && removedSomething
+                let hasRemovedAdvertisements = !(producing?.timeline?.removed.isEmpty ?? true)
+                let restoreCuts = adFreeFeeds.contains(record.feedID) && hasRemovedAdvertisements
                 let digestStale: Bool = {
                     guard let labelledDigestInForce,
                           let feedID = try? ItemID(rawValue: record.feedID) else { return false }
@@ -131,7 +137,16 @@ extension LocalLibraryStore {
                         recordedDigest: recorded,
                         digestInForce: labelledDigestInForce(feedID, enclosureURL))
                 }()
-                guard restoreCuts || digestStale else { continue }
+                let preparationPolicyStale: Bool = {
+                    guard let preparationPolicyDigestsInForce,
+                          !hasRemovedAdvertisements,
+                          let feedID = try? ItemID(rawValue: record.feedID),
+                          let digests = preparationPolicyDigestsInForce(feedID, enclosureURL) else { return false }
+                    let recorded = newest.policyDigest ?? outcome.policyDigest
+                    guard !recorded.isEmpty else { return false }
+                    return recorded != digests.current && recorded != digests.alternateVoiceLevel
+                }()
+                guard restoreCuts || digestStale || preparationPolicyStale else { continue }
             }
             let provenanceHash = producing?.sourceHash
             // What the journal cannot prove stays a cut: feeding a cut to the

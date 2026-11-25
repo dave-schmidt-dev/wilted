@@ -15,6 +15,9 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         case keep(entryID: ItemID)
         /// Skip a new episode: the Mac's feed Skip.
         case skip(entryID: ItemID)
+        /// Keep or Skip only if the Mac still projects this episode as undecided New.
+        /// Capability is advertised as `decideNewEpisode`; legacy Keep/Skip keep their existing semantics.
+        case decideNewEpisode(entryID: ItemID, decision: LibraryNewEpisodeDecision)
         /// Mark a started Larder episode done (the Larder skip).
         case markDone(entryID: ItemID)
         /// Take a queued entry off the Larder without retiring it (the Mac's Remove from Larder).
@@ -36,6 +39,8 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         case addLink(url: URL)
         /// Set a show's fresh-start offset if its Mac-authoritative revision still matches.
         case setShowStartOffset(feedID: ItemID, seconds: Double, basedOnRevision: Int64)
+        /// Set or reset a show's rate if its Mac-authoritative revision still matches.
+        case setShowPlaybackSpeed(feedID: ItemID, speed: Double?, basedOnRevision: Int64)
         /// The listener's verdict on ad removal at `playedSeconds` of the prepared revision `revisionID`
         /// they were hearing. The Mac maps it onto the original episode and files it for review; the
         /// intent id is the feedback id. The Mac answers with an `IntentOutcome`.
@@ -44,6 +49,9 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         case setHeadlineSaved(story: LibraryHeadlineStory, isSaved: Bool, basedOnRevision: Int64)
         /// Mute or unmute a publisher using the revision last shown by the Mac.
         case setHeadlinePublisherMuted(publisherID: String, isMuted: Bool, basedOnRevision: Int64)
+        /// Write one Notebook entry snapshot against the per-entry version last observed.
+        /// A non-nil `entry.deletedAt` is a durable tombstone, not a CloudKit deletion.
+        case setNotebookEntry(entry: LibraryNotebookEntry, baseVersion: UInt64)
         /// An action this build cannot decode (a newer phone sent it). Decode-side only: the
         /// transport builds it so the Mac can answer `unsupportedAction`, and `LibraryIntent`
         /// refuses to encode it, so it is never written back as a valid action.
@@ -66,11 +74,15 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
             case .cancelListenNext:
                 return Self.invalidURLEntryID
             case let .requestMedia(entryID), let .mediaCached(entryID, _, _), let .keep(entryID), let .skip(entryID),
+                 let .decideNewEpisode(entryID, _),
                  let .markDone(entryID), let .removeFromLarder(entryID), let .restore(entryID), let .reorder(entryID, _),
-                 let .adFeedback(entryID, _, _, _), let .setShowStartOffset(entryID, _, _):
+                 let .adFeedback(entryID, _, _, _), let .setShowStartOffset(entryID, _, _),
+                 let .setShowPlaybackSpeed(entryID, _, _):
                 return entryID
             case let .setHeadlineSaved(story, _, _):
                 return (try? ItemID(rawValue: story.id)) ?? Self.invalidURLEntryID
+            case let .setNotebookEntry(entry, _):
+                return entry.id
             case .setHeadlinePublisherMuted:
                 return Self.invalidURLEntryID
             case .unsupported:
@@ -81,9 +93,9 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         /// True for the decision actions the Mac answers with an `IntentOutcome`.
         public var isDecision: Bool {
             switch self {
-            case .keep, .skip, .markDone, .removeFromLarder, .restore, .reorder, .subscribe, .addArticle,
+            case .keep, .skip, .decideNewEpisode, .markDone, .removeFromLarder, .restore, .reorder, .subscribe, .addArticle,
                  .listenNext, .cancelListenNext, .addLink, .adFeedback,
-                 .setHeadlineSaved, .setHeadlinePublisherMuted, .setShowStartOffset: return true
+                 .setHeadlineSaved, .setHeadlinePublisherMuted, .setNotebookEntry, .setShowStartOffset, .setShowPlaybackSpeed: return true
             case .requestMedia, .mediaCached: return false
             case .unsupported: return true
             }
@@ -136,6 +148,10 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
            !(seconds.isFinite && (0...LibraryShowStartOffset.maximumSeconds).contains(seconds) && revision >= 0) {
             throw DomainError.invalidValue(field: "showStartOffset", reason: "must be finite, bounded, and revisioned")
         }
+        if case let .setShowPlaybackSpeed(_, speed, revision) = action,
+           revision < 0 || (speed.map { !PlaybackSpeeds.contains($0) } ?? false) {
+            throw DomainError.invalidValue(field: "showPlaybackSpeed", reason: "must be an offered speed and revisioned")
+        }
         if let url = action.addURL {
             guard let canonical = try? ItemID.canonicalURL(url) else {
                 throw DomainError.invalidValue(field: "url", reason: "must be an HTTPS URL")
@@ -181,6 +197,15 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
 
     public static func skip(entryID: ItemID, deviceID: String, createdAt: Date = Date(), id: String = UUID().uuidString) throws -> LibraryIntent {
         try LibraryIntent(id: id, deviceID: deviceID, createdAt: createdAt, action: .skip(entryID: entryID))
+    }
+
+    /// A conditional New episodes Keep or Skip request with a fresh idempotency id.
+    public static func decideNewEpisode(
+        entryID: ItemID, decision: LibraryNewEpisodeDecision, deviceID: String,
+        createdAt: Date = Date(), id: String = UUID().uuidString
+    ) throws -> LibraryIntent {
+        try LibraryIntent(id: id, deviceID: deviceID, createdAt: createdAt,
+            action: .decideNewEpisode(entryID: entryID, decision: decision))
     }
 
     public static func markDone(entryID: ItemID, deviceID: String, createdAt: Date = Date(), id: String = UUID().uuidString) throws -> LibraryIntent {
@@ -263,6 +288,15 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
             action: .setShowStartOffset(feedID: feedID, seconds: seconds, basedOnRevision: basedOnRevision))
     }
 
+    public static func setShowPlaybackSpeed(
+        feedID: ItemID, speed: Double?, basedOnRevision: Int64, deviceID: String,
+        createdAt: Date = Date(), id: String = UUID().uuidString
+    ) throws -> LibraryIntent {
+        try LibraryIntent(
+            id: id, deviceID: deviceID, createdAt: createdAt,
+            action: .setShowPlaybackSpeed(feedID: feedID, speed: speed, basedOnRevision: basedOnRevision))
+    }
+
     /// The stand-in for an intent whose action this build cannot decode, built from the fields
     /// that did decode. It carries no usable action and cannot be encoded.
     public static func unsupported(id: String, deviceID: String, createdAt: Date) throws -> LibraryIntent {
@@ -322,6 +356,19 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
             id: id, deviceID: deviceID, createdAt: createdAt,
             action: .setHeadlinePublisherMuted(publisherID: publisherID, isMuted: isMuted, basedOnRevision: basedOnRevision))
     }
+
+    /// Writes a Notebook entry or tombstone against the exact server version the device observed.
+    public static func setNotebookEntry(
+        entry: LibraryNotebookEntry,
+        basedOnVersion: UInt64,
+        deviceID: String,
+        createdAt: Date = Date(),
+        id: String = UUID().uuidString
+    ) throws -> LibraryIntent {
+        try LibraryIntent(
+            id: id, deviceID: deviceID, createdAt: createdAt,
+            action: .setNotebookEntry(entry: entry, baseVersion: basedOnVersion))
+    }
 }
 
 /// The Mac's answer to one intent. Only the library writer publishes outcomes; a follower
@@ -339,6 +386,8 @@ public struct IntentOutcome: Codable, Sendable, Equatable {
     public static let reasonUnsupportedAction = "unsupportedAction"
     /// The target's state changed after a follower made an offline edit.
     public static let reasonStaleRevision = "staleRevision"
+    /// A conditional New episodes choice lost to a newer Mac decision.
+    public static let reasonNewEpisodeConflict = "newEpisodeConflict"
 
     public let intentID: String
     /// The device that sent the intent, so it finds its outcomes by its own name.
@@ -346,11 +395,16 @@ public struct IntentOutcome: Codable, Sendable, Equatable {
     public let disposition: Disposition
     /// Present exactly when `disposition` is `.rejected`.
     public let reason: String?
+    /// Current Mac state for a rejected conditional New episodes choice.
+    public let currentNewEpisodeState: LibraryNewEpisodeCurrentState?
     public let decidedAt: Date
 
     public var isApplied: Bool { disposition == .applied }
 
-    public init(intentID: String, deviceID: String, disposition: Disposition, reason: String? = nil, decidedAt: Date) throws {
+    public init(
+        intentID: String, deviceID: String, disposition: Disposition, reason: String? = nil,
+        currentNewEpisodeState: LibraryNewEpisodeCurrentState? = nil, decidedAt: Date
+    ) throws {
         guard !intentID.isEmpty else { throw DomainError.invalidValue(field: "intentID", reason: "must not be empty") }
         guard !deviceID.isEmpty else { throw DomainError.invalidValue(field: "deviceID", reason: "must not be empty") }
         switch disposition {
@@ -359,10 +413,14 @@ public struct IntentOutcome: Codable, Sendable, Equatable {
         case .rejected:
             guard let reason, !reason.isEmpty else { throw DomainError.invalidValue(field: "reason", reason: "a rejection needs a reason") }
         }
+        guard currentNewEpisodeState == nil || reason == Self.reasonNewEpisodeConflict else {
+            throw DomainError.invalidValue(field: "currentNewEpisodeState", reason: "is only valid on a New episodes conflict")
+        }
         self.intentID = intentID
         self.deviceID = deviceID
         self.disposition = disposition
         self.reason = reason
+        self.currentNewEpisodeState = currentNewEpisodeState
         self.decidedAt = decidedAt
     }
 
@@ -374,7 +432,14 @@ public struct IntentOutcome: Codable, Sendable, Equatable {
         try IntentOutcome(intentID: intent.id, deviceID: intent.deviceID, disposition: .rejected, reason: reason, decidedAt: decidedAt)
     }
 
-    private enum CodingKeys: String, CodingKey { case intentID, deviceID, disposition, reason, decidedAt }
+    public static func rejectedNewEpisode(
+        for intent: LibraryIntent, currentState: LibraryNewEpisodeCurrentState, at decidedAt: Date = Date()
+    ) throws -> IntentOutcome {
+        try IntentOutcome(intentID: intent.id, deviceID: intent.deviceID, disposition: .rejected,
+            reason: reasonNewEpisodeConflict, currentNewEpisodeState: currentState, decidedAt: decidedAt)
+    }
+
+    private enum CodingKeys: String, CodingKey { case intentID, deviceID, disposition, reason, currentNewEpisodeState, decidedAt }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -383,6 +448,7 @@ public struct IntentOutcome: Codable, Sendable, Equatable {
             deviceID: c.decode(String.self, forKey: .deviceID),
             disposition: c.decode(Disposition.self, forKey: .disposition),
             reason: c.decodeIfPresent(String.self, forKey: .reason),
+            currentNewEpisodeState: c.decodeIfPresent(LibraryNewEpisodeCurrentState.self, forKey: .currentNewEpisodeState),
             decidedAt: c.decode(Date.self, forKey: .decidedAt)
         )
     }
@@ -396,7 +462,8 @@ public enum IntentRetention {
     /// Feedback, headline edits, and durable story request/cancel commands remain valid offline.
     public static func isExpired(_ intent: LibraryIntent, now: Date) -> Bool {
         switch intent.action {
-        case .adFeedback, .setHeadlineSaved, .setHeadlinePublisherMuted, .listenNext, .cancelListenNext, .setShowStartOffset: return false
+        case .adFeedback, .setHeadlineSaved, .setHeadlinePublisherMuted, .listenNext, .cancelListenNext,
+             .setShowStartOffset, .setShowPlaybackSpeed: return false
         default: break
         }
         return now.timeIntervalSince(intent.createdAt) > maximumAge

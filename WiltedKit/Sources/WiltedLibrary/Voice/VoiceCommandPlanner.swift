@@ -70,6 +70,12 @@ public enum VoiceCommandPlanner {
         case .playFirst(let show):
             return planPlayFirst(show: show, snapshot: snapshot)
 
+        case .saveThat:
+            guard snapshot.nowPlaying != nil else {
+                return VoicePlan(action: .none, dialog: "Nothing is playing.")
+            }
+            return VoicePlan(action: .captureNotebook(origin: .siri), dialog: "Saved to Notebook.")
+
         case .pause:
             if let nowPlaying = snapshot.nowPlaying, nowPlaying.isPlaying {
                 return VoicePlan(action: .pause, dialog: "Paused.")

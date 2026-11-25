@@ -64,6 +64,26 @@ public struct PublicHTTPSArticleTransport: ArticleLoading, Sendable {
         maximumBytes: Int,
         onProgress: @escaping @Sendable (Double?) -> Void
     ) async throws -> Data {
+        try await load(url, maximumBytes: maximumBytes,
+                       acceptedContentTypes: ["text/html", "application/xhtml+xml", "text/plain"],
+                       requiresContentType: false, onProgress: onProgress)
+    }
+
+    /// Loads an application/json+chapters document with the same pinned DNS
+    /// and redirect checks used for article extraction.
+    func loadPodcastChapterDocument(_ url: URL, maximumBytes: Int) async throws -> Data {
+        try await load(url, maximumBytes: maximumBytes,
+                       acceptedContentTypes: ["application/json+chapters"],
+                       requiresContentType: true, onProgress: { _ in })
+    }
+
+    private func load(
+        _ url: URL,
+        maximumBytes: Int,
+        acceptedContentTypes: Set<String>,
+        requiresContentType: Bool,
+        onProgress: @escaping @Sendable (Double?) -> Void
+    ) async throws -> Data {
         guard maximumBytes > 0 else { throw PublicHTTPSArticleError.responseTooLarge }
         var currentURL = url
         for redirect in 0...Self.maximumRedirects {
@@ -104,8 +124,13 @@ public struct PublicHTTPSArticleTransport: ArticleLoading, Sendable {
             if let encoding = response.header("content-encoding"), encoding.lowercased() != "identity" {
                 throw PublicHTTPSArticleError.invalidResponse
             }
-            if let contentType = response.header("content-type")?.split(separator: ";", maxSplits: 1).first,
-               !["text/html", "application/xhtml+xml", "text/plain"].contains(contentType.trimmingCharacters(in: .whitespaces).lowercased()) {
+            if let rawType = response.header("content-type") {
+                let contentType = rawType.split(separator: ";", maxSplits: 1).first?
+                    .trimmingCharacters(in: .whitespaces).lowercased()
+                guard let contentType, acceptedContentTypes.contains(contentType) else {
+                    throw PublicHTTPSArticleError.invalidResponse
+                }
+            } else if requiresContentType {
                 throw PublicHTTPSArticleError.invalidResponse
             }
             onProgress(1)

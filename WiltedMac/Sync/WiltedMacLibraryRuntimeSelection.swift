@@ -136,8 +136,14 @@ enum WiltedMacLibraryTransports {
         do {
             let outbox = CloudKitLibraryOutbox()
             let factory = driverFactory(outbox: outbox)
+#if WILTED_NOTEBOOK_DEVELOPMENT
+            let notebookMode: NotebookCloudWriteMode = .development
+#else
+            let notebookMode: NotebookCloudWriteMode = .localOnly
+#endif
             return try CloudKitLibraryTransport(
-                deviceID: deviceID, isLibraryWriter: true, driver: try factory(nil), driverFactory: factory, outbox: outbox
+                deviceID: deviceID, isLibraryWriter: true, driver: try factory(nil), driverFactory: factory, outbox: outbox,
+                notebookCloudWriteMode: notebookMode
             )
         } catch {
             return WiltedMacUnavailableLibraryTransport(reason: "iCloud library sync could not start.")

@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.8.0] - 2026-11-24
+
+### Added
+
+- Search an episode’s transcript on the Mac and jump to a timed match. The player and Larder show how much audio preparation removed from that episode.
+- Set a preferred playback speed for a show on Mac or iPhone. Open publisher chapters from the player and jump to their positions in the prepared recording.
+- Feeds can flag likely trailers, promos and reruns and explain each label. On iPhone, New Episodes lets you Keep or Skip an episode while away from the Mac.
+- Voice leveling brings quiet and loud passages closer together in newly prepared podcasts. It starts on and can be turned off in Mac Settings or for an individual show.
+- Save the last 30 seconds of a podcast to Notebook from Mac, iPhone, Watch or Siri. Clips keep their transcript excerpt, time and optional note.
+
+### Fixed
+
+- Live Mac headlines use the selected local story voice. The main window shows the story being read and offers the original article and **Listen next**.
+- Mac settings explain daily report sources and timing, the weather contact field, and which ad-finding requests count toward the daily limit.
+- The Mac’s device list distinguishes device announcements from unidentified sync activity.
+
 ## [0.7.7] - 2026-11-24
 
 ### Added

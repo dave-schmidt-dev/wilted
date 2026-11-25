@@ -20,18 +20,12 @@ final class WiltedMacModel {
     static let maximumStartupAttempts = 2
 
     var startupState: WiltedMacStartupState = .loading(attempt: 0, step: .openingStore)
+    /// Search stays local to the open episode and is never persisted or logged.
+    var currentTranscriptSearch = WiltedMacTranscriptSearch()
     /// Feeds selection and disclosure, scroll anchors, Larder filter and search, and the composer
     /// drafts, as one value persisted through `preferences` (see `+NavigationState`).
     var navigationState = WiltedMacNavigationState() {
         didSet { persistNavigationState() }
-    }
-    var urlDraft: String {
-        get { navigationState.urlDraft }
-        set { navigationState.urlDraft = newValue }
-    }
-    var podcastFeedDraft: String {
-        get { navigationState.podcastFeedDraft }
-        set { navigationState.podcastFeedDraft = newValue }
     }
     /// What the single add box is doing right now. Telling a feed from an
     /// article needs the document, so the button can sit on a network round

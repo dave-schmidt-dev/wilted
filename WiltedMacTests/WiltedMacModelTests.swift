@@ -394,7 +394,8 @@ final class WiltedMacModelTests: XCTestCase {
         XCTAssertEqual(episode.preparationState, .preparing(stage: WiltedMacModel.preparationQueuedStage))
         XCTAssertEqual(model.deferredAutomaticPreparations.map(\.episodeID), [episodeID.rawValue])
         XCTAssertEqual(model.deferredAutomaticPreparations.first?.policySnapshot,
-                       PodcastPreparationPolicySnapshot(transcriptPolicy: .alwaysTranscribe, removeAds: true),
+                       PodcastPreparationPolicySnapshot(
+                           transcriptPolicy: .alwaysTranscribe, removeAds: true, evenOutVoiceLoudness: true),
                        "the current policy replaces the invalidated job's obsolete snapshot")
         XCTAssertTrue(FileManager.default.fileExists(atPath: audioURL.path))
     }

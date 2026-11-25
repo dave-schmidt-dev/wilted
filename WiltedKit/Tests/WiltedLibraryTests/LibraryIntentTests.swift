@@ -30,6 +30,11 @@ final class LibraryIntentTests: XCTestCase {
         }
         let media = try LibraryIntent.requestMedia(entryID: item("a"), deviceID: "phone", id: "q")
         XCTAssertFalse(media.action.isDecision)
+        let newEpisode = try LibraryIntent.decideNewEpisode(
+            entryID: item("a"), decision: .skip, deviceID: "phone", createdAt: created, id: "new-skip"
+        )
+        XCTAssertEqual(try JSONDecoder().decode(LibraryIntent.self, from: JSONEncoder().encode(newEpisode)), newEpisode)
+        XCTAssertTrue(newEpisode.action.isDecision)
     }
 
     func testReorderKeepsItsAnchorAndTheFrontIsDistinct() throws {
@@ -139,6 +144,22 @@ final class LibraryIntentTests: XCTestCase {
             feedID: feed, seconds: 30, basedOnRevision: -1, deviceID: "phone"))
     }
 
+    func testShowPlaybackSpeedIntentCarriesRateOrRevisionedReset() throws {
+        let feed = try item("speed-feed")
+        for speed: Double? in [1.5, nil] {
+            let intent = try LibraryIntent.setShowPlaybackSpeed(
+                feedID: feed, speed: speed, basedOnRevision: 7, deviceID: "phone", createdAt: created,
+                id: speed == nil ? "reset-speed" : "set-speed")
+            XCTAssertEqual(try JSONDecoder().decode(LibraryIntent.self, from: JSONEncoder().encode(intent)), intent)
+            XCTAssertEqual(intent.action.entryID, feed)
+            XCTAssertTrue(intent.action.isDecision)
+        }
+        XCTAssertThrowsError(try LibraryIntent.setShowPlaybackSpeed(
+            feedID: feed, speed: 1.1, basedOnRevision: 7, deviceID: "phone"))
+        XCTAssertThrowsError(try LibraryIntent.setShowPlaybackSpeed(
+            feedID: feed, speed: 1.5, basedOnRevision: -1, deviceID: "phone"))
+    }
+
     func testAddIntentsRejectNonHTTPSAndCredentialedURLsAtInitAndDecode() throws {
         let bad = ["http://example.com/feed.xml", "ftp://example.com/f", "https://user:pw@example.com/f",
                    "https://user@example.com/f", "https:///nohost"]
@@ -172,6 +193,19 @@ final class LibraryIntentTests: XCTestCase {
         XCTAssertThrowsError(try IntentOutcome(intentID: "k", deviceID: "phone", disposition: .rejected, reason: "", decidedAt: created))
         XCTAssertThrowsError(try IntentOutcome(intentID: "k", deviceID: "phone", disposition: .applied, reason: "x", decidedAt: created))
         XCTAssertThrowsError(try IntentOutcome(intentID: "", deviceID: "phone", disposition: .applied, decidedAt: created))
+    }
+
+    func testNewEpisodeConflictCarriesTypedCurrentStateAndOldOutcomesStillDecode() throws {
+        let intent = try LibraryIntent.decideNewEpisode(
+            entryID: item("a"), decision: .keep, deviceID: "phone", createdAt: created, id: "new-conflict"
+        )
+        let conflict = try IntentOutcome.rejectedNewEpisode(for: intent, currentState: .skipped, at: created)
+        XCTAssertEqual(try JSONDecoder().decode(IntentOutcome.self, from: JSONEncoder().encode(conflict)), conflict)
+        XCTAssertEqual(conflict.reason, IntentOutcome.reasonNewEpisodeConflict)
+        XCTAssertEqual(conflict.currentNewEpisodeState, .skipped)
+
+        let legacy = #"{"decidedAt":1000,"deviceID":"phone","disposition":"applied","intentID":"old"}"#
+        XCTAssertNil(try JSONDecoder().decode(IntentOutcome.self, from: Data(legacy.utf8)).currentNewEpisodeState)
     }
 
     func testOnlyTheWriterMayPublishOutcomesAndTheFirstOutcomeStands() async throws {

@@ -18,8 +18,9 @@ class SettingsInventory(unittest.TestCase):
     def test_every_device_row_offers_a_menu_instead_of_the_stop_link(self):
         card = source("WiltedMacLibrarySyncCard")
         self.assertNotIn("Stop direct downloads for this iPhone", card)
-        rows = card.split("ForEach(WiltedMacLibrarySyncStatus.deviceRows(activity.devices)) { row in")[1].split("// The iCloud request counts")[0]
-        self.assertNotIn("if ", rows)
+        for collection in ["WiltedMacLibrarySyncStatus.deviceRows(activity.devices)", "unidentifiedRequests", "earlierActivityRows"]:
+            self.assertRegex(card, rf"ForEach\({re.escape(collection)}\) \{{ row in\s+deviceDownloadsRow\(row\)\s+\}}")
+        rows = card.split("private func deviceDownloadsRow(", 1)[1].split("\n    }", 1)[0]
         self.assertNotIn("librarySyncDiagnostics", card, "request counts stay in the Activity window")
         self.assertIn("WiltedMacDeviceDownloadsRow(row: row, macEnabled: model.isDirectDownloadsEnabled,", rows)
         self.assertIn("onStop: { model.stopDirectDownloads(for: row.id) }", rows)
@@ -205,9 +206,9 @@ class ShowSettingsInventory(unittest.TestCase):
     def test_page_orders_sections_like_global_defaults(self):
         self.assertTrue(self.page_files, "Show settings page source must be present")
         body = self.page_source.split("var body: some View", 1)[1].split("@ViewBuilder private var renameTitleAccessory", 1)[0]
-        self.assertNotIn("playbackSection", body)
+        self.assertIn("case newEpisodes, playback, ads, type, details", self.page_source)
         positions = [body.index(section) for section in
-                     ("newEpisodesSection", "adsSection", "typeSection",
+                     ("newEpisodesSection", "playbackSection", "adsSection", "typeSection",
                       "WiltedMacFeedDetailsSection(")]
         self.assertEqual(positions, sorted(positions))
 
@@ -220,6 +221,7 @@ INVENTORY = {
         'wilted-appearance-help',
     ],
     "newEpisodes": [
+        'wilted-automation-refresh-policy-explanation',
         'wilted-automation-status',
         'wilted-automation-stop',
         'wilted-automation-refresh-policy',
@@ -237,6 +239,8 @@ INVENTORY = {
         'wilted-automation-feed-default-kept-limit-stepper',
     ],
     "preparing": [
+        'wilted-automation-processing-policy-explanation',
+        'wilted-automation-level-voices',
         'wilted-automation-processing-policy',
         'wilted-automation-off-peak-start',
         'wilted-automation-off-peak-end',
@@ -246,6 +250,7 @@ INVENTORY = {
         'wilted-automation-transcript-explanation',
     ],
     "ads": [
+        'wilted-automation-remove-ads-explanation',
         'wilted-automation-remove-ads',
         'wilted-automation-ad-marker',
         'wilted-ad-finding-switch',
@@ -316,6 +321,16 @@ INVENTORY = {
         'wilted-providers-card-\\(row.provider.rawValue)',
     ],
     "reports": [
+        'wilted-reports-interruptions-summary',
+        'wilted-reports-weather-explanation',
+        'wilted-reports-headlines-explanation',
+        'wilted-reports-wait-limit-explanation',
+        'wilted-reports-headline-gap-explanation',
+        'wilted-reports-daily-explanation',
+        'wilted-reports-contact-explanation',
+        'wilted-reports-reading-voice-explanation',
+        'wilted-reports-location-explanation',
+        'wilted-reports-topic-filter-explanation',
         'wilted-reports-interruptions',
         'wilted-reports-readiness',
         'wilted-reports-add-news-feed',
@@ -362,6 +377,11 @@ INVENTORY = {
         'wilted-reports-build-now',
     ],
     "devices": [
+        'wilted-sync-direct-downloads-explanation',
+        'wilted-sync-unidentified-request-explanation',
+        'wilted-sync-earlier-activity-explanation',
+        'wilted-sync-earlier-activity-label',
+        'wilted-sync-earlier-activity',
         "wilted-author-publication",
         'wilted-sync-status',
         'wilted-sync-throttle',

@@ -77,7 +77,7 @@ final class WiltedMacSelfPromotionPreferenceTests: XCTestCase {
         let noFeed = WiltedMacModel.preparationPolicySnapshot(from: settings, feedID: nil, preferences: preferences)
 
         XCTAssertEqual(optedIn, PodcastPreparationPolicySnapshot(
-            transcriptPolicy: .alwaysTranscribe, removeAds: true, removeSelfPromotion: true
+            transcriptPolicy: .alwaysTranscribe, removeAds: true, removeSelfPromotion: true, evenOutVoiceLoudness: true
         ))
         XCTAssertEqual(other, WiltedMacModel.preparationPolicySnapshot(from: settings))
         XCTAssertFalse(other.removeSelfPromotion)
@@ -141,6 +141,90 @@ final class WiltedMacSelfPromotionPreferenceTests: XCTestCase {
         XCTAssertFalse(articleText.contains("sponsor roll call"), articleText)
     }
 
+    func testLoudnessDefaultIsOnAndShowOverridesAreResolvedAtAdmission() throws {
+        let preferences = WiltedMacTestPreferences.ephemeral()
+        let loudness = WiltedMacLoudnessPreference(preferences: preferences)
+        XCTAssertTrue(loudness.feedIDs.isEmpty)
+        XCTAssertTrue(loudness.offFeedIDs.isEmpty)
+        XCTAssertNil(preferences.object(forKey: WiltedMacLoudnessPreference.preferenceKey))
+        XCTAssertTrue(loudness.isEnabled(feedID: "feed-a", globalDefault: true))
+        loudness.set(feedID: "feed-b", override: .off)
+        loudness.set(feedID: "feed-c", override: .on)
+
+        let settings = WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .manual,
+            transcriptPolicy: .bestAvailable, removeAds: false
+        )
+        let inherited = WiltedMacModel.preparationPolicySnapshot(from: settings, feedID: "feed-a", preferences: preferences)
+        let explicitOff = WiltedMacModel.preparationPolicySnapshot(from: settings, feedID: "feed-b", preferences: preferences)
+        let noFeed = WiltedMacModel.preparationPolicySnapshot(from: settings, feedID: nil, preferences: preferences)
+        XCTAssertTrue(inherited.evenOutVoiceLoudness)
+        XCTAssertTrue(noFeed.evenOutVoiceLoudness)
+        XCTAssertFalse(explicitOff.evenOutVoiceLoudness)
+        XCTAssertTrue(WiltedMacModel.preparationPolicySnapshot(
+            from: settings, feedID: "feed-c", preferences: preferences).evenOutVoiceLoudness)
+        let admitted = inherited
+        let globalOff = WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .manual,
+            transcriptPolicy: .bestAvailable, removeAds: false, levelVoices: false
+        )
+        XCTAssertFalse(WiltedMacModel.preparationPolicySnapshot(
+            from: globalOff, feedID: "feed-a", preferences: preferences).evenOutVoiceLoudness)
+        XCTAssertTrue(WiltedMacModel.preparationPolicySnapshot(
+            from: globalOff, feedID: "feed-c", preferences: preferences).evenOutVoiceLoudness)
+        XCTAssertTrue(admitted.evenOutVoiceLoudness, "a queued job keeps its admitted value")
+    }
+
+    func testDeferredAdmissionPersistsTheLoudnessSnapshotAcrossSettingChanges() throws {
+        let model = makeModel("loudness-admission")
+        model.setAutomationSettings(WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .offPeak(try windowExcludingNow()),
+            transcriptPolicy: .bestAvailable, removeAds: false
+        ))
+        let episode = episode("episode-a", feedID: "feed-a")
+
+        model.admitAutomaticPreparation(for: episode, at: Date())
+        XCTAssertTrue(try XCTUnwrap(model.deferredAutomaticPreparations.first).policySnapshot.evenOutVoiceLoudness)
+
+        model.setAutomationSettings(WiltedAutomationSettings(
+            refreshPolicy: .manual, downloadPolicy: .manual, processingPolicy: .manual,
+            transcriptPolicy: .bestAvailable, removeAds: false, levelVoices: false
+        ))
+        WiltedMacLoudnessPreference(preferences: model.preferences).set(feedID: "feed-a", override: .off)
+
+        let persisted = try XCTUnwrap(WiltedMacModel.loadDeferredAutomaticPreparations(from: model.preferences)
+            .first { $0.episodeID == episode.id })
+        XCTAssertTrue(persisted.policySnapshot.evenOutVoiceLoudness,
+                      "settings and show overrides changed after admission; the queued snapshot remains immutable")
+    }
+
+    func testGlobalLevelVoicesSettingDefaultsOnAndPersistsExplicitOff() throws {
+        let encoded = try JSONEncoder().encode(WiltedAutomationSettings.defaults)
+        var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        fields.removeValue(forKey: "levelVoices")
+        let legacyJSON = try JSONSerialization.data(withJSONObject: fields)
+        let legacy = try JSONDecoder().decode(WiltedAutomationSettings.self, from: legacyJSON)
+        XCTAssertTrue(legacy.levelVoices, "settings written before the field existed use the new default")
+
+        var explicitOff = legacy
+        explicitOff = WiltedAutomationSettings(
+            refreshPolicy: legacy.refreshPolicy, downloadPolicy: legacy.downloadPolicy,
+            processingPolicy: legacy.processingPolicy, transcriptPolicy: legacy.transcriptPolicy,
+            removeAds: legacy.removeAds, levelVoices: false
+        )
+        let roundTrip = try JSONDecoder().decode(WiltedAutomationSettings.self,
+                                                 from: JSONEncoder().encode(explicitOff))
+        XCTAssertFalse(roundTrip.levelVoices, "an explicit Settings opt-out survives relaunch")
+    }
+
+    func testLoudnessControlIsAvailableOnlyForPodcastFeeds() throws {
+        let podcast = try showSettingsText(isArticleFeed: false, suffix: "loudness-podcast", section: .playback)
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Level voices", in: podcast), 1, podcast)
+        XCTAssertTrue(podcast.contains("Default: On"), podcast)
+        let articles = try showSettingsText(isArticleFeed: true, suffix: "loudness-article", section: .playback)
+        XCTAssertFalse(articles.contains("Level voices"), articles)
+    }
+
     // MARK: Helpers
 
     private func makeModel(_ suffix: String) -> WiltedMacModel {
@@ -160,7 +244,7 @@ final class WiltedMacSelfPromotionPreferenceTests: XCTestCase {
         )
     }
 
-    private func showSettingsText(isArticleFeed: Bool, suffix: String) throws -> String {
+    private func showSettingsText(isArticleFeed: Bool, suffix: String, section: WiltedMacShowSettingsView.Section? = nil) throws -> String {
         let feedURL = try XCTUnwrap(URL(string: "https://feeds.example.test/\(suffix).xml"))
         let feedID = isArticleFeed
             ? try ItemID.articleFeed(canonicalFeedURL: feedURL).rawValue
@@ -172,8 +256,10 @@ final class WiltedMacSelfPromotionPreferenceTests: XCTestCase {
         model.subscriptions = [subscription]
         let board = WiltedMacFeedPolicyBoard(model: model)
         board.loadForPreview(feedID: feedID, isArticleFeed: isArticleFeed, isNews: false)
+        let page = WiltedMacShowSettingsView(model: board.model, board: board, subscription: subscription)
+        if let section { return try WiltedMacHeadless.showSectionText(page, section).joined(separator: " ") }
         return try WiltedMacHeadless.recognizedText(
-            WiltedMacShowSettingsView(model: board.model, board: board, subscription: subscription),
+            page,
             size: CGSize(width: 900, height: 1_600)
         ).joined(separator: " ")
     }

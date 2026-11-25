@@ -209,6 +209,8 @@ public final class PlaybackController {
     /// The Mac's owner-scoped per-show offset, queried only for a new queued episode start.
     /// Direct revision loads, including story playback, never consult this preference.
     @ObservationIgnored public var freshStartOffsetProvider: (@MainActor @Sendable (ItemID) async -> Double?)?
+    /// The Mac's owner-scoped show rate, used only when the episode has no saved rate.
+    @ObservationIgnored public var showPlaybackSpeedProvider: (@MainActor @Sendable (ItemID) async -> Double?)?
 
     var currentRevision: AudioRevision?
     var completionHandledGeneration: UInt64?

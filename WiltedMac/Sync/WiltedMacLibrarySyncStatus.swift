@@ -182,8 +182,7 @@ struct WiltedMacLibrarySyncStatus: Equatable, Sendable {
         date.map { time($0, now: now) } ?? "Not yet this launch"
     }
 
-    /// One Sync card row per linked device: its model family (numbered when two share one) and
-    /// whether this Mac has linked it and is answering its requests.
+    /// Presentation data for announced devices and unannounced request/history rows.
     struct DeviceRow: Equatable, Identifiable {
         let id: String
         let label: String
@@ -198,24 +197,53 @@ struct WiltedMacLibrarySyncStatus: Equatable, Sendable {
     }
 
     static func deviceRows(_ devices: [WiltedMacLinkedDevice]) -> [DeviceRow] {
+        makeDeviceRows(devices.filter { $0.lastAnnouncedAt != nil }, mode: .announced)
+    }
+
+    static func unidentifiedRequestRows(_ devices: [WiltedMacLinkedDevice]) -> [DeviceRow] {
+        makeDeviceRows(devices.filter { $0.lastAnnouncedAt == nil && !$0.inFlight.isEmpty }, mode: .activeRequest)
+    }
+
+    static func earlierSyncActivityRows(_ devices: [WiltedMacLinkedDevice]) -> [DeviceRow] {
+        makeDeviceRows(devices.filter { $0.lastAnnouncedAt == nil && $0.inFlight.isEmpty }, mode: .history)
+    }
+
+    private enum DeviceRowMode: Equatable {
+        case announced
+        case activeRequest
+        case history
+    }
+
+    private static func makeDeviceRows(_ devices: [WiltedMacLinkedDevice], mode: DeviceRowMode) -> [DeviceRow] {
         var seen: [String: Int] = [:]
         let fallbackKinds = devices.compactMap { device -> String? in
+            guard mode == .announced else { return nil }
             guard usableDisplayName(device.displayName) == nil,
                   let kind = device.kind?.trimmingCharacters(in: .whitespacesAndNewlines), !kind.isEmpty else { return nil }
             return kind
         }
         let counts = Dictionary(fallbackKinds.map { ($0, 1) }, uniquingKeysWith: +)
-        return devices.map { device in
+        return devices.enumerated().map { index, device in
             let label: String
             if let displayName = usableDisplayName(device.displayName) {
                 label = displayName
+            } else if mode == .activeRequest {
+                label = "Unidentified request \(index + 1)"
+            } else if mode == .history {
+                label = "Unidentified device \(index + 1)"
             } else if let kind = device.kind?.trimmingCharacters(in: .whitespacesAndNewlines), !kind.isEmpty {
                 seen[kind, default: 0] += 1
                 label = (counts[kind] ?? 0) > 1 ? "\(kind) \(seen[kind] ?? 1)" : kind
             } else {
-                label = "Linked device"
+                label = "Device type unavailable"
             }
-            return DeviceRow(id: device.deviceID, label: label, value: deviceValue(device),
+            let value: String
+            switch mode {
+            case .announced: value = deviceValue(device)
+            case .activeRequest: value = activeRequestValue(device.inFlight.count)
+            case .history: value = "Status unavailable"
+            }
+            return DeviceRow(id: device.deviceID, label: label, value: value,
                              isDirectDownloadsStopped: device.isDirectDownloadsStopped,
                              lastAnnouncedAt: device.lastAnnouncedAt,
                              hasInFlightTransfer: !device.inFlight.isEmpty)
@@ -236,6 +264,10 @@ struct WiltedMacLibrarySyncStatus: Equatable, Sendable {
         if sending > 0 { parts.append("sending \(episodes(sending))") }
         if queued > 0 { parts.append("\(episodes(queued)) queued") }
         return parts.isEmpty ? "Linked" : "Linked · \(parts.joined(separator: ", "))"
+    }
+
+    private static func activeRequestValue(_ count: Int) -> String {
+        "\(count) active \(count == 1 ? "request" : "requests")"
     }
 
     private static func episodes(_ count: Int) -> String { count == 1 ? "1 episode" : "\(count) episodes" }

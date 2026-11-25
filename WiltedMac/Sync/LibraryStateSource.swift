@@ -16,6 +16,8 @@ struct LibraryStateSnapshot: Sendable, Equatable {
     var queue: [ItemID]
     /// Completion state per episode.
     var listening: [ListeningRecord]
+    /// Owner-partitioned Notebook entries, including durable tombstones.
+    var notebookEntries: [LibraryNotebookEntry]
     /// What the Mac is playing or last paused on, if anything.
     var currentPlayback: DevicePlaybackPosition?
 
@@ -24,12 +26,14 @@ struct LibraryStateSnapshot: Sendable, Equatable {
         episodes: [LibraryEntry] = [],
         queue: [ItemID] = [],
         listening: [ListeningRecord] = [],
+        notebookEntries: [LibraryNotebookEntry] = [],
         currentPlayback: DevicePlaybackPosition? = nil
     ) {
         self.feeds = feeds
         self.episodes = episodes
         self.queue = queue
         self.listening = listening
+        self.notebookEntries = notebookEntries
         self.currentPlayback = currentPlayback
     }
 
@@ -41,7 +45,8 @@ struct LibraryStateSnapshot: Sendable, Equatable {
         for id in queue where known.contains(id) && seen.insert(id).inserted {
             slots.append(try QueueSlot(entryID: id, sortKey: Double(slots.count)))
         }
-        return LibrarySnapshot(sources: feeds, entries: episodes, slots: slots, listening: listening)
+        return LibrarySnapshot(sources: feeds, entries: episodes, slots: slots, listening: listening,
+                               notebookEntries: notebookEntries)
     }
 }
 

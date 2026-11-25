@@ -178,9 +178,13 @@ final class WiltedMacLarderHeaderTests: XCTestCase {
                     .background(WiltedTheme.color(.page, scheme: .light)),
                 size: CGSize(width: 420, height: 200))
             try attach(bitmap, named: "transcript-\(synchronized ? "synced" : "untimed")-420-200")
-            let text = try lines(in: bitmap).joined(separator: " ")
-            XCTAssertEqual(try matches("Transcript", in: text), 1,
-                           "the outer section names the reader once: \(text)")
+            let recognized = try lines(in: bitmap)
+            let text = recognized.joined(separator: " ")
+            let standaloneHeadings = recognized.filter {
+                $0.range(of: #"^\s*Transcript\s*$"#, options: [.regularExpression, .caseInsensitive]) != nil
+            }
+            XCTAssertEqual(standaloneHeadings.count, 1,
+                           "the mounted reader has one standalone section heading; search keeps its own placeholder: \(text)")
             XCTAssertTrue(text.contains("Words from the episode remain readable"),
                           "the selected reader does not hide untimed prose inside another disclosure: \(text)")
         }

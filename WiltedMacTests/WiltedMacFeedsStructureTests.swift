@@ -456,10 +456,13 @@ struct WiltedMacCapacityCountFixture {
         XCTAssertEqual(board.keptCount(forFeed: feedID), kept, file: file, line: line)
         XCTAssertEqual(board.waitingEpisodes(forFeed: feedID).count, waiting, file: file, line: line)
         XCTAssertEqual(model.subscriptions.first { $0.id == feedID }?.episodeCount, 3, "raw snapshot retains every metadata row", file: file, line: line)
+        let subscription = try XCTUnwrap(model.subscriptions.first { $0.id == feedID }, file: file, line: line)
+        let capacity = WiltedMacFeedCapacityLabel(board: board, subscription: subscription).renderedLabel
+        XCTAssertEqual(capacity, "\(kept) of 2 kept · \(waiting) waiting for space", file: file, line: line)
         let text = try WiltedMacHeadless.recognizedText(
             WiltedMacFeedsView(model: model, policyBoard: board).environment(\.wiltedTextScale, .largest),
             size: CGSize(width: 1000, height: 2000)).joined(separator: " ")
-        XCTAssertTrue(text.contains("\(kept) of 2 kept"), text, file: file, line: line)
+        XCTAssertTrue(text.contains("of 2 kept"), text, file: file, line: line)
         XCTAssertTrue(text.contains("\(waiting) waiting for space"), text, file: file, line: line)
         XCTAssertFalse(text.contains("3 of 2 kept"), "raw snapshot count must never masquerade as kept capacity: \(text)", file: file, line: line)
         XCTAssertFalse(text.contains("Loading settings"), text, file: file, line: line)

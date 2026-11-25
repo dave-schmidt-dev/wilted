@@ -127,6 +127,7 @@ enum WiltedMacHeadless {
     ) throws -> [String] {
         let height: CGFloat = switch section {
         case .newEpisodes, .ads: 650
+        case .playback: 360
         case .type: 240
         case .details: 900
         }

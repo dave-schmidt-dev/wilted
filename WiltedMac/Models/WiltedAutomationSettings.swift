@@ -281,6 +281,7 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         processingPolicy: .immediate,
         transcriptPolicy: .bestAvailable,
         removeAds: true,
+        levelVoices: true,
         autoAddPreparedToLarder: true,
         downloadEverythingOnLarder: false,
         prepareEverythingDownloaded: false,
@@ -295,6 +296,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
     let processingPolicy: WiltedAutomationProcessingPolicy
     let transcriptPolicy: WiltedAutomationTranscriptPolicy
     let removeAds: Bool
+    /// New preparations normalize voice level unless a show opts out.
+    let levelVoices: Bool
 
     /// Whether an episode that finishes preparing joins the Larder on its own.
     /// Defaulted rather than required at every call site: a listener who
@@ -354,7 +357,7 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
 
     init(refreshPolicy: WiltedAutomationRefreshPolicy, downloadPolicy: WiltedAutomationDownloadPolicy,
          processingPolicy: WiltedAutomationProcessingPolicy, transcriptPolicy: WiltedAutomationTranscriptPolicy,
-         removeAds: Bool, autoAddPreparedToLarder: Bool = true,
+         removeAds: Bool, levelVoices: Bool = true, autoAddPreparedToLarder: Bool = true,
          downloadEverythingOnLarder: Bool = false, prepareEverythingDownloaded: Bool = false,
          initialEpisodeMetadataCount: Int = 5, autoKeepNewEpisodes: Bool = false,
          keptLimitPerFeed: Int? = nil) {
@@ -364,6 +367,7 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         self.processingPolicy = processingPolicy
         self.transcriptPolicy = transcriptPolicy
         self.removeAds = removeAds
+        self.levelVoices = levelVoices
         self.autoAddPreparedToLarder = autoAddPreparedToLarder
         self.downloadEverythingOnLarder = downloadEverythingOnLarder
         self.prepareEverythingDownloaded = prepareEverythingDownloaded
@@ -373,7 +377,7 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, refreshPolicy, downloadPolicy, processingPolicy, transcriptPolicy, removeAds
+        case version, refreshPolicy, downloadPolicy, processingPolicy, transcriptPolicy, removeAds, levelVoices
         // Stored settings keep the keys they were written under; only the Swift names moved.
         case autoAddPreparedToLarder = "autoAddPreparedToMenu"
         case downloadEverythingOnLarder = "downloadEverythingOnMenu"
@@ -405,6 +409,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         processingPolicy = try container.decode(WiltedAutomationProcessingPolicy.self, forKey: .processingPolicy)
         transcriptPolicy = try container.decode(WiltedAutomationTranscriptPolicy.self, forKey: .transcriptPolicy)
         removeAds = try container.decode(Bool.self, forKey: .removeAds)
+        // Existing installs adopt the requested global default-on policy.
+        levelVoices = try container.decodeIfPresent(Bool.self, forKey: .levelVoices) ?? true
         // Absent in settings saved before the Larder learned to fill itself.
         // Decoded permissively rather than behind a version bump, because
         // refusing to read an otherwise valid file would reset every other
@@ -462,6 +468,7 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
         try container.encode(processingPolicy, forKey: .processingPolicy)
         try container.encode(transcriptPolicy, forKey: .transcriptPolicy)
         try container.encode(removeAds, forKey: .removeAds)
+        try container.encode(levelVoices, forKey: .levelVoices)
         try container.encode(autoAddPreparedToLarder, forKey: .autoAddPreparedToLarder)
         try container.encode(downloadEverythingOnLarder, forKey: .downloadEverythingOnLarder)
         try container.encode(prepareEverythingDownloaded, forKey: .prepareEverythingDownloaded)
@@ -574,7 +581,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
     func settingAutoKeepNewEpisodes(_ value: Bool) -> Self {
         Self(
             refreshPolicy: refreshPolicy, downloadPolicy: downloadPolicy, processingPolicy: processingPolicy,
-            transcriptPolicy: transcriptPolicy, removeAds: removeAds, autoAddPreparedToLarder: autoAddPreparedToLarder,
+            transcriptPolicy: transcriptPolicy, removeAds: removeAds, levelVoices: levelVoices,
+            autoAddPreparedToLarder: autoAddPreparedToLarder,
             downloadEverythingOnLarder: downloadEverythingOnLarder, prepareEverythingDownloaded: prepareEverythingDownloaded,
             initialEpisodeMetadataCount: initialEpisodeMetadataCount, autoKeepNewEpisodes: value,
             keptLimitPerFeed: keptLimitPerFeed
@@ -585,7 +593,8 @@ struct WiltedAutomationSettings: Equatable, Sendable, Codable {
     func settingKeptLimitPerFeed(_ limit: Int?) -> Self {
         Self(
             refreshPolicy: refreshPolicy, downloadPolicy: downloadPolicy, processingPolicy: processingPolicy,
-            transcriptPolicy: transcriptPolicy, removeAds: removeAds, autoAddPreparedToLarder: autoAddPreparedToLarder,
+            transcriptPolicy: transcriptPolicy, removeAds: removeAds, levelVoices: levelVoices,
+            autoAddPreparedToLarder: autoAddPreparedToLarder,
             downloadEverythingOnLarder: downloadEverythingOnLarder, prepareEverythingDownloaded: prepareEverythingDownloaded,
             initialEpisodeMetadataCount: initialEpisodeMetadataCount, autoKeepNewEpisodes: autoKeepNewEpisodes,
             keptLimitPerFeed: limit

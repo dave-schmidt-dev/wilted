@@ -55,6 +55,7 @@ enum LibraryEnvironment {
             outboxURL: directory.appendingPathComponent("pending-intents.json"),
             finishedHereURL: directory.appendingPathComponent("finished-here.json"),
             headlineStateURL: directory.appendingPathComponent("headline-state.json"),
+            notebookOutboxURL: directory.appendingPathComponent("notebook-state.json"),
             journal: journal)
         if isLiveAllowed { installDirectPath(on: model) }
         return model
@@ -121,10 +122,16 @@ enum LibraryEnvironment {
             guard let data = Data(base64Encoded: token.rawValue) else { throw CloudKitSyncError.stateCorrupt }
             return data
         }
+#if WILTED_NOTEBOOK_DEVELOPMENT
+        let notebookMode: NotebookCloudWriteMode = .development
+#else
+        let notebookMode: NotebookCloudWriteMode = .localOnly
+#endif
         let transport = try CloudKitLibraryTransport(
             deviceID: deviceID, isLibraryWriter: false, driver: try factory(state), driverFactory: factory,
             outbox: outbox, state: cursor, knownOwnerToken: owner, initialReviewHold: initialReviewHold,
-            counters: CloudKitOperationCounters(archive: .standard()))
+            counters: CloudKitOperationCounters(archive: .standard()), notebookCloudWriteMode: notebookMode
+        )
         return (transport, { await transport.resetAfterAccountChange() }, transport.accountChanges)
 #else
         return (UnavailableLibraryTransport(reason: "iCloud sync is not enabled in this build."), {}, nil)

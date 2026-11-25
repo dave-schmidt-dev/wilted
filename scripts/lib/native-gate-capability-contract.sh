@@ -55,7 +55,7 @@ assert_capability_source_contract() {
   assert_target_config WiltedMac "$mac_block" Development 'CODE_SIGN_STYLE: Automatic'
   assert_target_config WiltedMac "$mac_block" Development 'CODE_SIGN_IDENTITY: "Apple Development"'
   assert_target_config WiltedMac "$mac_block" Development 'DEVELOPMENT_TEAM: 4CJ49V6QHW'
-  assert_target_config WiltedMac "$mac_block" Development 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"'
+  assert_target_config WiltedMac "$mac_block" Development 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE WILTED_NOTEBOOK_DEVELOPMENT"'
   assert_target_config WiltedMac "$mac_block" Release 'CODE_SIGN_ENTITLEMENTS: WiltedMac/WiltedMacProduction.entitlements'
   assert_target_config WiltedMac "$mac_block" Release 'CODE_SIGN_IDENTITY: "Developer ID Application"'
   assert_target_config WiltedMac "$mac_block" Release 'CODE_SIGN_STYLE: Manual'
@@ -66,7 +66,7 @@ assert_capability_source_contract() {
   assert_target_config WiltediOS "$ios_block" Debug 'CODE_SIGN_ENTITLEMENTS: ""'
   assert_target_config WiltediOS "$ios_block" Debug 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"'
   assert_target_config WiltediOS "$ios_block" Development 'CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOS.entitlements'
-  assert_target_config WiltediOS "$ios_block" Development 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE WILTED_SIRI"'
+  assert_target_config WiltediOS "$ios_block" Development 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE WILTED_SIRI WILTED_NOTEBOOK_DEVELOPMENT"'
   assert_target_config WiltediOS "$ios_block" Release 'CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOSProduction.entitlements'
   assert_target_config WiltediOS "$ios_block" Release 'SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"'
   forbid_condition() { local b; b="$(config_block "$1" "$2")"; [[ "$b" != *"$3"* ]] || { printf 'assertion failed: %s defines %s\n' "$2" "$3" >&2; exit 1; }; }

@@ -39,6 +39,12 @@ private final class HubStartingSpeaker: BulletinSpeaking {
         return true
     }
 
+    func speak(_ bulletin: Bulletin, playbackVolume: Float,
+               finished: @escaping @MainActor () -> Void) -> Bool {
+        guard bulletin.kind == .headline else { return false }
+        return speak(bulletin.text, playbackVolume: playbackVolume, finished: finished)
+    }
+
     func stop() { completion = nil }
     func finish() { completion?(); completion = nil }
 }
@@ -74,16 +80,23 @@ final class WiltedMacBulletinHubTests: XCTestCase {
         let source: HubCountingSource
     }
 
-    private func makeRig(speaker: any BulletinSpeaking = HubSilentSpeaker()) async throws -> Rig {
+    private func makeRig(
+        speaker: any BulletinSpeaking = HubSilentSpeaker(),
+        narration: WiltedMacHeadlineNarration? = nil
+    ) async throws -> Rig {
         let library = try await AccountingLibrary.make(in: wiltedTemporaryDirectory("bulletin-hub"))
         let model = library.model
         _ = library.installScriptedPlayback(on: model)
         let source = HubCountingSource()
+        let producerHarness = BulletinProducerHarness()
         let provider = WiltedLocationProvider(manager: HubFakeLocationManager(), wifi: HubFakeWiFi())
         let hub = WiltedMacBulletinHub(
             model: model, location: provider, makeSpeaker: { speaker },
-            makeRouteSource: { HubStableRoute() }, makeAlertSource: { _ in source })
+            makeRouteSource: { HubStableRoute() }, makeAlertSource: { _ in source },
+            producerFactory: { producerHarness.producer() },
+            makeHeadlineNarration: { narration ?? WiltedMacHeadlineNarration() })
         model.installBulletinHubForTesting(hub)
+        if narration != nil { model.selectReadingVoice(ApprovedReadingVoiceID.caseyKasem.rawValue) }
         return Rig(library: library, model: model, hub: hub, source: source)
     }
 
@@ -154,18 +167,53 @@ final class WiltedMacBulletinHubTests: XCTestCase {
 
     func testLegacyHeadlineBulletinIDStillBecomesTheFeaturedStory() async throws {
         let speaker = HubStartingSpeaker()
-        let rig = try await makeRig(speaker: speaker)
+        let now = Date()
+        let narrator = WiltedMacHeadlineNarration(
+            render: { _, voiceID, outputURL in
+                try Data(repeating: 0x39, count: 128).write(to: outputURL)
+                return ArticleNarrationAudio(
+                    audioURL: outputURL, duration: 1,
+                    voiceRevision: ArticleNarrationCoordinator.voiceRevision(for: voiceID))
+            },
+            availability: { _ in .available }, now: { now })
+        defer { narrator.shutdown() }
+        let rig = try await makeRig(speaker: speaker, narration: narrator)
         set(rig.model, interruptions: true)
+        rig.model.updateAutomationSettings { settings in
+            settings.updatingReports { $0.headlinesEnabled = true }
+        }
         rig.model.playEpisode(rig.library.episodes[0])
         await rig.model.waitForPlaybackOperationForTesting()
         rig.hub.reconcile()
         XCTAssertTrue(rig.hub.interruptionsAreAttached)
 
-        let now = Date()
-        let legacy = try Bulletin(
-            id: "headline:legacy-story", kind: .headline, text: "Example News. Legacy story",
+        let emptyChannel = try LibraryBulletins(alertsEnabled: false, headlinesEnabled: true, updatedAt: now)
+        rig.hub.channelUpdated(emptyChannel)
+        let unlinked = try Bulletin(
+            id: "headline:unlinked-legacy", kind: .headline, text: "Example News. Unlinked legacy story",
+            severity: .extreme,
             issuedAt: now, expiresAt: now.addingTimeInterval(3_600))
-        rig.model.playback?.deliverBulletin(legacy)
+        rig.hub.channelUpdated(try LibraryBulletins(
+            alertsEnabled: false, headlinesEnabled: true, headlines: [unlinked], updatedAt: now))
+        XCTAssertTrue(speaker.texts.isEmpty, "an untyped legacy row cannot bypass production eligibility")
+        XCTAssertNil(rig.hub.featuredHeadlineStoryID)
+
+        let story = try LibraryHeadlineStory(
+            id: "legacy-story", title: "Legacy story", publisherID: "example-news",
+            publisherName: "Example News", link: URL(string: "https://example-news.example.test/legacy-story"),
+            publishedAt: now, firstSeenAt: now, lastSeenAt: now)
+        _ = try rig.model.headlineCatalogStore.mergeRecent([story], at: now)
+        rig.model.headlineCatalogState.refresh(at: now)
+        let legacy = try Bulletin(
+            id: "headline:legacy-story", kind: .headline, text: "Example News. Legacy story", severity: .extreme,
+            issuedAt: now, expiresAt: now.addingTimeInterval(3_600), storyID: story.id,
+            publisherID: story.publisherID, publisherName: story.publisherName, headline: story.title,
+            link: story.link, publishedAt: story.publishedAt)
+        rig.hub.channelUpdated(try LibraryBulletins(
+            alertsEnabled: false, headlinesEnabled: true, headlines: [legacy], updatedAt: now))
+        await WiltedMacHeadless.eventually("the eligible story is spoken and featured") {
+            speaker.texts == [legacy.text] && rig.hub.featuredHeadlineStoryID == story.id
+        }
 
         XCTAssertEqual(speaker.texts, [legacy.text])
         XCTAssertEqual(rig.hub.featuredHeadlineStoryID, "legacy-story")

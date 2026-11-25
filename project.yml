@@ -26,8 +26,8 @@ configs:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.7.7"
-    CURRENT_PROJECT_VERSION: "19"
+    MARKETING_VERSION: "0.8.0"
+    CURRENT_PROJECT_VERSION: "20"
     WILTED_SOURCE_COMMIT: ""
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
@@ -98,7 +98,7 @@ targets:
           CODE_SIGN_STYLE: Automatic
           CODE_SIGN_IDENTITY: "Apple Development"
           DEVELOPMENT_TEAM: 4CJ49V6QHW
-          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE"
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE WILTED_NOTEBOOK_DEVELOPMENT"
         Release:
           CODE_SIGN_ENTITLEMENTS: WiltedMac/WiltedMacProduction.entitlements
           CODE_SIGN_IDENTITY: "Developer ID Application"
@@ -204,7 +204,7 @@ targets:
           CODE_SIGNING_REQUIRED: YES
           DEVELOPMENT_TEAM: 4CJ49V6QHW
           PROVISIONING_PROFILE_SPECIFIER: Wilted iOS Development
-          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE WILTED_SIRI"
+          SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited) WILTED_CLOUDKIT_LIVE WILTED_SIRI WILTED_NOTEBOOK_DEVELOPMENT"
         Release:
           CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOSProduction.entitlements
           CODE_SIGN_STYLE: Manual

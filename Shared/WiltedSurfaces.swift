@@ -144,6 +144,26 @@ public struct WiltedTranscriptMarkerLine: Identifiable, Equatable, Sendable {
     public var stamp: String { WiltedDuration.clock(atSeconds) }
 }
 
+/// Renders every case-insensitive occurrence of a local transcript query.
+public enum WiltedTranscriptTextHighlight {
+    public static func text(_ text: String, query: String?, scheme: ColorScheme) -> Text {
+        guard let query = query?.trimmingCharacters(in: .whitespacesAndNewlines), !query.isEmpty else {
+            return Text(text)
+        }
+        var value = AttributedString(text)
+        var searchRange = text.startIndex..<text.endIndex
+        let highlight = WiltedTheme.color(.wiltedLeaf, scheme: scheme).opacity(0.28)
+        while let match = text.range(of: query, options: .caseInsensitive, range: searchRange) {
+            if let lower = AttributedString.Index(match.lowerBound, within: value),
+               let upper = AttributedString.Index(match.upperBound, within: value) {
+                value[lower..<upper].backgroundColor = highlight
+            }
+            searchRange = match.upperBound..<text.endIndex
+        }
+        return Text(value)
+    }
+}
+
 /// A transcript that follows the audio.
 ///
 /// The active line is highlighted and kept on screen as playback advances, and
@@ -177,6 +197,8 @@ public struct WiltedSyncedTranscriptView: View {
     private let cues: [WiltedTranscriptCueLine]
     private let markers: [WiltedTranscriptMarkerLine]
     private let activeCueID: Int?
+    private let selectedCueID: Int?
+    private let highlightQuery: String?
     private let identifier: String
     private let following: Binding<Bool>?
     private let onSelect: (WiltedTranscriptCueLine) -> Void
@@ -190,6 +212,8 @@ public struct WiltedSyncedTranscriptView: View {
         cues: [WiltedTranscriptCueLine],
         markers: [WiltedTranscriptMarkerLine] = [],
         activeCueID: Int?,
+        selectedCueID: Int? = nil,
+        highlightQuery: String? = nil,
         identifier: String,
         following: Binding<Bool>? = nil,
         onSelect: @escaping (WiltedTranscriptCueLine) -> Void
@@ -197,6 +221,8 @@ public struct WiltedSyncedTranscriptView: View {
         self.cues = cues
         self.markers = markers
         self.activeCueID = activeCueID
+        self.selectedCueID = selectedCueID
+        self.highlightQuery = highlightQuery
         self.identifier = identifier
         self.following = following
         self.onSelect = onSelect
@@ -323,7 +349,7 @@ public struct WiltedSyncedTranscriptView: View {
     }
 
     @ViewBuilder private func line(_ cue: WiltedTranscriptCueLine, showsSpeaker: Bool) -> some View {
-        let isActive = cue.id == activeCueID
+        let isActive = cue.id == activeCueID || cue.id == selectedCueID
         VStack(alignment: .leading, spacing: 0) {
             if showsSpeaker, let speaker = cue.speaker {
                 Text(speaker)
@@ -354,7 +380,7 @@ public struct WiltedSyncedTranscriptView: View {
                     .wiltedFont(.utility)
                     .monospacedDigit()
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
-                Text(cue.text)
+        WiltedTranscriptTextHighlight.text(cue.text, query: highlightQuery, scheme: colorScheme)
                     .wiltedFont(.body)
                     .foregroundStyle(WiltedTheme.color(isActive ? .primaryText : .secondaryText, scheme: colorScheme))
                     .multilineTextAlignment(.leading)

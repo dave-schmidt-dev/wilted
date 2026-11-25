@@ -68,9 +68,13 @@ extension LocalLibraryStore {
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV6Models.PodcastPlaybackSpeedRecord>())
         where record.itemID == identifier { context.delete(record) }
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
-        where record.itemID == identifier { context.delete(record) }
+        where record.itemID == identifier {
+            context.delete(record)
+        }
         for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.PlaybackRecord>())
-        where record.itemID == identifier { context.delete(record) }
+        where record.itemID == identifier {
+            context.delete(record)
+        }
         try stagePlaylistEntryRemoval(entryIDs: [identifier], in: context)
         try context.save()
         deleteMediaIfUnreferenced(doomedMedia)
@@ -172,17 +176,23 @@ extension LocalLibraryStore {
 
             stage = .revisions
             for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV3Models.RevisionRecord>())
-            where episodeIDs.contains(record.itemID) { remove(record) }
+            where episodeIDs.contains(record.itemID) {
+                remove(record)
+            }
             try Self.reachRemovalStage(.revisions)
 
             stage = .transcripts
             for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV7Models.TranscriptRecord>())
-            where episodeIDs.contains(record.itemID) { remove(record) }
+            where episodeIDs.contains(record.itemID) {
+                remove(record)
+            }
             try Self.reachRemovalStage(.transcripts)
 
             stage = .playback
             for record in try context.fetch(FetchDescriptor<LocalLibrarySchemaV21Models.PlaybackRecord>())
-            where episodeIDs.contains(record.itemID) { remove(record) }
+            where episodeIDs.contains(record.itemID) {
+                remove(record)
+            }
             try Self.reachRemovalStage(.playback)
 
             // A dismissal is now a state on the episode row itself, deleted with

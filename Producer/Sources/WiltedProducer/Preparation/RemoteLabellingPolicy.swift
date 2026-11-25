@@ -107,7 +107,7 @@ public enum RemoteLabellingPolicy {
     }
 }
 
-/// Counts HTTP requests sent to the provider per local day, held in `UserDefaults`.
+/// Counts provider requests started for ad finding per local day, held in `UserDefaults`.
 /// The count resets when the local day changes; the day is stored beside the count.
 // `UserDefaults` is documented as thread-safe but is not annotated `Sendable`.
 public struct LabellerRequestCounter: @unchecked Sendable {
@@ -117,11 +117,18 @@ public struct LabellerRequestCounter: @unchecked Sendable {
     public let preferences: UserDefaults
     private let now: @Sendable () -> Date
     private let calendar: Calendar
+    private let onRequestRecorded: @Sendable () -> Void
 
-    public init(preferences: UserDefaults, now: @escaping @Sendable () -> Date = Date.init, calendar: Calendar = .current) {
+    public init(
+        preferences: UserDefaults,
+        now: @escaping @Sendable () -> Date = Date.init,
+        calendar: Calendar = .current,
+        onRequestRecorded: @escaping @Sendable () -> Void = {}
+    ) {
         self.preferences = preferences
         self.now = now
         self.calendar = calendar
+        self.onRequestRecorded = onRequestRecorded
     }
 
     /// Requests recorded today; zero if the stored day is not today.
@@ -140,6 +147,7 @@ public struct LabellerRequestCounter: @unchecked Sendable {
         let current = count
         preferences.set(todayKey, forKey: Self.dayKey)
         preferences.set(current + 1, forKey: Self.countKey)
+        onRequestRecorded()
     }
 
     private var todayKey: String {

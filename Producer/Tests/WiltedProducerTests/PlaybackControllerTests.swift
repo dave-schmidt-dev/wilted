@@ -73,6 +73,30 @@ final class PlaybackControllerTests: XCTestCase {
         XCTAssertEqual(backend.volume, 0.4)
     }
 
+    func testNotebookClipLoadsTheExactRevisionAtItsSavedStart() async throws {
+        let path = storeURL(); let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let mediaURL = root.appendingPathComponent("notebook-source.m4a")
+        try Data("fixture audio".utf8).write(to: mediaURL)
+        let itemID = try ItemID(rawValue: "notebook-source")
+        let revisionID = try RevisionID(rawValue: "notebook-exact-revision")
+        let revision = try AudioRevision(
+            itemID: itemID, revisionID: revisionID, durationSeconds: 42, byteCount: 13,
+            contentHash: "sha256:\(String(repeating: "a", count: 64))", mediaType: "audio/mp4",
+            createdAt: Timestamp(Date()), schemaVersion: 1
+        )
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: try LocalLibraryStore(url: path), backend: backend)
+
+        try await controller.loadNotebookClip(StoredAudioRevision(revision: revision, mediaURL: mediaURL), startSeconds: 17)
+
+        XCTAssertEqual(controller.itemID, itemID)
+        XCTAssertEqual(controller.revisionID, revisionID)
+        XCTAssertEqual(backend.currentTime, 17)
+        XCTAssertFalse(backend.isPlaying, "loading a clip seeks without starting audio")
+    }
+
     func testExplicitListenNextRearmAdvancesTheCurrentHoldEpoch() async throws {
         let path = storeURL(); defer { try? FileManager.default.removeItem(at: path.deletingLastPathComponent()) }
         let controller = PlaybackController(

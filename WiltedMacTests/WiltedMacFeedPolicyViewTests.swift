@@ -365,8 +365,10 @@ final class WiltedMacFeedPolicyViewTests: XCTestCase {
         let explicit = try capture(content, "explicit", width: 900, height: 1_600)
         XCTAssertEqual(board.resolved(for: f.feed), .init(autoKeep: true, autoDownload: true, autoPrepare: false, keptLimit: 3))
         XCTAssertTrue(explicit.contains("episodes"), explicit)
-        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Same as default", in: explicit), 1,
-                       "only the unchanged Remove ads choice still inherits")
+        XCTAssertTrue(explicit.contains("Remove ads"), explicit)
+        XCTAssertTrue(explicit.contains("Level voices"), explicit)
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Same as default", in: explicit), 2,
+                       "the unchanged Remove ads and Level voices controls both inherit their defaults")
     }
 
     func testFilledRulesKeepPatternCaptionsAndVisibleEnabledCaption() async throws {

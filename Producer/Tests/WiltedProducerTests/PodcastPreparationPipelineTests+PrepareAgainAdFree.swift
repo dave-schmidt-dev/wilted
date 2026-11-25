@@ -90,6 +90,24 @@ extension PodcastPreparationPipelineTests {
         #expect(try await fixture.store.podcastEpisodesToPrepareAgain(restoringCutsOnFeeds: [other]).isEmpty)
     }
 
+    @Test func anOpaquePolicyDigestDoesNotMakeAnOldCutStale() async throws {
+        let fixture = try await Fixture(labelled: true)
+        defer { fixture.remove() }
+        _ = try await currentCut(fixture, position: nil)
+        let digests = (
+            current: "sha256:synthetic-current-digest",
+            alternateVoiceLevel: "sha256:synthetic-alternate-digest"
+        )
+        let lookup: @Sendable (ItemID, URL) -> (current: String, alternateVoiceLevel: String)? = { _, _ in digests }
+
+        #expect(try await fixture.store.podcastEpisodesToPrepareAgain(
+            preparationPolicyDigestsInForce: lookup).isEmpty,
+            "an opaque current-policy digest does not add a successful cut to Prepare Again")
+        #expect(try await fixture.store.podcastEpisodesToPrepareAgain(
+            restoringCutsOnFeeds: [try feedID()], preparationPolicyDigestsInForce: lookup).count == 1,
+            "the independent ad-free restore action still offers the cut")
+    }
+
     @Test func anAdFreeFeedsEpisodeWithNothingRemovedIsNotOffered() async throws {
         let fixture = try await Fixture(labelled: true)
         defer { fixture.remove() }

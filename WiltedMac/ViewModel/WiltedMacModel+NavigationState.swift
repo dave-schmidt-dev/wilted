@@ -6,6 +6,15 @@ extension WiltedMacModel {
     static let sidebarVisiblePreferenceKey = "wilted.navigation.sidebar.visible"
     static let sidebarCountsPreferenceKey = "wilted.navigation.sidebar.counts"
 
+    var urlDraft: String {
+        get { navigationState.urlDraft }
+        set { navigationState.urlDraft = newValue }
+    }
+    var podcastFeedDraft: String {
+        get { navigationState.podcastFeedDraft }
+        set { navigationState.podcastFeedDraft = newValue }
+    }
+
     /// Collapse or expand labels: the toolbar button and ⌃⌘S both come here.
     /// The existing false preference now retains the rail instead of hiding it.
     func toggleSidebar() {
@@ -31,7 +40,7 @@ extension WiltedMacModel {
         switch destination {
         case .larder: count = sidebarReadyCount
         case .feeds: count = feedsDecisionCount
-        case .settings, .playlist: return nil
+        case .notebook, .settings, .playlist: return nil
         }
         return count > 0 ? count : nil
     }

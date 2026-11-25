@@ -38,6 +38,10 @@ enum WatchRejection: String, Error {
     case unsupportedSleepDuration
     /// The message is not a command this build understands.
     case invalidCommand
+    /// A clip cannot be made because the phone has no current episode.
+    case nothingPlaying
+    /// The phone could not durably save the requested clip.
+    case captureFailed
     /// The target ran the action but reported a failure.
     case failed
 }
@@ -211,6 +215,9 @@ final class WatchBridge {
             return .perform(.stopAfterEpisode)
         case .cancelSleep:
             return .perform(.cancelSleepTimer)
+        case .captureNotebook:
+            guard source.currentNowPlaying != nil else { return .reject(.nothingPlaying) }
+            return .perform(.captureNotebook(origin: .watch))
         }
     }
 
@@ -244,11 +251,11 @@ final class WatchBridge {
         [okKey: false, reasonKey: reason.rawValue]
     }
 
-    private static func outcomeReply(_ outcome: VoiceOutcome) -> [String: Any] {
+    private static func outcomeReply(_ outcome: VoiceOutcome, action: WatchCommand.Action? = nil) -> [String: Any] {
         switch outcome {
         case .done: return [okKey: true]
         case .queued: return [okKey: true, "queued": true]
-        case .failed: return rejectionReply(.failed)
+        case .failed: return rejectionReply(action == .captureNotebook ? .captureFailed : .failed)
         }
     }
 
@@ -304,7 +311,7 @@ extension WatchBridge: WatchSessionDelegate {
                     return
                 }
                 let outcome = await self.target.perform(action)
-                replyHandler(Self.outcomeReply(outcome))
+                replyHandler(Self.outcomeReply(outcome, action: command.action))
             }
         }
     }

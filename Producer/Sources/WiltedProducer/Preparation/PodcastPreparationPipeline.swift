@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import OSLog
 import WiltedDomain
+import WiltedLibrary
 
 private let logger = Logger(subsystem: "com.zerodelta.wilted", category: "PreparationJournal")
 
@@ -163,6 +164,7 @@ public actor PodcastPreparationPipeline {
     let store: LocalLibraryStore
     let runner: any PodcastPipelineRunning
     private let documentLoader: any PodcastFeedLoading
+    let chapterLoader: any PodcastChapterDocumentLoading
     let workDirectory: URL
     let defaultPolicy: PodcastPreparationPolicySnapshot
     let now: @Sendable () -> Date
@@ -181,6 +183,7 @@ public actor PodcastPreparationPipeline {
         workDirectory: URL,
         runner: any PodcastPipelineRunning = SubprocessPodcastPipelineRunner(),
         documentLoader: any PodcastFeedLoading = URLSessionPodcastFeedLoader(),
+        chapterLoader: any PodcastChapterDocumentLoading = PublicHTTPSPodcastChapterLoader(),
         removeAds: Bool = true,
         allowSpeechToText: Bool = true,
         now: @escaping @Sendable () -> Date = Date.init,
@@ -191,6 +194,7 @@ public actor PodcastPreparationPipeline {
         self.store = store
         self.runner = runner
         self.documentLoader = documentLoader
+        self.chapterLoader = chapterLoader
         self.workDirectory = workDirectory
         self.defaultPolicy = PodcastPreparationPolicySnapshot(
             transcriptPolicy: allowSpeechToText ? .bestAvailable : .noLocalSTT,
@@ -248,6 +252,7 @@ public actor PodcastPreparationPipeline {
                                             policyDigest: attemptDigest)
         report(PodcastPreparationProgress(stage: "pipeline.start", detail: episode.title, evidence: provenance))
         do {
+            let sourceChapters = try await chapterMarks(for: episode, audioURL: audioURL)
             // The prepared output exists before its revision record does.
             // Register it until this run is over so a concurrent sweep cannot
             // reclaim a synthesis that is still being written.
@@ -271,6 +276,7 @@ public actor PodcastPreparationPipeline {
             let result = try await commit(payload, episode: episode, download: download,
                                           downloadedRevision: stored.revision, audioURL: audioURL,
                                           policy: policy, labelledProvenance: run.labelledProvenance,
+                                          sourceChapters: sourceChapters,
                                           onStatus: report)
             await writes.drain()
             await journalTerminal(episodeID: episodeID, requestID: requestID, attempt: attempt, error: nil,

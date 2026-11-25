@@ -11,23 +11,54 @@ final class WiltedMacDeviceManagementTests: XCTestCase {
     private let secondID = "synthetic-ipad-b"
     private let start = Date(timeIntervalSince1970: 1_800_000_000)
 
-    func testDeviceRowsUseSavedNameThenKindThenNeutralAndShowLastAnnouncement() throws {
+    func testAnnouncedDeviceRowsKeepUnknownRecordsInHistory() throws {
         let entry = try ItemID(rawValue: "synthetic-episode")
         let request = LibraryMediaRequestStatus(
             intentID: "synthetic-request", entryID: entry, stage: .sending, updatedAt: start)
-        let rows = WiltedMacLibrarySyncStatus.deviceRows([
+        let devices = [
             WiltedMacLinkedDevice(
-                deviceID: firstID, kind: nil, isLinked: true, inFlight: [request],
+                deviceID: firstID, kind: "iPhone", isLinked: true, inFlight: [request],
                 displayName: "Kitchen phone", lastAnnouncedAt: start),
             WiltedMacLinkedDevice(deviceID: secondID, kind: "iPad", isLinked: true, inFlight: []),
             WiltedMacLinkedDevice(deviceID: "synthetic-unknown", kind: nil, isLinked: true, inFlight: []),
-        ])
+        ]
+        let rows = WiltedMacLibrarySyncStatus.deviceRows(devices)
 
-        XCTAssertEqual(rows.map(\.label), ["Kitchen phone", "iPad", "Linked device"])
+        XCTAssertEqual(rows.map(\.label), ["Kitchen phone"])
         XCTAssertEqual(rows[0].lastAnnouncedLabel, start.formatted(date: .abbreviated, time: .shortened))
-        XCTAssertEqual(rows[1].lastAnnouncedLabel, "Unknown")
         XCTAssertTrue(rows[0].hasInFlightTransfer)
-        XCTAssertFalse(rows[1].hasInFlightTransfer)
+        let historyRows = WiltedMacLibrarySyncStatus.earlierSyncActivityRows(devices)
+        XCTAssertEqual(historyRows.map(\.label), ["Unidentified device 1", "Unidentified device 2"])
+        XCTAssertEqual(historyRows.map(\.value), ["Status unavailable", "Status unavailable"])
+    }
+
+    func testUnannouncedActiveRequestsRemainVisibleWithManagementRows() throws {
+        let entry = try ItemID(rawValue: "synthetic-current-episode")
+        let request = LibraryMediaRequestStatus(
+            intentID: "synthetic-current-request", entryID: entry, stage: .sending, updatedAt: start)
+        let devices = [
+            WiltedMacLinkedDevice(
+                deviceID: firstID, kind: "iPhone", isLinked: true, inFlight: [request],
+                isDirectDownloadsStopped: true, displayName: "Kitchen phone", lastAnnouncedAt: start),
+            WiltedMacLinkedDevice(deviceID: secondID, kind: "iPad", isLinked: false, inFlight: []),
+            WiltedMacLinkedDevice(deviceID: "synthetic-active", kind: nil, isLinked: true, inFlight: [request]),
+        ]
+
+        let rows = WiltedMacLibrarySyncStatus.deviceRows(devices)
+
+        XCTAssertEqual(rows.map(\.label), ["Kitchen phone"])
+        XCTAssertEqual(rows.map(\.value), ["Linked · sending 1 episode"])
+        XCTAssertEqual(rows.map(\.isDirectDownloadsStopped), [true])
+        XCTAssertEqual(rows.map(\.hasInFlightTransfer), [true])
+        let activeRows = WiltedMacLibrarySyncStatus.unidentifiedRequestRows(devices)
+        XCTAssertEqual(activeRows.map(\.id), ["synthetic-active"])
+        XCTAssertEqual(activeRows.map(\.label), ["Unidentified request 1"])
+        XCTAssertEqual(activeRows.map(\.value), ["1 active request"])
+        XCTAssertEqual(activeRows.map(\.hasInFlightTransfer), [true])
+        let historyRows = WiltedMacLibrarySyncStatus.earlierSyncActivityRows(devices)
+        XCTAssertEqual(historyRows.map(\.id), [secondID])
+        XCTAssertEqual(historyRows.map(\.label), ["Unidentified device 1"])
+        XCTAssertEqual(historyRows.map(\.value), ["Status unavailable"])
     }
 
     func testRenameRoundTripsAcrossDeviceLinksRelaunch() async throws {

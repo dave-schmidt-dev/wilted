@@ -52,6 +52,7 @@ struct WiltedMacPlayerContent: View {
                 }
             }
             .frame(minWidth: 220)
+            if model.canShowPodcastChapterList { WiltedMacPodcastChapterMenu(model: model) }
             transport("chevron.right", label: "Next chapter", id: "wilted-player-next-chapter") {
                 model.selectNextChapter()
             }
@@ -62,18 +63,10 @@ struct WiltedMacPlayerContent: View {
         .accessibilityIdentifier("wilted-player-chapters")
     }
 
-    /// Prefer the headline being spoken, then the last story actually read, then the newest card.
-    /// This keeps the article link aligned with the voice announcement and leaves that card selected.
-    private var featuredHeadlineStory: LibraryHeadlineStory? {
-        Self.selectHeadlineCard(
-            speaking: model.speakingBulletin,
-            lastSpokenStoryID: model.bulletinHub.featuredHeadlineStoryID,
-            projection: model.headlineCatalogState.projection)
-    }
-
-    /// Chooses the exact announced story before any newer feed candidate reaches the card.
+    /// Chooses the exact spoken, pending, or last-spoken story, never an unrelated recent row.
     static func selectHeadlineCard(
-        speaking bulletin: Bulletin?, lastSpokenStoryID: String?, projection: LibraryHeadlineProjection?
+        speaking bulletin: Bulletin?, lastSpokenStoryID: String?, pendingStoryID: String? = nil,
+        projection: LibraryHeadlineProjection?
     ) -> LibraryHeadlineStory? {
         let stories = (projection?.recent ?? []) + (projection?.saved ?? [])
         if let bulletin, bulletin.kind == .headline {
@@ -90,8 +83,9 @@ struct WiltedMacPlayerContent: View {
                 }
             }
         }
+        if let id = pendingStoryID, let story = stories.first(where: { $0.id == id }) { return story }
         if let id = lastSpokenStoryID, let story = stories.first(where: { $0.id == id }) { return story }
-        return projection?.recent.first ?? projection?.saved.first
+        return nil
     }
 
     var body: some View {
@@ -119,12 +113,6 @@ struct WiltedMacPlayerContent: View {
                         model.skipSpokenBulletin()
                     }
                 }
-                if let story = featuredHeadlineStory {
-                    WiltedMacPlayerHeadlineCard(
-                        model: model, story: story,
-                        isSpeakingHeadline: model.speakingBulletin?.kind == .headline,
-                        stopReading: model.skipSpokenBulletin)
-                }
                 #endif
                 HStack(spacing: WiltedTheme.Spacing.medium) {
                 artwork
@@ -137,6 +125,10 @@ struct WiltedMacPlayerContent: View {
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityLabel(detail)
+                    WiltedMacSavedTimeLine(
+                        text: model.currentEpisodeTimeSavedSummary,
+                        identifier: "wilted-player-time-saved"
+                    )
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -154,6 +146,21 @@ struct WiltedMacPlayerContent: View {
                 .disabled(!model.hasCurrentPlayback)
                 .accessibilityLabel("Speed")
                 .accessibilityIdentifier("wilted-player-speed")
+
+                if model.isPodcastPlayback {
+                    Menu {
+                        Button("Use this speed for this show") {
+                            Task { await model.savePlaybackSpeedForCurrentShow(model.playbackRate) }
+                        }
+                    } label: {
+                        Image(systemName: "slider.horizontal.3")
+                            .frame(minWidth: 24, minHeight: 24)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Show speed options")
+                    .accessibilityLabel("Show speed options")
+                    .accessibilityIdentifier("wilted-player-use-speed-for-show")
+                }
 
                 WiltedMacPlaybackShareLink(model: model)
             }

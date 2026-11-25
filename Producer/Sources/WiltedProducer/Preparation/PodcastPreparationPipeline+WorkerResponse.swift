@@ -34,6 +34,9 @@ extension PodcastPreparationPipeline {
         /// `removedSeconds` and the timeline's removed list. A worker that
         /// predates silence trimming sends none.
         var silenceTrims: [Range<Double>] = []
+        /// Integrated loudness and true-peak measurements from the opt-in render.
+        var audioLoudness: [String: Double]? = nil
+        var audioLoudnessSkippedReason: String? = nil
         /// Breaks the cut stage left audible.
         var labelledLeftIn: [LabelledLeftInBreak] = []
     }
@@ -181,6 +184,8 @@ extension PodcastPreparationPipeline {
             durationSeconds = nil
         }
         let changed = object["audioChanged"] as? Bool ?? false
+        let audioLoudness = try decodeAudioLoudness(object["audioLoudness"])
+        let loudnessSkippedReason = try decodeLoudnessSkippedReason(object["audioLoudnessSkippedReason"])
         let silenceTrims = try silenceIntervals(in: object)
         let labelledLeftIn = isLabelled ? Self.decodeLabelledLeftIn(
             auditObject, uncutNominations: outcome == "uncertain" ? nominations : []) : []
@@ -191,6 +196,10 @@ extension PodcastPreparationPipeline {
         case "noAds" where changed:
             // Only long pauses came out: new audio, and still no advertisement.
             consistent = removed.isEmpty && removedSeconds == 0 && !kept.isEmpty && !silenceTrims.isEmpty
+        case "disabled" where changed && audioLoudness != nil:
+            // A no-ads/off-route run may still create bytes for the opted-in
+            // loudness render; its full identity map carries playback exactly.
+            consistent = removed.isEmpty && removedSeconds == 0 && !kept.isEmpty && silenceTrims.isEmpty
         case "uncertain":
             // W-INV-013: an uncertain result keeps the whole original.
             consistent = !changed && removedSeconds == 0 && removed.isEmpty && kept.isEmpty && silenceTrims.isEmpty
@@ -237,8 +246,43 @@ extension PodcastPreparationPipeline {
             timeline: timeline,
             droppedCueCount: droppedCueCount,
             silenceTrims: silenceTrims,
+            audioLoudness: audioLoudness,
+            audioLoudnessSkippedReason: loudnessSkippedReason,
             labelledLeftIn: labelledLeftIn
         )
+    }
+
+    private static func decodeAudioLoudness(_ raw: Any?) throws -> [String: Double]? {
+        guard let raw else { return nil }
+        guard let values = raw as? [String: Any] else {
+            throw PodcastPreparationError.malformedWorkerResponse("invalid loudness measurements")
+        }
+        let keys = ["inputIntegratedLufs", "inputTruePeakDbtp", "outputIntegratedLufs",
+                    "outputTruePeakDbtp", "targetIntegratedLufs", "truePeakCeilingDbtp"]
+        var decoded: [String: Double] = [:]
+        for key in keys {
+            guard let value = values[key] as? Double, value.isFinite else {
+                throw PodcastPreparationError.malformedWorkerResponse("invalid loudness measurements")
+            }
+            decoded[key] = value
+        }
+        guard decoded["targetIntegratedLufs"] == -16.0,
+              decoded["truePeakCeilingDbtp"] == -1.5,
+              abs(decoded["outputIntegratedLufs"]! - -16.0) <= 1.0,
+              decoded["outputTruePeakDbtp"]! <= -1.4 else {
+            throw PodcastPreparationError.malformedWorkerResponse("loudness target was not met")
+        }
+        return decoded
+    }
+
+    private static func decodeLoudnessSkippedReason(_ raw: Any?) throws -> String? {
+        guard let raw else { return nil }
+        guard let reason = raw as? String,
+              !reason.isEmpty, reason.count <= 64,
+              reason.unicodeScalars.allSatisfy({ CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-").contains($0) }) else {
+            throw PodcastPreparationError.malformedWorkerResponse("invalid loudness skip reason")
+        }
+        return reason
     }
 
 

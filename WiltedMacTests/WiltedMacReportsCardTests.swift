@@ -72,6 +72,31 @@ final class WiltedMacReportsCardTests: XCTestCase {
                        "Build today's report now")
     }
 
+    func testReportsExplainDailyContentsDependenciesAndContactFallback() async throws {
+        let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-ready"])
+        addTeardownBlock { await model.close() }
+        let card = WiltedMacReportsCard(
+            model: model, location: model.bulletinHub.location, startsExpanded: true)
+        let rendered = try WiltedMacHeadless.recognizedText(
+            card, size: CGSize(width: 1_000, height: 1_200)).joined(separator: " ")
+
+        XCTAssertTrue(WiltedMacReportsCard.dailyReportSummary.contains("Larder > All"))
+        for detail in [
+            "local National Weather Service forecast",
+            "up to five titles from followed headline feeds",
+            "published in the last hour",
+            "headline filters",
+            "two hours",
+            "Build now runs it immediately",
+            "a forecast or a working headline feed",
+            "does not disable weather alerts",
+            "Reads headline announcements and stories you choose with Listen next",
+            "Weather alerts use the Mac system voice"
+        ] {
+            XCTAssertTrue(rendered.localizedCaseInsensitiveContains(detail), "Missing \(detail) in: \(rendered)")
+        }
+    }
+
     func testInterruptionsOffNoteExplainsWhyTheControlsAreDisabled() {
         XCTAssertEqual(WiltedMacReportsCard.interruptionsOffNote(interruptionsEnabled: false),
                        "Turn on Read bulletins while playing to use weather alerts and spoken headlines.")

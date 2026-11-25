@@ -159,7 +159,7 @@ extension LibraryAppModel {
     func loadAddCapability() async {
         #if DEBUG
         if let mac = LibraryAddUITestSeam.mac {
-            macAddActions = mac == .old ? [] : ["subscribe", "addArticle", "addLink"]
+            macAddActions = mac == .old ? [] : ["subscribe", "addArticle", "addLink", Self.decideNewEpisodeAction]
             macAddCheckFailed = false
             return
         }

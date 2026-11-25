@@ -381,6 +381,8 @@ for package in WiltedKit Producer CloudSync Playback; do
   mkdir -p "$capture_repo/$package/Sources" "$capture_repo/$package/Tests"
   printf 'fixture\n' >"$capture_repo/$package/Package.swift"
 done
+mkdir -p "$capture_repo/Producer/Runtime/src/wilted"
+printf '%s\n' '"""Recorder fixture module."""' >"$capture_repo/Producer/Runtime/src/wilted/article_voice.py"
 cat >"$capture_bin/xcodegen" <<'XCODEGEN'
 #!/usr/bin/env bash
 set -euo pipefail

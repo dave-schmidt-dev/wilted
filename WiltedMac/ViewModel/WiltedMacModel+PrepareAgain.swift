@@ -97,6 +97,12 @@ extension WiltedMacModel {
         Task { await refreshEpisodesToPrepareAgain(from: store, readEpoch: readEpoch) }
     }
 
+    func loudnessFeedsDidChange() {
+        guard let store else { return }
+        let readEpoch = libraryReadEpoch
+        Task { await refreshEpisodesToPrepareAgain(from: store, readEpoch: readEpoch) }
+    }
+
     /// Reads the episodes the current engine has not prepared, as part of a
     /// library load.
     ///
@@ -115,6 +121,7 @@ extension WiltedMacModel {
                 .compactMap { try? ItemID(rawValue: $0) }
         )
         let digestLookup = labelledDigestInForceLookup(feedIDs: feedIDs)
+        let levelDigests = preparationPolicyDigestsInForceLookup(feedIDs: feedIDs)
         // Reads can finish out of order (a switch flipped twice, a load beside
         // a switch): only the newest one started read the current ad-free set.
         // A read already behind a newer library load would be dropped below;
@@ -125,7 +132,8 @@ extension WiltedMacModel {
         do {
             let values = try await store.podcastEpisodesToPrepareAgain(
                 restoringCutsOnFeeds: restoring,
-                labelledDigestInForce: digestLookup
+                labelledDigestInForce: digestLookup,
+                preparationPolicyDigestsInForce: levelDigests
             )
             // The read can outlive a newer library load; that load owns the set.
             guard readEpoch == libraryReadEpoch, generation == prepareAgainRefreshGeneration else { return }
@@ -138,6 +146,35 @@ extension WiltedMacModel {
             Self.prepareAgainLog.warning(
                 "prepare-again candidates could not be read: \(LogSafeError.describe(error), privacy: .public)"
             )
+        }
+    }
+
+    private func preparationPolicyDigestsInForceLookup(
+        feedIDs: [String]? = nil
+    ) -> @Sendable (ItemID, URL) -> (current: String, alternateVoiceLevel: String)? {
+        let settings = automationSettings
+        let preferences = preferences
+        let knownFeedIDs = Set(feedIDs ?? subscriptions.map(\.id))
+        let labeller = AdLabellerPreferences(preferences: preferences)
+        let hasKey = adFinding.hasKey
+        let policies = Dictionary(knownFeedIDs.map { id -> (String, (String, String)) in
+            let policy = Self.preparationPolicySnapshot(from: settings, feedID: id, preferences: preferences)
+            let alternate = PodcastPreparationPolicySnapshot(
+                transcriptPolicy: policy.transcriptPolicy, removeAds: policy.removeAds,
+                removeSelfPromotion: policy.removeSelfPromotion,
+                evenOutVoiceLoudness: !policy.evenOutVoiceLoudness
+            )
+            func digest(_ value: PodcastPreparationPolicySnapshot) -> String {
+                LabelledPolicyDigestInForce.digest(
+                    policy: value, input: RemoteLabellingInput(feedID: id, removeAds: value.removeAds),
+                    preferences: labeller, hasKey: hasKey
+                ) ?? PodcastPreparationPipeline.policyDigest(value)
+            }
+            return (id, (digest(policy), digest(alternate)))
+        }, uniquingKeysWith: { first, _ in first })
+        return { feedID, _ in
+            guard let digests = policies[feedID.rawValue] else { return nil }
+            return (digests.0, digests.1)
         }
     }
 

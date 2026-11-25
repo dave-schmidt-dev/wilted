@@ -47,7 +47,8 @@ extension LibraryAppModel {
             state.batching = true
             defer { state.batching = false }
             decisions = saved.decisions.map { saved in
-                var decision = PendingDecision(intent: saved.intent, baseline: saved.baseline)
+                var decision = PendingDecision(
+                    intent: saved.intent, baseline: saved.baseline, entryTitle: saved.entryTitle)
                 decision.isSilent = saved.isSilent
                 decision.retiresEpisode = saved.retiresEpisode
                 decision.supersededByRestore = saved.supersededByRestore
@@ -95,8 +96,9 @@ extension LibraryAppModel {
             ownerToken: outboxState.ownerToken,
             decisions: decisions.filter { !$0.isSent }.map {
                 LibraryIntentOutbox.Decision(
-                    intent: $0.intent, baseline: $0.baseline, isSilent: $0.isSilent,
-                    retiresEpisode: $0.retiresEpisode, supersededByRestore: $0.supersededByRestore)
+                    intent: $0.intent, baseline: $0.baseline, entryTitle: $0.entryTitle,
+                    isSilent: $0.isSilent, retiresEpisode: $0.retiresEpisode,
+                    supersededByRestore: $0.supersededByRestore)
             },
             adds: adds.filter { !$0.isSent }.map { LibraryIntentOutbox.Add(intent: $0.intent, title: $0.title) },
             acknowledgements: unacknowledgedMedia.values.sorted { $0.id < $1.id },

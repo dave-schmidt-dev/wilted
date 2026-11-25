@@ -272,6 +272,9 @@ extension WiltedMacModel {
             let statusRun = hasReadyOutcome
                 ? WiltedMacPreparationStamp.preparedRun(outcome: outcome, readyRevisionID: readyRevisionID, runs: history)
                 : runs[episode.itemID]
+            let chapters = snapshot.preparedPodcastChapters[episode.itemID]?.chapters.map {
+                WiltedMacChapter(title: $0.title, startSeconds: $0.startSeconds)
+            } ?? []
             episodeValues.append(WiltedMacEpisode(
                 id: episode.itemID.rawValue, title: episode.title, feedTitle: feedTitle,
                 summary: Self.episodeSummary(notes: episode.notes, fallback: episode.author ?? feedTitle),
@@ -301,7 +304,8 @@ extension WiltedMacModel {
                 feedID: episode.feedID.rawValue,
                 feedURL: episode.feedURL,
                 episodeLink: episode.episodeLink,
-                possibleDuplicateOf: possibleDuplicateOf[episode.itemID]
+                possibleDuplicateOf: possibleDuplicateOf[episode.itemID],
+                podcastChapters: chapters
             ))
         }
         episodeValues.append(contentsOf: Self.audiobookRows(from: snapshot, mediaAvailability: mediaAvailabilityChecker))

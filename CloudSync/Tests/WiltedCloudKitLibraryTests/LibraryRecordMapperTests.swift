@@ -238,25 +238,33 @@ actor ScriptedDriver: CloudKitEngineDriver {
     private let onSend: Script
     private let identity: @Sendable () async throws -> CloudKitAccountIdentity?
     private let zone: @Sendable () async throws -> Void
+    private let namedRecords: [CKRecord.ID: CKRecord]
     private(set) var pending: [CKSyncEngine.PendingRecordZoneChange] = []
     private var fetched = false
     private var fetchWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(fetch: @escaping Script = { [.fetchCompleted] }, send: @escaping Script = { [.sendCompleted] },
          identity: @escaping @Sendable () async throws -> CloudKitAccountIdentity? = { nil },
-         zone: @escaping @Sendable () async throws -> Void = {}) {
+         zone: @escaping @Sendable () async throws -> Void = {}, namedRecords: [CKRecord] = []) {
         (stream, continuation) = AsyncStream<CloudKitEngineEvent>.makeStream()
         onFetch = fetch
         onSend = send
         self.identity = identity
         self.zone = zone
+        self.namedRecords = Dictionary(namedRecords.map { ($0.recordID, $0) }, uniquingKeysWith: { _, latest in latest })
     }
 
     var events: AsyncStream<CloudKitEngineEvent> { get async { stream } }
     func currentAccountIdentity() async throws -> CloudKitAccountIdentity? { try await identity() }
     func ensureZone() async throws { try await zone() }
-    /// A scripted zone holds no named records, so a named read (the device directory) finds nothing.
-    func fetchRecordsIfPresent(_ ids: [CKRecord.ID], desiredKeys: [CKRecord.FieldKey]?) async throws -> [CKRecord] { [] }
+    /// Named reads return only records explicitly seeded for the test.
+    func fetchRecords(_ ids: [CKRecord.ID]) async throws -> [CKRecord] {
+        ids.compactMap { namedRecords[$0] }
+    }
+
+    func fetchRecordsIfPresent(_ ids: [CKRecord.ID], desiredKeys: [CKRecord.FieldKey]?) async throws -> [CKRecord] {
+        ids.compactMap { namedRecords[$0] }
+    }
     func fetchChanges() async throws {
         fetched = true
         fetchWaiters.forEach { $0.resume() }

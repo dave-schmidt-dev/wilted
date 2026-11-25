@@ -49,6 +49,7 @@ from wilted_worker import cue_timing as _worker_cue_timing
 from wilted_worker import cut_support as _worker_cut_support
 from wilted_worker import glossary as _worker_glossary
 from wilted_worker import labelled_outcome as _worker_labelled_outcome
+from wilted_worker import loudness as _worker_loudness
 from wilted_worker import labeller_cues as _worker_labeller_cues
 from wilted_worker import reporting as _worker_reporting
 from wilted_worker import silence_trim as _worker_silence_trim
@@ -285,6 +286,27 @@ def run(request: dict) -> dict:
     else:
         outcome = "noAds"
 
+    loudness = None
+    loudness_skipped = None
+    if request.get("evenOutVoiceLoudness") is True and outcome != "uncertain":
+        # Run after ad and silence edits so the measured programme matches what
+        # will play. The renderer uses a separate atomic output even when this
+        # is the only audio change.
+        if audio_duration is None:
+            audio_duration = _worker_cue_timing.probe_duration(audio_path)
+        destination = Path(request["outputPath"])
+        # output_path identifies the audio this run actually produced. The
+        # destination may still contain a render from a previous attempt.
+        loudness, loudness_skipped = _worker_loudness.normalize(output_path, destination)
+        if loudness_skipped is not None:
+            _worker_reporting.progress("audio.loudness.skipped", loudness_skipped)
+        else:
+            output_path = destination
+        if output_path != audio_path and not keeps and audio_duration > 0:
+            # Leveling changes bytes, not the timeline. An identity keep map
+            # carries saved playback positions without shifting cues.
+            keeps = _worker_cue_timing.build_keep_map([(0.0, audio_duration)])
+
     if remove_ads and (duration is None or not duration > 0 or not duration < float("inf")):
         raise WorkerError("output-duration-invalid", "ad removal output has no finite measured duration")
     if remove_ads and ad_audit is None:
@@ -317,6 +339,10 @@ def run(request: dict) -> dict:
             "audit": ad_audit,
         },
     }
+    if loudness is not None:
+        result["audioLoudness"] = loudness
+    if loudness_skipped is not None:
+        result["audioLoudnessSkippedReason"] = loudness_skipped
     if ad_stage == "cut":
         result["adStage"] = "cut"
     if uncertain_warning is not None:

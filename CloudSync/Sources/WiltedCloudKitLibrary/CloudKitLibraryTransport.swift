@@ -18,6 +18,7 @@ public actor CloudKitLibraryTransport: LibraryTransport {
     public nonisolated let accountChanges: AsyncStream<CloudKitAccountChangeSignal>
     public nonisolated let deviceID: String
     public nonisolated let isLibraryWriter: Bool
+    public nonisolated let notebookCloudWriteMode: NotebookCloudWriteMode
     public nonisolated let counters: CloudKitOperationCounters
     let mapper: LibraryRecordMapper
 
@@ -77,12 +78,14 @@ public actor CloudKitLibraryTransport: LibraryTransport {
                 state: LibraryChangeToken? = nil, knownOwnerToken: String? = nil, initialReviewHold: Bool = false,
                 mapper: LibraryRecordMapper = LibraryRecordMapper(),
                 mediaWatchdogInterval: TimeInterval = 300,
-                counters: CloudKitOperationCounters? = nil) throws {
+                counters: CloudKitOperationCounters? = nil,
+                notebookCloudWriteMode: NotebookCloudWriteMode = .localOnly) throws {
         let opCounters = counters ?? CloudKitOperationCounters()
         self.counters = opCounters
         self.mediaWatchdogInterval = mediaWatchdogInterval
         self.deviceID = deviceID
         self.isLibraryWriter = isLibraryWriter
+        self.notebookCloudWriteMode = notebookCloudWriteMode
         self.driverFactory = { state in
             let inner = try driverFactory(state)
             if let counting = inner as? CountingEngineDriver { return counting }
@@ -128,23 +131,50 @@ public actor CloudKitLibraryTransport: LibraryTransport {
 
     public func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult {
         guard isLibraryWriter else { throw LibraryTransportError.ownershipViolation("\(deviceID) may not write library state") }
+        let rejectedNotebookChanges = changes.filter {
+            if case .notebookEntry = $0.change { return notebookCloudWriteMode == .localOnly }
+            return false
+        }
+        let admittedChanges = changes.filter {
+            if case .notebookEntry = $0.change { return notebookCloudWriteMode == .development }
+            return true
+        }
+        let localOnlyFailures = rejectedNotebookChanges.map {
+            LibraryPushFailure(key: $0.key, disposition: .terminal)
+        }
         await acquire()
         defer { release() }
         guard !quarantined else { throw CloudKitSyncError.quarantined }
-        guard !changes.isEmpty else { return LibraryPushResult() }
+        guard !admittedChanges.isEmpty else { return LibraryPushResult(failures: localOnlyFailures) }
         let generation = operationGenerationValue
         let owner = observedOwnerToken
         do {
             try await driver.ensureZone()
             try verifyFetchContext(generation: generation, owner: owner)
-            let bases = try await baseRecords(for: changes)
+            let bases = try await baseRecords(for: admittedChanges)
             try verifyFetchContext(generation: generation, owner: owner)
             var saves: [CKRecord] = [], deletes: [CKRecord.ID] = []
-            var sent: [PendingLibraryChange] = [], failures: [LibraryPushFailure] = []
-            for pending in changes {
+            var sent: [PendingLibraryChange] = [], failures = localOnlyFailures
+            for pending in admittedChanges {
                 let existing = bases[mapper.recordID(for: pending.key).recordName]
-                if let server = existing, let version = LibraryRecordMapper.version(of: server), version > pending.baseVersion,
-                   pending.baseVersion > 0 {
+                if case .notebookEntry = pending.change {
+                    if pending.baseVersion == 0 {
+                        if let existing {
+                            failures.append(conflict(pending.key, existing))
+                            continue
+                        }
+                    } else {
+                        guard let existing, let version = LibraryRecordMapper.version(of: existing) else {
+                            failures.append(LibraryPushFailure(key: pending.key, disposition: .terminal))
+                            continue
+                        }
+                        guard version == pending.baseVersion else {
+                            failures.append(conflict(pending.key, existing))
+                            continue
+                        }
+                    }
+                } else if let server = existing, let version = LibraryRecordMapper.version(of: server), version > pending.baseVersion,
+                          pending.baseVersion > 0 {
                     failures.append(conflict(pending.key, server))
                     continue
                 }
@@ -183,6 +213,9 @@ public actor CloudKitLibraryTransport: LibraryTransport {
     }
 
     public func send(intent: LibraryIntent) async throws {
+        if case .setNotebookEntry = intent.action, notebookCloudWriteMode == .localOnly {
+            throw LibraryTransportError.transport("Notebook CloudKit writes are disabled in this build")
+        }
         guard intent.deviceID == deviceID else {
             throw LibraryTransportError.ownershipViolation("\(deviceID) may not write intents for \(intent.deviceID)")
         }
@@ -544,7 +577,10 @@ public actor CloudKitLibraryTransport: LibraryTransport {
     private func baseRecords(for changes: [PendingLibraryChange]) async throws -> [String: CKRecord] {
         var found: [String: CKRecord] = [:]
         var missing: [CKRecord.ID] = []
-        for pending in changes where pending.baseVersion > 0 {
+        for pending in changes {
+            let isNotebook: Bool
+            if case .notebookEntry = pending.change { isNotebook = true } else { isNotebook = false }
+            guard pending.baseVersion > 0 || isNotebook else { continue }
             if case .slotRemoved = pending.change { continue }
             let id = mapper.recordID(for: pending.key)
             if let cached = serverRecords[id.recordName], LibraryRecordMapper.version(of: cached) == pending.baseVersion {

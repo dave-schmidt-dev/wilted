@@ -47,9 +47,13 @@ final class WiltedMacSettingsJourneyTests: XCTestCase {
         model.settingsSection = .newEpisodes
         let automation = try WiltedMacHeadless.recognizedText(view, size: CGSize(width: 1000, height: 2000)).joined(separator: " ")
         XCTAssertTrue(automation.contains("Automation"), automation)
+        XCTAssertTrue(automation.contains("Manual waits for Refresh"), automation)
         for paragraph in ["Refresh adds metadata only", "Both overrides stay on", "An episode joins Larder"] {
             XCTAssertFalse(automation.contains(paragraph), automation)
         }
+        let preparing = try WiltedMacHeadless.recognizedText(
+            view.preparingCard, size: CGSize(width: 1_000, height: 1_000)).joined(separator: " ")
+        XCTAssertTrue(preparing.contains("Immediately starts downloaded episodes"), preparing)
         let statistics = WiltedMacLifetimeStatisticsCard(model: model)
         model.settingsSection = .about
         let stats = try WiltedMacHeadless.recognizedText(view, size: CGSize(width: 1000, height: 2000)).joined(separator: " ")

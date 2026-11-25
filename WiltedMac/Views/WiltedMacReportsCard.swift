@@ -51,6 +51,7 @@ struct WiltedMacReportsCard: View {
                     Button("Add headline feed") { showsHeadlineSources = true }
                         .accessibilityIdentifier("wilted-reports-add-news-feed")
                 }
+                note(Self.interruptionsSummary, id: "wilted-reports-interruptions-summary")
                 #if canImport(WiltedProducer)
                 if settings.interruptionsEnabled {
                     readinessSection
@@ -70,8 +71,12 @@ struct WiltedMacReportsCard: View {
                         Toggle("Weather alerts", isOn: reportsBinding(\.alertsEnabled))
                             .disabled(!settings.interruptionsEnabled)
                             .accessibilityIdentifier("wilted-reports-alerts")
+                        note("Checks for local National Weather Service alerts using this Mac’s location.",
+                             id: "wilted-reports-weather-explanation")
                         Toggle("Read headlines aloud", isOn: reportsBinding(\.headlinesEnabled))
                             .accessibilityIdentifier("wilted-reports-headlines")
+                        note("Reads eligible posts from your headline feeds at a playback break.",
+                             id: "wilted-reports-headlines-explanation")
                         #if canImport(WiltedProducer)
                         readingVoiceSection
                         #endif
@@ -83,12 +88,17 @@ struct WiltedMacReportsCard: View {
                         }
                         .disabled(!settings.interruptionsEnabled)
                         .accessibilityIdentifier("wilted-reports-wait-limit")
+                        note("Alerts wait this long for a playback break, then can interrupt. "
+                             + "Headlines always wait for a break.",
+                             id: "wilted-reports-wait-limit-explanation")
                         Stepper(value: reportsBinding(\.headlineMinimumGapMinutes),
                                 in: WiltedAutomationSettings.headlineGapRange, step: 5) {
                             labeledValue("Between headlines", "\(settings.headlineMinimumGapMinutes) minutes")
                         }
                         .disabled(!settings.interruptionsEnabled)
                         .accessibilityIdentifier("wilted-reports-headline-gap")
+                        note("Minimum time between spoken headlines, across all feeds.",
+                             id: "wilted-reports-headline-gap-explanation")
                         if let line = WiltedMacBulletinHub.statusLine(model.bulletinHub.status) {
                             note(line, id: "wilted-reports-bulletin-status")
                         }
@@ -97,6 +107,7 @@ struct WiltedMacReportsCard: View {
 
                         Toggle("Daily report", isOn: reportsBinding(\.reportEnabled))
                             .accessibilityIdentifier("wilted-reports-daily")
+                        note(Self.dailyReportSummary, id: "wilted-reports-daily-explanation")
                         DatePicker("Report time", selection: reportTimeBinding, displayedComponents: .hourAndMinute)
                             .disabled(!settings.reportEnabled)
                             .accessibilityIdentifier("wilted-reports-time")
@@ -117,6 +128,7 @@ struct WiltedMacReportsCard: View {
                                 .onSubmit(commitContact)
                                 .accessibilityIdentifier("wilted-reports-nws-contact")
                         }
+                        note(Self.weatherContactSummary, id: "wilted-reports-contact-explanation")
                     }
                     .padding(.top, WiltedTheme.Spacing.small)
                 } label: {
@@ -171,6 +183,8 @@ struct WiltedMacReportsCard: View {
             .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("wilted-reports-reading-voice-status")
+        note("Reads headline announcements and stories you choose with Listen next. Without a voice, headlines still appear on screen. Weather alerts use the Mac system voice.",
+             id: "wilted-reports-reading-voice-explanation")
     }
 
     @ViewBuilder private var readinessSection: some View {
@@ -267,6 +281,8 @@ struct WiltedMacReportsCard: View {
                 .onSubmit(commitCoordinates)
                 .accessibilityIdentifier("wilted-reports-longitude")
         }
+        note("Used for your local forecast and weather alerts. Leave both blank to use Mac location access.",
+             id: "wilted-reports-location-explanation")
         if coordinateProblem {
             Text("Latitude must be from -90 to 90 and longitude from -180 to 180.")
                 .wiltedFont(.utility)
@@ -329,6 +345,8 @@ struct WiltedMacReportsCard: View {
         if let line = Self.skippedNote(model.bulletinHub.status.skippedHeadlineCount) {
             note(line, id: "wilted-reports-skipped-count")
         }
+        note("These filters apply to spoken headlines and the daily report.",
+             id: "wilted-reports-topic-filter-explanation")
     }
 
     private func commitSkipWords() {
@@ -402,11 +420,22 @@ struct WiltedMacReportsCard: View {
         }
     }
 
+    static let interruptionsSummary = "Pauses playback at a break, reads a weather alert or headline, then resumes. "
+        + "Alerts may interrupt after the wait limit."
+
+    static let dailyReportSummary = "Uses today’s local National Weather Service forecast and up to five titles from followed headline feeds "
+        + "published in the last hour that pass your headline filters. The spoken report is up to five minutes and is saved in Larder > All. "
+        + "It runs at the chosen local time while Wilted is open, with up to two hours’ catch-up; Build now runs it immediately. "
+        + "It needs a forecast or a working headline feed; otherwise it skips the report and shows why."
+
+    static let weatherContactSummary = "Sent to the National Weather Service with requests. If blank, requests identify Wilted "
+        + "using its version and public project URL; leaving this blank does not disable weather alerts. Press Return to save."
+
     static let help = WiltedMacHelpContent(title: "Reports", text:
         "Playback pauses at a natural break, reads the bulletin, then resumes. Interruptions are off until you turn them on. "
         + "Headlines about sports, or containing any word you list under Also skip, are never read. "
-        + "Typed coordinates are used whenever this Mac has no location fix; press Return to save them, or clear both to remove. "
-        + "The National Weather Service contact is sent with weather requests so the service can reach you; press Return to save it.")
+        + "Typed coordinates take priority over Mac location; press Return to save them, or clear both to use Mac location. "
+        + "The optional weather contact is sent in requests to the National Weather Service. Leaving it blank does not turn off weather alerts.")
 
     static func wordsText(_ words: [String]) -> String { words.joined(separator: ", ") }
 

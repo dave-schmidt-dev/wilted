@@ -19,6 +19,7 @@ final class PodcastRSSParser: NSObject, XMLParserDelegate {
         /// their address in an attribute and a namespace, and are not read.
         var link: String?
         var transcriptSources: [PodcastTranscriptSource] = []
+        var chapterSource: PodcastChapterSource?
         /// Candidate show notes keyed by element, resolved after the item
         /// closes: feeds publish the same notes under two or three names and
         /// the fullest one is not always first.
@@ -85,7 +86,7 @@ final class PodcastRSSParser: NSObject, XMLParserDelegate {
                 title: title, author: author, publishedTime: item.publishedAt.map(Timestamp.init),
                 enclosureURL: enclosureURL, enclosureMediaType: enclosureType,
                 enclosureByteCount: item.enclosureLength, durationSeconds: item.duration,
-                artworkURL: artworkURL, transcriptSources: item.transcriptSources,
+                artworkURL: artworkURL, transcriptSources: item.transcriptSources, chapterSource: item.chapterSource,
                 notes: Self.notes(from: item.notesCandidates),
                 episodeLink: episodeLink,
                 createdAt: Timestamp(createdAt)
@@ -205,6 +206,10 @@ final class PodcastRSSParser: NSObject, XMLParserDelegate {
             if currentItem != nil { currentItem?.artworkURL = url } else { channelArtworkURL = url }
         } else if name == "transcript", currentItem != nil {
             appendTranscriptSource(attributeDict)
+        } else if name == "chapters", currentItem != nil, Self.isPodcastNamespace(namespaceURI) {
+            if currentItem?.chapterSource == nil {
+                currentItem?.chapterSource = PodcastChapterSourceParser.parse(attributeDict, relativeTo: feedURL)
+            }
         }
         if capturesText(name) || (name == "link" && currentItem != nil && (namespaceURI ?? "").isEmpty) {
             textElement = name
@@ -234,6 +239,13 @@ final class PodcastRSSParser: NSObject, XMLParserDelegate {
         guard !item.transcriptSources.contains(where: { $0.url == source.url }) else { return }
         item.transcriptSources.append(source)
         currentItem = item
+    }
+
+    private static func isPodcastNamespace(_ raw: String?) -> Bool {
+        guard let raw, let components = URLComponents(string: raw),
+              let host = components.host?.lowercased() else { return false }
+        return (host == "podcastindex.org" || host == "www.podcastindex.org")
+            && components.path.hasSuffix("/namespace/1.0")
     }
 
     func parser(_ parser: XMLParser, foundCharacters string: String) {

@@ -27,11 +27,14 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
     /// Main-actor playback readout; nil when nothing podcast is loaded.
     let playback: @Sendable () async -> WiltedMacPlaybackSample?
     var localRequests: @Sendable () async -> [String: WiltedMacPreparationPublication.Request] = { [:] }
+    var notebookScope: @Sendable () async -> NotebookLocalScope? = { nil }
 
     init(store: LocalLibraryStore, deviceID: String,
          playback: @escaping @Sendable () async -> WiltedMacPlaybackSample?,
-         localRequests: @escaping @Sendable () async -> [String: WiltedMacPreparationPublication.Request] = { [:] }) {
+         localRequests: @escaping @Sendable () async -> [String: WiltedMacPreparationPublication.Request] = { [:] },
+         notebookScope: @escaping @Sendable () async -> NotebookLocalScope? = { nil }) {
         self.store = store; self.deviceID = deviceID; self.playback = playback; self.localRequests = localRequests
+        self.notebookScope = notebookScope
     }
 
     func currentState() async throws -> LibraryStateSnapshot {
@@ -48,16 +51,23 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
             return !local.withdrawn && local.acknowledged && local.requestSequence == status.requestSequence
                 && (local.attempt == nil || local.attempt?.attemptCount == status.attemptCount)
         }.mapValues { WiltedMacPreparationPublication.status($0) }
+        let notebookEntries: [LibraryNotebookEntry]
+        if let scope = await notebookScope() {
+            notebookEntries = try await store.notebookEntries(in: scope)
+        } else {
+            notebookEntries = []
+        }
         return try Self.state(from: identity.library, queue: identity.library.podcastQueue.episodeIDs,
             playback: await playback(), deviceID: deviceID,
             associations: Self.associationMetadata(associations: identity.associations, states: identity.states),
-            preparationStatuses: filtered.compactMapValues { $0 })
+            preparationStatuses: filtered.compactMapValues { $0 }, notebookEntries: notebookEntries)
     }
 
     static func state(
         from snapshot: LocalLibraryStore.PodcastLibrarySnapshot, queue: [ItemID],
         playback: WiltedMacPlaybackSample?, deviceID: String, associations: [LibraryEpisodeAssociation] = [],
-        preparationStatuses: [ItemID: LibraryPreparationStatus] = [:]
+        preparationStatuses: [ItemID: LibraryPreparationStatus] = [:],
+        notebookEntries: [LibraryNotebookEntry] = []
     ) throws -> LibraryStateSnapshot {
         let displayNames = Dictionary(snapshot.subscriptions.compactMap { subscription in
             subscription.displayName.map { (subscription.feedID, $0) }
@@ -87,7 +97,8 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
                 preparationStatus: preparationStatuses[episode.itemID],
                 payload: try payloadBytes(PodcastEpisodePayload(
                     enclosureURL: episode.enclosureURL, feedURL: episode.feedURL, rssGUID: episode.rssGUID,
-                    episodeLink: episode.episodeLink
+                    episodeLink: episode.episodeLink,
+                    preparedChapters: snapshot.preparedPodcastChapters[episode.itemID]
                 ))
             ))
         }
@@ -101,7 +112,8 @@ struct WiltedMacLocalLibraryStateSource: LibraryStateSource {
             .map { ListeningRecord(itemID: $0.episodeID, completedAt: $0.completedAt?.date, updatedAt: $0.updatedAt.date, deviceID: deviceID) }
         return LibraryStateSnapshot(
             feeds: feeds + articleFeedSources(in: snapshot, displayNames: displayNames), episodes: published, queue: queue.filter(active.contains),
-            listening: listening, currentPlayback: try position(of: playback, in: snapshot, known: known, deviceID: deviceID)
+            listening: listening, notebookEntries: notebookEntries,
+            currentPlayback: try position(of: playback, in: snapshot, known: known, deviceID: deviceID)
         )
     }
 

@@ -101,6 +101,19 @@ public struct ArticleNarrationResult: Sendable, Equatable {
     }
 }
 
+/// Local audio made from bounded text with one explicitly selected approved voice.
+public struct ArticleNarrationAudio: Sendable, Equatable {
+    public let audioURL: URL
+    public let duration: TimeInterval
+    public let voiceRevision: String
+
+    public init(audioURL: URL, duration: TimeInterval, voiceRevision: String) {
+        self.audioURL = audioURL
+        self.duration = duration
+        self.voiceRevision = voiceRevision
+    }
+}
+
 public enum ArticleNarrationError: Error, Equatable, LocalizedError, Sendable {
     case invalidRequest
     case articleUnavailable
@@ -302,6 +315,52 @@ public struct ArticleNarrationCoordinator: Sendable {
                 title: article.title,
                 source: article.source
             )
+        } catch {
+            try? FileManager.default.removeItem(at: workspace)
+            throw error
+        }
+    }
+
+    /// Renders a short local announcement without fetching the linked article.
+    /// Text is kept in a private temporary workspace and is never logged.
+    public func synthesizeShortText(
+        _ text: String,
+        voiceID: ApprovedReadingVoiceID,
+        outputURL: URL,
+        progress: @escaping @Sendable (ArticleNarrationProgress) -> Void = { _ in }
+    ) async throws -> ArticleNarrationAudio {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.utf8.count <= 4_096,
+              outputURL.pathExtension.lowercased() == "m4a" else {
+            throw ArticleNarrationError.invalidRequest
+        }
+        switch availability(for: voiceID) {
+        case .available: break
+        case .missingVoice: throw ArticleNarrationError.voiceUnavailable
+        case .missingModel: throw ArticleNarrationError.modelUnavailable
+        case .missingRuntime: throw ArticleNarrationError.runtimeUnavailable
+        }
+        try Task.checkCancellation()
+        let workspace = FileManager.default.temporaryDirectory
+            .appending(path: "wilted-headline-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: workspace, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let textURL = workspace.appending(path: "announcement.txt")
+        do {
+            try Data(trimmed.utf8).write(to: textURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: textURL.path)
+            defer { try? FileManager.default.removeItem(at: workspace) }
+            progress(ArticleNarrationProgress(stage: .loadingVoice, fraction: nil))
+            let metadata = try await synthesize(
+                textURL: textURL, outputURL: outputURL, voiceID: voiceID, progress: progress)
+            try Task.checkCancellation()
+            guard metadata.byteCount > 44, metadata.duration > 0,
+                  FileManager.default.fileExists(atPath: outputURL.path) else {
+                throw ArticleNarrationError.invalidAudio
+            }
+            return ArticleNarrationAudio(
+                audioURL: outputURL, duration: metadata.duration,
+                voiceRevision: Self.voiceRevision(for: voiceID))
         } catch {
             try? FileManager.default.removeItem(at: workspace)
             throw error

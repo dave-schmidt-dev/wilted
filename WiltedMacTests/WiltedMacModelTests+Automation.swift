@@ -197,7 +197,7 @@ extension WiltedMacModelTests {
         XCTAssertEqual(admitted.episodeID, episode.id)
         XCTAssertEqual(admitted.processingPolicy, .offPeak(originalWindow))
         XCTAssertEqual(admitted.policySnapshot, PodcastPreparationPolicySnapshot(
-            transcriptPolicy: .alwaysTranscribe, removeAds: false
+            transcriptPolicy: .alwaysTranscribe, removeAds: false, evenOutVoiceLoudness: true
         ))
         XCTAssertEqual(model.preparationQueue.entries.map(\.id), [episode.id])
         XCTAssertEqual(
@@ -376,7 +376,7 @@ extension WiltedMacModelTests {
             transcriptPolicy: .noLocalSTT, removeAds: true
         )
         XCTAssertEqual(snapshot, PodcastPreparationPolicySnapshot(
-            transcriptPolicy: .alwaysTranscribe, removeAds: false
+            transcriptPolicy: .alwaysTranscribe, removeAds: false, evenOutVoiceLoudness: true
         ), "a queued job retains the snapshot captured at admission")
         XCTAssertNotEqual(snapshot, WiltedMacModel.preparationPolicySnapshot(from: laterSettings))
     }

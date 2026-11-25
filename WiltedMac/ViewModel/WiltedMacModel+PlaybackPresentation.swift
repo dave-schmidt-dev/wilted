@@ -5,6 +5,13 @@ import WiltedDomain
 import WiltedProducer
 
 extension WiltedMacModel {
+    /// Savings for the exact podcast revision loaded by the player.
+    var currentEpisodeTimeSavedSummary: String? {
+        guard let episode = currentEpisode,
+              let revisionID = playback?.revisionID?.rawValue else { return nil }
+        return episode.preparationStamp?.timeSavedSummary(for: revisionID)
+    }
+
     func playbackPresentationOwner(
         itemID: ItemID, revisionID: RevisionID
     ) -> WiltedMacPlaybackPresentationOwner? {

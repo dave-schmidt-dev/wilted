@@ -1,11 +1,12 @@
 import SwiftUI
 import WiltedDomain
+import WiltedLibrary
 import WiltedProducer
 
 /// One place to inspect and change a followed show's settings.
 struct WiltedMacShowSettingsView: View {
     enum Section: CaseIterable, Hashable {
-        case newEpisodes, ads, type, details
+        case newEpisodes, playback, ads, type, details
     }
 
     let model: WiltedMacModel
@@ -63,11 +64,46 @@ struct WiltedMacShowSettingsView: View {
     @ViewBuilder func sectionContent(_ section: Section) -> some View {
         switch section {
         case .newEpisodes: newEpisodesSection
+        case .playback: playbackSection
         case .ads: adsSection
         case .type: typeSection
         case .details:
             settingsSection("Details", identifier: "details") {
                 WiltedMacFeedDetailsSection(model: model, subscription: subscription)
+            }
+        }
+    }
+
+    @ViewBuilder private var playbackSection: some View {
+        if board.isLoaded(feedID), !isArticle {
+            settingsSection("Playback", identifier: "playback") {
+                startOffsetRow
+                evenOutLoudnessRow
+                settingRow(
+                    "Playback speed", defaultValue: String(format: "%g×", board.globalPlaybackSpeed()),
+                    setting: .playbackSpeed, resetID: "playback-speed",
+                    detail: "Saved episode speed takes priority. This speed applies to new plays of this show."
+                ) {
+                    Picker("Playback speed", selection: Binding(
+                        get: { board.showPlaybackSpeed(for: feedID) ?? board.globalPlaybackSpeed() },
+                        set: { board.scheduleShowPlaybackSpeedEdit($0, for: feedID) }
+                    )) {
+                        ForEach(PlaybackSpeeds.all, id: \.self) { rate in
+                            Text("\(rate, specifier: "%g")×").tag(rate)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .disabled(!board.canEditShowPlaybackSpeed(feedID))
+                    .accessibilityLabel("Playback speed for \(subscription.title)")
+                    .accessibilityIdentifier("wilted-show-settings-playback-speed")
+                }
+                if board.showPlaybackSpeedConflictFeedIDs.contains(feedID) {
+                    Text("This setting changed on another device. Review the saved value and choose a speed again.")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .accessibilityIdentifier("wilted-show-settings-playback-speed-conflict")
+                }
             }
         }
     }
@@ -141,22 +177,24 @@ struct WiltedMacShowSettingsView: View {
                     automationRow(
                         "Auto keep", setting: .autoKeep, identifier: "wilted-feed-policy-auto-keep",
                         label: "Auto keep for \(subscription.title)", keyPath: \.autoKeep,
-                        update: { board.update(feedID, autoKeep: $0) }
+                        update: { board.update(feedID, autoKeep: $0) },
+                        detail: "Keeps new episodes from this show after a feed refresh."
                     )
                     if !isArticle {
                         automationRow(
                             "Auto download", setting: .autoDownload, identifier: "wilted-feed-policy-auto-download",
                             label: "Auto download for \(subscription.title)", keyPath: \.autoDownload,
-                            update: { board.update(feedID, autoDownload: $0) }
+                            update: { board.update(feedID, autoDownload: $0) },
+                            detail: "Downloads audio after new episodes are kept."
                         )
                     }
                     automationRow(
                         "Auto prepare", setting: .autoPrepare, identifier: "wilted-feed-policy-auto-prepare",
                         label: "Auto prepare for \(subscription.title)", keyPath: \.autoPrepare,
-                        update: { board.update(feedID, autoPrepare: $0) }
+                        update: { board.update(feedID, autoPrepare: $0) },
+                        detail: "Prepares downloaded audio for playback."
                     )
                     keptLimitRow
-                    if !isArticle { startOffsetRow }
                     WiltedMacFeedRulesEntry(
                         editor: board.rulesEditor(for: feedID), subscription: subscription,
                         isEnabled: board.isLoaded(feedID), open: { isEditingRules = true }
@@ -226,7 +264,8 @@ struct WiltedMacShowSettingsView: View {
     }
 
     private var keptLimitRow: some View {
-        settingRow("Kept limit", defaultValue: globalValue("Kept limit"), setting: .keptLimit, resetID: "kept-limit") {
+        settingRow("Kept limit", defaultValue: globalValue("Kept limit"), setting: .keptLimit,
+                   resetID: "kept-limit", detail: "Limits how many episodes are kept from this show.") {
             HStack(spacing: WiltedTheme.Spacing.small) {
                 Picker("Kept limit", selection: limitModeBinding) {
                     Text("Same as default").tag(false)
@@ -290,7 +329,8 @@ struct WiltedMacShowSettingsView: View {
     private var removeAdsRow: some View {
         settingRow(
             "Remove ads", defaultValue: model.automationSettings.removeAds ? "On" : "Off",
-            setting: .removeAds, resetID: "remove-ads"
+            setting: .removeAds, resetID: "remove-ads",
+            detail: "Use the global ad-removal setting for this show, or mark the show as already ad-free."
         ) {
             Picker("Remove ads", selection: Binding(
                 get: { board.isAdFree(feedID) }, set: { board.setRemoveAdsOverride($0, for: feedID) }
@@ -324,6 +364,27 @@ struct WiltedMacShowSettingsView: View {
             .accessibilityLabel("Remove the show's own promotion from \(subscription.title)")
             .accessibilityIdentifier("wilted-feed-policy-remove-self-promotion")
             .disabled(board.isAdFree(feedID))
+        }
+    }
+
+    private var evenOutLoudnessRow: some View {
+        settingRow(
+            "Level voices", defaultValue: model.automationSettings.levelVoices ? "On" : "Off", setting: .loudness,
+            resetID: "loudness",
+            detail: "Normalize future preparations for this show to a steady listening level. Inherit uses the global setting; turning it off skips this step. Leveling adds processing time."
+        ) {
+            Picker("Level voices", selection: Binding(
+                get: { board.loudnessOverride(feedID) },
+                set: { _ = board.setLoudnessOverride($0, for: feedID) }
+            )) {
+                ForEach(WiltedMacLoudnessOverride.allCases, id: \.self) { override in
+                    Text(override.label).tag(override)
+                }
+            }
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .accessibilityLabel("Level voices for \(subscription.title)")
+            .accessibilityIdentifier("wilted-feed-policy-even-out-loudness")
         }
     }
 
@@ -380,9 +441,11 @@ struct WiltedMacShowSettingsView: View {
         identifier: String,
         label: String,
         keyPath: KeyPath<FeedAutomationPolicy, FeedAutomationOverride>,
-        update: @escaping (FeedAutomationOverride) -> Bool
+        update: @escaping (FeedAutomationOverride) -> Bool,
+        detail: String
     ) -> some View {
-        settingRow(title, defaultValue: globalValue(title), setting: setting, resetID: setting.rawValue) {
+        settingRow(title, defaultValue: globalValue(title), setting: setting, resetID: setting.rawValue,
+                   detail: detail) {
             Picker(title, selection: Binding(
                 get: { policy[keyPath: keyPath] }, set: { _ = update($0) }
             )) {

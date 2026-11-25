@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 import WiltedDomain
+#if canImport(WiltedProducer)
+import WiltedLibrary
+import WiltedProducer
+#endif
 
 enum WiltedMacStartupAccessibility {
     static let loading = "wilted-mac-startup-loading"
@@ -38,8 +42,9 @@ struct WiltedMacRootView: View {
         playerPresentation == nil && shell.pane == .bottom
     }
 
-    init(model: WiltedMacModel) {
+    init(model: WiltedMacModel, initialPlayerPresentation: WiltedMacPlayerSection? = nil) {
         _model = Bindable(model)
+        _playerPresentation = State(initialValue: initialPlayerPresentation)
         _feedPolicyBoard = State(initialValue: WiltedMacFeedPolicyBoard(model: model))
     }
 
@@ -89,7 +94,60 @@ struct WiltedMacRootView: View {
             : WiltedTheme.scaled(WiltedMacShellLayout.sidebarIdealWidth, scale: model.textScale)
     }
 
+#if canImport(WiltedProducer)
+    /// The exact pending or announced story stays available across every destination and player layout.
+    private var activeHeadlineStory: LibraryHeadlineStory? {
+        WiltedMacPlayerContent.selectHeadlineCard(
+            speaking: model.speakingBulletin,
+            lastSpokenStoryID: model.bulletinHub.featuredHeadlineStoryID,
+            pendingStoryID: model.bulletinHub.latestHeadlineNarrationStoryID,
+            projection: model.headlineCatalogState.projection)
+    }
+
+    static func narrationStatus(
+        for state: WiltedMacHeadlineNarrationState
+    ) -> WiltedMacPlayerHeadlineCard.NarrationStatus? {
+        switch state {
+        case .chooseVoice:
+            .chooseVoice
+        case .preparing:
+            .preparing
+        case .unavailable:
+            .unavailable
+        case .notScheduled, .ready:
+            nil
+        }
+    }
+#endif
+
+    @ViewBuilder
+    private var activeHeadlineCard: some View {
+#if canImport(WiltedProducer)
+        if let story = activeHeadlineStory {
+            WiltedMacPlayerHeadlineCard(
+                model: model, story: story,
+                isSpeakingHeadline: model.speakingBulletin?.kind == .headline
+                    && model.speakingBulletin?.headlineStoryID == story.id,
+                stopReading: model.skipSpokenBulletin,
+                narrationStatus: Self.narrationStatus(
+                    for: model.bulletinHub.headlineNarrationState(for: story.id)))
+                .id(story.id)
+                .padding(.horizontal, WiltedTheme.Spacing.medium)
+                .padding(.vertical, WiltedTheme.Spacing.small)
+                .accessibilityIdentifier("wilted-active-headline")
+        }
+#endif
+    }
+
     private var detail: some View {
+        VStack(spacing: 0) {
+            activeHeadlineCard
+            detailContent
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var detailContent: some View {
         ZStack {
             VStack(spacing: 0) {
                 GeometryReader { geometry in
@@ -98,6 +156,8 @@ struct WiltedMacRootView: View {
                             switch model.selectedNavigation {
                             case .feeds:
                                 WiltedMacFeedsView(model: model, policyBoard: feedPolicyBoard)
+                            case .notebook:
+                                WiltedMacNotebookView(model: model)
                             case .larder:
                                 WiltedMacLarderView(
                                     model: model, paneMode: shell.pane, sidebarMode: shell.sidebar,

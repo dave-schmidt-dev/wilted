@@ -138,6 +138,9 @@ struct LibraryPlayerView: View {
                 LibraryNowPlayingHeadlineCard(
                     controller: interruptions, headlineState: model.headlinePhoneState, model: model)
             }
+            if let model {
+                LibraryNotebookCaptureControl(model: model, player: player, state: model.notebookPhoneState)
+            }
             scrubber
             transport
             LibraryChapterBar(player: player)
@@ -269,6 +272,7 @@ struct LibraryChapterBar: View {
     @ObservedObject var player: LibraryPlayer
     @Environment(\.colorScheme) private var colorScheme
 
+    @ViewBuilder
     var body: some View {
         let navigator = LibraryChapterNavigator(chapters: player.item?.chapters ?? [])
         if let title = navigator.title(at: player.position), let label = navigator.label(at: player.position) {
@@ -300,6 +304,8 @@ struct LibraryChapterBar: View {
             }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("wilted-player-chapters")
+        } else {
+            LibraryPodcastChapterBar(player: player)
         }
     }
 }
@@ -355,7 +361,7 @@ struct LibraryPlayerCompletion: View {
 }
 
 /// Flat icon buttons with the minimum touch target and the Wilted accent.
-private struct LibraryPlayerButtonStyle: ButtonStyle {
+struct LibraryPlayerButtonStyle: ButtonStyle {
     @Environment(\.colorScheme) private var colorScheme
 
     func makeBody(configuration: Configuration) -> some View {

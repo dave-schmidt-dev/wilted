@@ -52,18 +52,18 @@ final class WatchSessionClient: NSObject, WCSessionDelegate {
     private func send(_ command: WatchCommand) {
         guard WCSession.isSupported() else {
             sessionLog.error("WatchConnectivity is unsupported; the command never left the watch")
-            model.commandDidFail(command, note: Self.unreachableNote)
+            fail(command, note: Self.unreachableNote, capture: .unreachable)
             return
         }
         let session = WCSession.default
         guard session.isReachable else {
             sessionLog.error("iPhone unreachable; the command never left the watch")
-            model.commandDidFail(command, note: Self.unreachableNote)
+            fail(command, note: Self.unreachableNote, capture: .unreachable)
             return
         }
         guard let payload = try? WatchLinkCodec.encode(command) else {
             sessionLog.error("Watch command encoding failed")
-            model.commandDidFail(command, note: Self.rejectedNote)
+            fail(command, note: Self.rejectedNote, capture: .failed)
             return
         }
         session.sendMessage(
@@ -72,7 +72,16 @@ final class WatchSessionClient: NSObject, WCSessionDelegate {
                 let accepted = reply["ok"] as? Bool == true
                 let reason = reply["reason"] as? String
                 Task { @MainActor in
-                    guard let self, !accepted else { return }
+                    guard let self else { return }
+                    if command.action == .captureNotebook {
+                        if accepted {
+                            self.model.notebookCaptureDidSucceed(queued: reply["queued"] as? Bool == true)
+                        } else {
+                            self.model.notebookCaptureDidFail(WatchNotebookFeedback.phoneRefusal(reason: reason))
+                        }
+                        return
+                    }
+                    guard !accepted else { return }
                     sessionLog.error("iPhone refused a watch command: \(reason ?? "unknown", privacy: .public)")
                     self.model.commandDidFail(command, note: Self.rejectedNote)
                 }
@@ -83,9 +92,17 @@ final class WatchSessionClient: NSObject, WCSessionDelegate {
                 Task { @MainActor in
                     guard let self else { return }
                     sessionLog.error("Watch command delivery failed: \(domain, privacy: .public) code \(code, privacy: .public)")
-                    self.model.commandDidFail(command, note: Self.unreachableNote)
+                    self.fail(command, note: Self.unreachableNote, capture: .unreachable)
                 }
             })
+    }
+
+    private func fail(_ command: WatchCommand, note: String, capture feedback: WatchNotebookFeedback) {
+        if command.action == .captureNotebook {
+            model.notebookCaptureDidFail(feedback)
+        } else {
+            model.commandDidFail(command, note: note)
+        }
     }
 
     /// Adopts a context, logging an undecodable one; an empty context means the

@@ -80,6 +80,18 @@ final class LibraryStatsTests: XCTestCase {
                        ["subscribe", "addArticle"])
     }
 
+    func testPerShowPlaybackSpeedsRoundTripAndAffectPublishedMetrics() throws {
+        let feed = try ItemID(rawValue: "show-speed")
+        let rate = try LibraryShowPlaybackSpeed(feedID: feed, speed: 1.75, revision: 8)
+        let reset = try LibraryShowPlaybackSpeed(feedID: feed, speed: nil, revision: 9)
+        let stats = LibraryStats(showPlaybackSpeeds: [feed.rawValue: rate])
+        XCTAssertEqual(try JSONDecoder().decode(LibraryStats.self, from: JSONEncoder().encode(stats)), stats)
+        XCTAssertFalse(stats.hasSameMetrics(as: LibraryStats(showPlaybackSpeeds: [feed.rawValue: reset])))
+        XCTAssertNil(try JSONDecoder().decode(LibraryStats.self, from: Data(
+            #"{"audioProcessedSeconds":1,"speechGeneratedSeconds":2,"confirmedAdTimeRemovedSeconds":3,"fasterPlaybackTimeSavedSeconds":4}"#.utf8
+        )).showPlaybackSpeeds)
+    }
+
     func testAFutureFieldIsIgnoredByThisReader() throws {
         let json = #"{"audioProcessedSeconds":1,"speechGeneratedSeconds":2,"confirmedAdTimeRemovedSeconds":3,"fasterPlaybackTimeSavedSeconds":4,"someFutureMetric":9}"#
         XCTAssertEqual(try JSONDecoder().decode(LibraryStats.self, from: Data(json.utf8)).audioProcessedSeconds, 1)

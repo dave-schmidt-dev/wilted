@@ -165,6 +165,15 @@ struct RestartEpisodeIntent: AudioPlaybackIntent {
     }
 }
 
+struct SaveThatIntent: AppIntent {
+    static let title: LocalizedStringResource = "Save that to Notebook"
+    static let description = IntentDescription("Saves the last 30 seconds of the current podcast to Notebook.")
+
+    @MainActor func perform() async throws -> some IntentResult & ProvidesDialog {
+        try await speak(.saveThat, path: "SaveThatIntent.perform")
+    }
+}
+
 struct MarkCompletedIntent: AppIntent {
     static let title: LocalizedStringResource = "Mark this episode completed"
 
@@ -263,5 +272,9 @@ struct WiltedShortcuts: AppShortcutsProvider {
                 "Set the speed to \(\.$speed) in \(.applicationName)",
             ],
             shortTitle: "Set speed", systemImageName: "speedometer")
+        AppShortcut(
+            intent: SaveThatIntent(),
+            phrases: ["Save that in \(.applicationName)"],
+            shortTitle: "Save clip", systemImageName: "bookmark")
     }
 }

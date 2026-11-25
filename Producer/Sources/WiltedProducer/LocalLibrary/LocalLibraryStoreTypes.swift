@@ -28,8 +28,9 @@ public enum LocalLibrarySchemaVersion: Int, Codable, Sendable {
     case v20 = 20
     case v21 = 21
     case v22 = 22
+    case v23 = 23
 
-    public static let current: LocalLibrarySchemaVersion = .v22
+    public static let current: LocalLibrarySchemaVersion = .v23
 }
 
 struct AssociationStoredState: Codable {

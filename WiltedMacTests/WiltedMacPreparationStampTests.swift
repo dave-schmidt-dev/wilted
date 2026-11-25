@@ -94,6 +94,69 @@ final class WiltedMacPreparationStampTests: XCTestCase {
                        "\(stamp.prepared ?? "")\n\(stamp.lastFailure ?? "")\n\(detail)")
     }
 
+    func testSavedTimeSummaryUsesTheSuccessfulRunForTheReadyRevision() throws {
+        let itemID = try makeItemID()
+        let revisionID = try makeRevisionID("7")
+        let prepared = try succeededRun(
+            itemID: itemID, revisionID: revisionID, stamp: nil,
+            workerResult: ["removedSeconds": "300.000", "silenceRemovedSeconds": "120.000"])
+        let failed = try failedRun(
+            itemID: itemID, message: "Retry failed", stamp: nil, updatedAt: later)
+
+        let stamp = try XCTUnwrap(WiltedMacPreparationStamp.make(
+            outcome: makeOutcome(itemID: itemID, revisionID: revisionID),
+            readyRevisionID: revisionID,
+            runs: [prepared, failed]))
+
+        XCTAssertEqual(stamp.timeSavedSummary, "Saved 7 min: 5 of ads, 2 of pauses")
+        XCTAssertEqual(stamp.preparedRevisionID, revisionID.rawValue)
+        XCTAssertEqual(stamp.timeSavedSummary(for: revisionID.rawValue), stamp.timeSavedSummary)
+        XCTAssertNil(stamp.timeSavedSummary(for: "rev-older"), "the player names only its loaded revision")
+    }
+
+    func testSavedTimeSummarySupportsAdsOnlyAndPausesOnly() throws {
+        let itemID = try makeItemID()
+        let revisionID = try makeRevisionID("7")
+        let adsOnly = try succeededRun(
+            itemID: itemID, revisionID: revisionID, stamp: nil,
+            workerResult: ["removedSeconds": "300.000"])
+        let pausesOnly = try succeededRun(
+            itemID: itemID, revisionID: revisionID, stamp: nil,
+            workerResult: ["removedSeconds": "0.000", "silenceRemovedSeconds": "120.000"])
+
+        let adsStamp = try XCTUnwrap(WiltedMacPreparationStamp.make(
+            outcome: makeOutcome(itemID: itemID, revisionID: revisionID),
+            readyRevisionID: revisionID, runs: [adsOnly]))
+        let pausesStamp = try XCTUnwrap(WiltedMacPreparationStamp.make(
+            outcome: makeOutcome(itemID: itemID, revisionID: revisionID),
+            readyRevisionID: revisionID, runs: [pausesOnly]))
+
+        XCTAssertEqual(adsStamp.timeSavedSummary, "Saved 5 min: 5 of ads")
+        XCTAssertEqual(pausesStamp.timeSavedSummary, "Saved 2 min: 2 of pauses")
+    }
+
+    func testSavedTimeSummaryRejectsZeroMalformedAndMismatchedEvidence() throws {
+        let itemID = try makeItemID()
+        let revisionID = try makeRevisionID("7")
+        let zero = try succeededRun(
+            itemID: itemID, revisionID: revisionID, stamp: nil,
+            workerResult: ["removedSeconds": "0.000"])
+        let malformed = try succeededRun(
+            itemID: itemID, revisionID: revisionID, stamp: nil,
+            workerResult: ["removedSeconds": "NaN", "silenceRemovedSeconds": "120"])
+        let otherRevision = try succeededRun(
+            itemID: itemID, revisionID: makeRevisionID("8"), stamp: nil,
+            workerResult: ["removedSeconds": "300", "silenceRemovedSeconds": "120"])
+
+        for run in [zero, malformed, otherRevision] {
+            let stamp = WiltedMacPreparationStamp.make(
+                outcome: makeOutcome(itemID: itemID, revisionID: revisionID),
+                readyRevisionID: revisionID,
+                runs: [run])
+            XCTAssertNil(stamp?.timeSavedSummary)
+        }
+    }
+
     func testFailedRunWithoutStampSaysBuildNotRecorded() throws {
         let itemID = try makeItemID()
         let revisionID = try makeRevisionID("7")
@@ -337,7 +400,8 @@ final class WiltedMacPreparationStampTests: XCTestCase {
         policyDigest: String? = nil,
         labelStopDetail: String? = nil,
         passages: [[String: String]] = [],
-        keptExisting: Bool = false
+        keptExisting: Bool = false,
+        workerResult: [String: String]? = nil
     ) throws -> PreparationRunSummary {
         let requestID = WiltedMacModel.podcastRequestPrefix + itemID.rawValue + "|success"
         var entries: [PreparationJournalEntry] = []
@@ -368,6 +432,15 @@ final class WiltedMacPreparationStampTests: XCTestCase {
                 status: try PreparationStatus(
                     stage: .assembling, detail: labelStopDetail, cancellable: true,
                     emittedAt: when, step: "ads.label.stop")))
+        }
+        if let workerResult {
+            entries.append(PreparationJournalEntry(
+                id: requestID + "|worker-result", itemID: itemID, requestID: requestID,
+                status: try PreparationStatus(
+                    stage: .assembling, detail: "Worker result", cancellable: true,
+                    emittedAt: when,
+                    evidence: try PreparationEvidence(kind: "worker-result",
+                                                      fields: workerResult))))
         }
         entries.append(PreparationJournalEntry(
             id: requestID + "|terminal", itemID: itemID, requestID: requestID,

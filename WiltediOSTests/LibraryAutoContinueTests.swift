@@ -48,15 +48,19 @@ final class LibraryAutoContinueTests: XCTestCase {
     func makeRig(
         entries: [String] = ["a", "b", "c", "d"],
         queue: [String]? = nil, autoPlayNext: Bool = true, feedDuration: Double = 600,
-        gate: LookupGate? = nil
+        gate: LookupGate? = nil, feedByEntry: [String: String] = [:], showSpeeds: [String: Double] = [:]
     ) async throws -> Rig {
         let q = queue ?? entries
         let baseCache = FileMediaCache(rootURL: scratch.appendingPathComponent("cache"))
         let cache: any LibraryMediaCache = gate.map { AutoContinueGatedMediaCache(base: baseCache, gate: $0) } ?? baseCache
-        var changes: [LibraryChange] = [.source(LibrarySource(id: id("show"), kind: .podcastFeed, title: "The Show"))]
+        let showForEntry = Dictionary(entries.map { ($0, feedByEntry[$0] ?? "show") }, uniquingKeysWith: { _, latest in latest })
+        let showIDs = Set(showForEntry.values).sorted()
+        var changes: [LibraryChange] = showIDs.map { raw in
+            .source(LibrarySource(id: id(raw), kind: .podcastFeed, title: raw == "show" ? "The Show" : "The \(raw)"))
+        }
         for (offset, raw) in entries.enumerated() {
             changes.append(.entry(try LibraryEntry(
-                id: id(raw), kind: .podcastEpisode, sourceID: id("show"), title: "Title \(raw)", summary: "",
+                id: id(raw), kind: .podcastEpisode, sourceID: id(showForEntry[raw]!), title: "Title \(raw)", summary: "",
                 publishedAt: Date(timeIntervalSince1970: 1_600_000_000 + Double(offset) * 86_400), durationSeconds: feedDuration,
                 removal: .none, removedAt: nil)))
 
@@ -66,6 +70,13 @@ final class LibraryAutoContinueTests: XCTestCase {
         let phone = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "fixture-owner")
         let mirror = FileLibraryStore(url: scratch.appendingPathComponent("mirror-" + UUID().uuidString + ".json"))
         try await PreparedMediaFixture.bootstrap(mirror, transport: phone)
+        if !showSpeeds.isEmpty {
+            let projection = try Dictionary(uniqueKeysWithValues: showSpeeds.map { raw, speed in
+                (raw, try LibraryShowPlaybackSpeed(feedID: id(raw), speed: speed, revision: 1))
+            })
+            try await mac.publishStats(LibraryStats(
+                supportedIntentActions: ["setShowPlaybackSpeed"], showPlaybackSpeeds: projection))
+        }
         for raw in entries {
             let file = scratch.appendingPathComponent(UUID().uuidString)
             try payload.write(to: file)
@@ -169,6 +180,30 @@ final class LibraryAutoContinueTests: XCTestCase {
             rig.player.item?.entryID == self.id("b") && rig.player.isPlaying && rig.player.rate == 1.5
         }
         XCTAssertEqual(rig.player.rate, 1.5, "the speed the listener chose carries over")
+    }
+
+    func testAutomaticAdvanceAcrossShowsUsesTheDestinationShowsSpeed() async throws {
+        let rig = try await makeRig(
+            entries: ["a", "b"], feedByEntry: ["a": "show-a", "b": "show-b"],
+            showSpeeds: ["show-a": 1.5, "show-b": 1.75])
+        await start(rig, "a")
+        rig.player.setRate(2.0)
+        rig.engine.finishNaturally()
+        try await eventually("show B to start at its saved speed") {
+            rig.player.item?.entryID == self.id("b") && rig.player.isPlaying && rig.player.rate == 1.75
+        }
+    }
+
+    func testAutomaticAdvanceAcrossShowsUsesGlobalFallbackWithoutRateLeak() async throws {
+        let rig = try await makeRig(
+            entries: ["a", "b"], feedByEntry: ["a": "show-a", "b": "show-b"],
+            showSpeeds: ["show-a": 1.75])
+        await start(rig, "a")
+        rig.player.setRate(2.0)
+        rig.engine.finishNaturally()
+        try await eventually("show B to start at the phone default") {
+            rig.player.item?.entryID == self.id("b") && rig.player.isPlaying && rig.player.rate == 1.25
+        }
     }
 
     func testTheCapturedForwardSuffixDecidesWhatPlaysNextAndItStopsWhenNoneRemain() async throws {

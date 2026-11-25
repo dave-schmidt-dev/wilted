@@ -11,7 +11,17 @@ public protocol BulletinSpeaking: AnyObject {
     /// when the speech ends by itself; stopping with `stop()` does not call it.
     /// Implementations must set their output level with ``BulletinSpeechGain/volume(forPlaybackVolume:)``.
     func speak(_ text: String, playbackVolume: Float, finished: @escaping @MainActor () -> Void) -> Bool
+    /// Starts a bulletin with its stable identity available to voice-specific speakers.
+    /// The default keeps existing alert speakers source-compatible.
+    func speak(_ bulletin: Bulletin, playbackVolume: Float, finished: @escaping @MainActor () -> Void) -> Bool
     func stop()
+}
+
+public extension BulletinSpeaking {
+    func speak(_ bulletin: Bulletin, playbackVolume: Float,
+               finished: @escaping @MainActor () -> Void) -> Bool {
+        speak(bulletin.text, playbackVolume: playbackVolume, finished: finished)
+    }
 }
 
 /// The volume rule every bulletin speaker must apply, including future cloned-voice speakers.
@@ -59,6 +69,12 @@ public final class SystemBulletinSpeaker: NSObject, BulletinSpeaking, AVSpeechSy
         current = (ObjectIdentifier(utterance), finished)
         enqueueUtterance(utterance)
         return true
+    }
+
+    public func speak(_ bulletin: Bulletin, playbackVolume: Float,
+                      finished: @escaping @MainActor () -> Void) -> Bool {
+        guard bulletin.kind == .alert else { return false }
+        return speak(bulletin.text, playbackVolume: playbackVolume, finished: finished)
     }
 
     public func stop() {
@@ -370,7 +386,7 @@ extension PlaybackController {
         speakingBulletin = bulletin
         engine.speechToken &+= 1
         let token = engine.speechToken
-        guard engine.speaker.speak(bulletin.text, playbackVolume: backend.volume, finished: { [weak self, weak engine] in
+        guard engine.speaker.speak(bulletin, playbackVolume: backend.volume, finished: { [weak self, weak engine] in
             guard let engine else { return }
             self?.speechEnded(token, engine: engine)
         }) else { return false }

@@ -89,6 +89,7 @@ extension WiltedMacModel {
 
     func selectReadingVoice(_ rawValue: String?) {
         readingVoiceSelection.select(rawValue)
+        bulletinHub.readingVoiceSelectionChanged()
     }
 
     func readingVoiceAvailability(for voice: ApprovedReadingVoiceID) -> ArticleVoiceAvailability {

@@ -438,12 +438,18 @@ extension WiltedMacModel {
                 self.playlists.session = nil
                 throw WiltedMacPlaylistError.notReady
             }
-            let savedRate = try? await store.playbackSpeed(for: itemID)
+            let episodeRate = try? await store.playbackSpeed(for: itemID)
+            var selectedRate = episodeRate?.speed
+            if selectedRate == nil {
+                let episode = try? await store.podcastEpisode(for: itemID)
+                if let feedID = episode?.feedID { selectedRate = await playback.showPlaybackSpeedProvider?(feedID) }
+            }
+            let chosenRate = Float(selectedRate ?? Double(playback.defaultRate))
             try self.ensureCurrentPlaybackCommand(command)
             self.refreshPlaybackReadout(shouldPublishNowPlaying: false)
             try await playback.load(stored)
             try self.ensureNewestSelection(command)
-            if let savedRate, playback.listenerRateSerial == rateBaseline { playback.setRate(Float(savedRate.speed)) }
+            if playback.listenerRateSerial == rateBaseline { playback.setRate(chosenRate) }
             self.playlists.session?.index = index
             switch item {
             case .article(let article):

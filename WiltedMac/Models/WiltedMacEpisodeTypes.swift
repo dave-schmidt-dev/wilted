@@ -346,6 +346,12 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     /// Set for an imported audiobook volume, which the Larder queue and the player carry as an
     /// episode-shaped row with no feed. Nil for every podcast episode.
     var audiobook: WiltedMacAudiobookDetails? = nil
+    /// Prepared-clock chapters for a podcast episode. Audiobooks keep using
+    /// their existing `audiobook` details and controls.
+    var podcastChapters: [WiltedMacChapter] = []
+    /// Transient cursor used when distinct publisher chapters collapse to
+    /// one prepared time after an ad cut.
+    var selectedPodcastChapterIndex: Int? = nil
 
     var isAudiobook: Bool { audiobook != nil }
 
@@ -417,7 +423,8 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
         feedURL: URL? = nil,
         episodeLink: URL? = nil,
         possibleDuplicateOf: String? = nil,
-        audiobook: WiltedMacAudiobookDetails? = nil
+        audiobook: WiltedMacAudiobookDetails? = nil,
+        podcastChapters: [WiltedMacChapter] = []
     ) {
         self.id = id
         self.title = title
@@ -443,6 +450,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
         self.episodeLink = episodeLink
         self.possibleDuplicateOf = possibleDuplicateOf
         self.audiobook = audiobook
+        self.podcastChapters = podcastChapters
     }
 
     var lifecyclePresentation: WiltedMacEpisodeLifecyclePresentation {
@@ -474,7 +482,8 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
             lhs.preparationStamp == rhs.preparationStamp &&
             lhs.isReadyMediaAvailable == rhs.isReadyMediaAvailable && lhs.feedID == rhs.feedID &&
             lhs.feedURL == rhs.feedURL && lhs.episodeLink == rhs.episodeLink && lhs.audiobook == rhs.audiobook &&
-            lhs.possibleDuplicateOf == rhs.possibleDuplicateOf
+            lhs.possibleDuplicateOf == rhs.possibleDuplicateOf && lhs.podcastChapters == rhs.podcastChapters &&
+            lhs.selectedPodcastChapterIndex == rhs.selectedPodcastChapterIndex
     }
 
     func hash(into hasher: inout Hasher) { hasher.combine(id) }

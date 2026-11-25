@@ -37,6 +37,8 @@ actor WiltedMacLibraryIntentSink: LibraryIntentSink {
             try await record(intent, describing: "keep for \(entryID.rawValue)")
         case let .skip(entryID):
             try await record(intent, describing: "skip for \(entryID.rawValue)")
+        case .decideNewEpisode:
+            try await record(intent, describing: "conditional New episode decision")
         case let .markDone(entryID):
             try await record(intent, describing: "markDone for \(entryID.rawValue)")
         case let .removeFromLarder(entryID):
@@ -57,10 +59,14 @@ actor WiltedMacLibraryIntentSink: LibraryIntentSink {
             try await record(intent, describing: "headline saved-state command")
         case .setHeadlinePublisherMuted:
             try await record(intent, describing: "headline publisher-mute command")
+        case .setNotebookEntry:
+            try await record(intent, describing: "Notebook entry update")
         case let .adFeedback(entryID, _, kind, _):
             try await record(intent, describing: "\(kind.rawValue) feedback for \(entryID.rawValue)")
         case let .setShowStartOffset(feedID, _, _):
             try await record(intent, describing: "show start offset for \(feedID.rawValue)")
+        case let .setShowPlaybackSpeed(feedID, _, _):
+            try await record(intent, describing: "show playback speed for \(feedID.rawValue)")
         case .unsupported:
             try await record(intent, describing: "unsupported action")
         }
@@ -130,6 +136,8 @@ extension WiltedMacModel {
                 }
                 return requests
             }
+        }, notebookScope: { [weak self] in
+            await self?.notebookLocalScope()
         })
         let rawTransport = transport
             ?? WiltedMacLibraryTransports.production(deviceID: deviceID, hostsTests: librarySyncBuildFacts.hostsTests)
@@ -201,7 +209,29 @@ extension WiltedMacModel {
             transport: resolvedTransport,
             headlineCatalog: headlineCatalogStore,
             onApplied: { [weak self] in self?.librarySyncController?.requestPublish() },
-            listenNextHandler: listenNextHandler
+            listenNextHandler: listenNextHandler,
+            notebookEntryHandler: { entry, authority in
+                guard let scope = try? NotebookLocalScope(ownerToken: authority.ownerToken, deviceID: deviceID) else {
+                    return false
+                }
+                if let serverEntry = authority.serverEntry {
+                    _ = try await store.applyRemoteNotebookEntry(
+                        serverEntry, version: authority.serverVersion, in: scope
+                    )
+                } else if authority.serverVersion != 0 {
+                    return false
+                }
+                guard try await store.notebookServerVersion(id: entry.id, in: scope) == authority.serverVersion else {
+                    return false
+                }
+                if let serverEntry = authority.serverEntry, try await store.notebookEntry(id: entry.id, in: scope) != serverEntry {
+                    return false
+                }
+                _ = try await store.saveNotebookEntry(
+                    entry, in: scope, expectedServerVersion: authority.serverVersion
+                )
+                return true
+            }
         )
         let publisherHasManagedAccount = account != nil
         let offsetOwnerProvider: @Sendable () async -> String? = { [weak account] in
@@ -219,8 +249,19 @@ extension WiltedMacModel {
             onApplied: { [weak self] in
                 await MainActor.run { self?.librarySyncController?.requestPublish() }
             })
+        let playbackSpeedIntentHandler = WiltedMacShowPlaybackSpeedIntentHandler(
+            store: WiltedMacShowPlaybackSpeedStore(store: store), transport: resolvedTransport,
+            ownerProvider: offsetOwnerProvider,
+            feedValidator: { [weak store] feedID in
+                guard let store else { return false }
+                let subscription = try await store.subscription(for: feedID)
+                let feed = try await store.podcastFeed(for: feedID)
+                return subscription != nil && feed != nil
+            },
+            onApplied: { [weak self] in await MainActor.run { self?.librarySyncController?.requestPublish() } })
         let sink = WiltedMacLibraryIntentSink(consumer: { intent in
             if try await offsetIntentHandler.applyIfOffset(intent) { return }
+            if try await playbackSpeedIntentHandler.applyIfShowPlaybackSpeed(intent) { return }
             if let mediaRequestConsumer {
                 try await mediaRequestConsumer(intent)
             } else if intent.action.isDecision {
@@ -237,6 +278,10 @@ extension WiltedMacModel {
                 guard let owner = await offsetOwnerProvider() else { return nil }
                 return try? await WiltedMacShowStartOffsetStore(store: store).offsets(owner: owner)
             },
+            showPlaybackSpeedsProvider: {
+                guard let owner = await offsetOwnerProvider() else { return nil }
+                return try? await WiltedMacShowPlaybackSpeedStore(store: store).speeds(owner: owner)
+            },
             // The sync round reads intents once for everything; the publisher does not read them again.
             relaysIntents: false,
             publicationStore: account == nil ? nil : .store(store), deviceID: deviceID,
@@ -244,8 +289,15 @@ extension WiltedMacModel {
             headlineProjectionProvider: { [weak self] in
                 guard let self else { return nil }
                 return try? self.headlineCatalogStore.projection(at: Date())
+            },
+            notebookAcknowledged: { entry, version, owner in
+                guard let scope = try? NotebookLocalScope(ownerToken: owner, deviceID: deviceID) else { return }
+                _ = try? await store.acknowledgeNotebookEntry(entry, version: version, in: scope)
             }
         )
+        applier.setNotebookAuthorityProvider { entryID in
+            try await publisher.notebookWriteAuthority(for: entryID)
+        }
         let controller = WiltedMacLibrarySyncController(
             model: self, publisher: publisher, sink: sink, debounce: debounce
         )

@@ -304,9 +304,10 @@ final class WiltedMacDeviceLinkTests: XCTestCase {
         }
         let rows = WiltedMacLibrarySyncStatus.deviceRows([
             WiltedMacLinkedDevice(deviceID: "a", kind: "iPad", isLinked: true,
-                                  inFlight: [status("1", .sending), status("2", .received), status("3", .received)]),
-            WiltedMacLinkedDevice(deviceID: "b", kind: "iPad", isLinked: false, inFlight: []),
-            WiltedMacLinkedDevice(deviceID: "c", kind: "iPhone", isLinked: true, inFlight: []),
+                                  inFlight: [status("1", .sending), status("2", .received), status("3", .received)],
+                                  lastAnnouncedAt: start),
+            WiltedMacLinkedDevice(deviceID: "b", kind: "iPad", isLinked: false, inFlight: [], lastAnnouncedAt: start),
+            WiltedMacLinkedDevice(deviceID: "c", kind: "iPhone", isLinked: true, inFlight: [], lastAnnouncedAt: start),
         ])
         XCTAssertEqual(rows.map(\.label), ["iPad 1", "iPad 2", "iPhone"])
         XCTAssertEqual(rows.map(\.value), ["Linked · sending 1 episode, 2 episodes queued", "Linking…", "Linked"])
@@ -364,19 +365,23 @@ final class WiltedMacDeviceLinkTests: XCTestCase {
         let sending = LibraryMediaRequestStatus(intentID: "r-row", entryID: item, stage: .sending, updatedAt: start)
         let rows = WiltedMacLibrarySyncStatus.deviceRows([
             WiltedMacLinkedDevice(deviceID: "phone", kind: "iPhone", isLinked: true,
-                                  inFlight: [sending], isDirectDownloadsStopped: true),
+                                  inFlight: [sending], isDirectDownloadsStopped: true, lastAnnouncedAt: start),
             WiltedMacLinkedDevice(deviceID: "other", kind: nil, isLinked: false, inFlight: []),
         ])
 
-        XCTAssertEqual(rows.map(\.label), ["iPhone", "Linked device"])
-        XCTAssertEqual(rows.map(\.value), ["Linked · sending 1 episode", "Linking…"])
-        XCTAssertEqual(rows.map(\.isDirectDownloadsStopped), [true, false])
+        XCTAssertEqual(rows.map(\.label), ["iPhone"])
+        XCTAssertEqual(rows.map(\.value), ["Linked · sending 1 episode"])
+        XCTAssertEqual(rows.map(\.isDirectDownloadsStopped), [true])
+        XCTAssertEqual(WiltedMacLibrarySyncStatus.earlierSyncActivityRows([
+            WiltedMacLinkedDevice(deviceID: "other", kind: nil, isLinked: false, inFlight: [])
+        ]).count, 1)
     }
 
     /// A Mac linked only to an iPad names the iPad, and its copy about devices in general names no phone.
     func testAMacLinkedToAnIPadNamesTheIPadAndItsGeneralCopyNamesNoPhone() {
         let rows = WiltedMacLibrarySyncStatus.deviceRows([
-            WiltedMacLinkedDevice(deviceID: "a", kind: "iPad", isLinked: true, inFlight: []),
+            WiltedMacLinkedDevice(deviceID: "a", kind: "iPad", isLinked: true, inFlight: [],
+                                  lastAnnouncedAt: Date(timeIntervalSince1970: 2000)),
         ])
         XCTAssertEqual(rows.map(\.label), ["iPad"])
         XCTAssertEqual(rows.map(\.value), ["Linked"])

@@ -135,6 +135,17 @@ struct WiltedMacAdFindingSettingsView: View {
                 board.refreshAdPreferences()
             }
         }
+        .task {
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(60))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                model.refreshRequestCount()
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-ad-finding-controls")
     }
@@ -207,7 +218,7 @@ struct WiltedMacAdFindingSettingsView: View {
 
     private var help: WiltedMacHelpContent {
         WiltedMacHelpContent(title: "Ad finding", text:
-            "Choose a service to check episodes for ads. Choose which podcasts to check in Show settings.")
+            "The selected online service checks transcripts for ad breaks during preparation. Choose which podcasts to send in Show settings; the summary below lists the current choices.")
     }
 }
 

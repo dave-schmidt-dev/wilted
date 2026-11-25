@@ -157,6 +157,8 @@ for package in WiltedKit Producer CloudSync Playback; do
   mkdir -p "$recorder_repo/$package/Sources" "$recorder_repo/$package/Tests"
   : >"$recorder_repo/$package/Package.swift"
 done
+mkdir -p "$recorder_repo/Producer/Runtime/src/wilted"
+printf '%s\n' '"""Recorder fixture module."""' >"$recorder_repo/Producer/Runtime/src/wilted/article_voice.py"
 : >"$recorder_repo/project.yml"
 git -C "$recorder_repo" init -q
 cp "$repo_root/scripts/record-ios-snapshots.sh" "$recorder_repo/scripts/record-ios-snapshots.sh"

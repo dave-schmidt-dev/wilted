@@ -155,6 +155,31 @@ final class LibraryPlayerTests: XCTestCase {
         XCTAssertEqual(rig.engine.loads, [item.fileURL])
     }
 
+    func testPodcastChapterNavigationKeepsTitleIdentityWhenMappedStartsCollapse() {
+        let rig = makeRig()
+        let episode = LibraryPlayer.Item(
+            entryID: item.entryID, title: "Episode One", showTitle: "Show",
+            fileURL: item.fileURL,
+            podcastChapters: [
+                PodcastChapterMark(title: "Opening", startSeconds: 0),
+                PodcastChapterMark(title: "Sponsor", startSeconds: 0),
+                PodcastChapterMark(title: "Interview", startSeconds: 0)
+            ])
+        XCTAssertTrue(rig.player.start(episode, at: 0, autoplay: false))
+        XCTAssertEqual(rig.player.currentPodcastChapterTitle, "Opening")
+
+        rig.player.selectNextPodcastChapter()
+        XCTAssertEqual(rig.player.position, 0)
+        XCTAssertEqual(rig.player.currentPodcastChapterIndex, 1)
+        XCTAssertEqual(rig.player.currentPodcastChapterTitle, "Sponsor")
+        rig.player.selectNextPodcastChapter()
+        XCTAssertEqual(rig.player.currentPodcastChapterIndex, 2)
+        XCTAssertEqual(rig.player.currentPodcastChapterTitle, "Interview")
+        rig.player.selectPreviousPodcastChapter()
+        XCTAssertEqual(rig.player.currentPodcastChapterIndex, 1)
+        XCTAssertEqual(rig.player.currentPodcastChapterTitle, "Sponsor")
+    }
+
     func testEveryListenerTransportRevokesInvalidatedNaturalCompletion() async throws {
         for command in 0..<4 {
             let rig = makeRig()

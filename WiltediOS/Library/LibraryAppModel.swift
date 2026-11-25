@@ -84,6 +84,12 @@ final class LibraryAppModel: ObservableObject {
     }
     /// Why a decision was rolled back, per entry, in words.
     @Published var decisionNotices: [ItemID: String] = [:]
+    /// Typed conflicts returned by the Mac for conditional New episode choices.
+    @Published var newEpisodeConflictStates: [ItemID: LibraryNewEpisodeCurrentState] = [:]
+    /// Dismissible, owner-session results remain visible after a row leaves the New projection.
+    @Published var newEpisodeConflictNotices: [ItemID: LibraryNewEpisodeConflictNotice] = [:]
+    /// Capability-read or send guidance shown in the New episodes section.
+    @Published var newEpisodeNotice: String?
     /// Adds sent to the Mac (a podcast to follow, an article to add) and not yet cleared; written by
     /// `LibraryAppModel+Add`. Kept apart from `decisions`: an add names an item the Mac does not hold yet.
     /// Unsent ones are saved in the outbox.
@@ -99,6 +105,8 @@ final class LibraryAppModel: ObservableObject {
     @Published var adFeedbackAcknowledgement: LibraryAdFeedbackAcknowledgement?
     /// The Mac-authored headline projection and this phone's durable Save/mute commands.
     let headlinePhoneState: LibraryHeadlinePhoneState
+    /// This phone's durable, account-scoped Notebook catalog and pending writes.
+    let notebookPhoneState: LibraryNotebookPhoneState
     /// Why the last add was not sent, in words; nil when it was.
     @Published var addNotice: String?
     /// The add actions the Mac says it applies (`supportedIntentActions`); nil until read.
@@ -117,6 +125,17 @@ final class LibraryAppModel: ObservableObject {
     var showStartOffsetRestoredOwner: String?
     /// Per-feed sends reserved before transport suspension, to reject concurrent edits and retries.
     var showStartOffsetSendsInFlight: Set<String> = []
+    /// Mac-authoritative per-show rates and their durable phone-side edits.
+    @Published var showPlaybackSpeeds: [String: LibraryShowPlaybackSpeed] = [:]
+    @Published var showPlaybackSpeedCommands: [String: LibraryShowPlaybackSpeedOutbox.Command] = [:]
+    @Published var showPlaybackSpeedNotices: [String: String] = [:]
+    @Published var macSupportsShowPlaybackSpeeds: Bool?
+    let showPlaybackSpeedOutbox: LibraryShowPlaybackSpeedOutbox
+    var showPlaybackSpeedOutboxWritable = true
+    var showPlaybackSpeedOwnerVerified = false
+    var showPlaybackSpeedOwnerToken: String?
+    var showPlaybackSpeedRestoredOwner: String?
+    var showPlaybackSpeedSendsInFlight: Set<String> = []
     /// What is typed in the Add sheet, kept so closing the sheet does not lose it.
     @Published var addDraft = ""
 
@@ -268,9 +287,11 @@ final class LibraryAppModel: ObservableObject {
         ownPositionsURL: URL? = nil,
         outboxURL: URL? = nil,
         showStartOffsetOutboxURL: URL? = nil,
+        showPlaybackSpeedOutboxURL: URL? = nil,
         listenNextURL: URL? = nil,
         finishedHereURL: URL? = nil,
         headlineStateURL: URL? = nil,
+        notebookOutboxURL: URL? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         timeZone: TimeZone = .current,
         throttleSleep: @escaping @Sendable (TimeInterval) async throws -> Void = { try await Task.sleep(for: .seconds($0)) },
@@ -296,11 +317,15 @@ final class LibraryAppModel: ObservableObject {
             transport: throttledTransport, deviceID: deviceID, clock: now, sleep: handoffTiming.settleSleep)
         self.preferences = preferences
         self.headlinePhoneState = LibraryHeadlinePhoneState(url: headlineStateURL)
+        self.notebookPhoneState = LibraryNotebookPhoneState(url: notebookOutboxURL)
         handoffState.ownPositionStore = LibraryOwnPositionStore(url: ownPositionsURL)
         self.outboxState = LibraryOutboxState(outbox: LibraryIntentOutbox(url: outboxURL))
         let resolvedOffsetOutboxURL = showStartOffsetOutboxURL
             ?? outboxURL?.deletingLastPathComponent().appendingPathComponent("show-start-offset-outbox.json")
         self.showStartOffsetOutbox = LibraryShowStartOffsetOutbox(url: resolvedOffsetOutboxURL)
+        let resolvedSpeedOutboxURL = showPlaybackSpeedOutboxURL
+            ?? outboxURL?.deletingLastPathComponent().appendingPathComponent("show-playback-speed-outbox.json")
+        self.showPlaybackSpeedOutbox = LibraryShowPlaybackSpeedOutbox(url: resolvedSpeedOutboxURL)
         let storyOutboxURL = listenNextURL ?? outboxURL?.deletingLastPathComponent()
             .appendingPathComponent("pending-listen-next-v1.json")
         self.listenNextState = LibraryListenNextPhoneState(outbox: LibraryListenNextPhoneOutbox(url: storyOutboxURL))
@@ -317,6 +342,7 @@ final class LibraryAppModel: ObservableObject {
         relay.model = self
         restoreOutbox()
         restoreShowStartOffsetOutbox()
+        restoreShowPlaybackSpeedOutbox()
         restoreListenNextOutbox()
     }
 
@@ -348,15 +374,21 @@ final class LibraryAppModel: ObservableObject {
         verifyOutboxOwner(saved.ownerToken)
         verifyListenNextOutboxOwner(saved.ownerToken)
         verifyShowStartOffsetOwner(saved.ownerToken)
+        verifyShowPlaybackSpeedOwner(saved.ownerToken)
         restoreDeviceLink(owner: saved.ownerToken)
         applyStoreMetadata(saved)
+        let generation = await transport.operationGeneration()
         headlinePhoneState.bindLocalOwner(
             saved.ownerToken,
-            generation: await transport.operationGeneration(),
+            generation: generation,
+            reviewHold: saved.reviewHold || accountQuarantined)
+        notebookPhoneState.bind(
+            ownerToken: saved.ownerToken, deviceID: deviceID, generation: generation,
             reviewHold: saved.reviewHold || accountQuarantined)
         _ = await bindMediaOwner()
         displayContext = (await transport.operationGeneration(), saved.displayAdmissionRevision)
         let content = saved.content
+        notebookPhoneState.mergeRemote(content.notebookEntries, versions: saved.versions, generation: generation)
         entryDurations = content.entries.compactMapValues(\.durationSeconds)
         decisionContent = content
         pruneFinishedHere()
@@ -427,7 +459,9 @@ final class LibraryAppModel: ObservableObject {
         reconciler = LibraryReconciler(transport: transport, store: fresh)
         accountQuarantined = false
         discardListenNextAfterAccountChange()
-        headlinePhoneState.reset(for: nil, generation: await transport.operationGeneration())
+        let generation = await transport.operationGeneration()
+        headlinePhoneState.reset(for: nil, generation: generation)
+        notebookPhoneState.bind(ownerToken: nil, deviceID: deviceID, generation: generation, reviewHold: false)
         queued = []
         readyOffers = []
         cachedDisplayIDs = []
@@ -442,6 +476,7 @@ final class LibraryAppModel: ObservableObject {
         discardAddsAfterAccountChange()
         discardAdFeedbackAfterAccountChange()
         discardShowStartOffsetsAfterAccountChange()
+        discardShowPlaybackSpeedsAfterAccountChange()
         await discardMediaAfterAccountChange()
         discardDeviceLinkAfterAccountChange()
         await refresh()
@@ -494,7 +529,8 @@ final class LibraryAppModel: ObservableObject {
         if plan.readsOffers { options.insert(.offers) }
         if plan.forcesOffers { options.insert(.forceOffers) }
         let headlineNeedsOutcome = headlinePhoneState.commands.contains { $0.delivery == .pending || $0.delivery == .sent }
-        if !decisions.isEmpty || hasAddAwaitingAnswer || headlineNeedsOutcome || !showStartOffsetCommands.isEmpty { options.insert(.outcomes) }
+        if !decisions.isEmpty || hasAddAwaitingAnswer || headlineNeedsOutcome
+            || !showStartOffsetCommands.isEmpty || !showPlaybackSpeedCommands.isEmpty { options.insert(.outcomes) }
         let beforePoll = await roundStore.state()
         guard await current() else { return }
         await tellTransportKnownPeers(writer: beforePoll.ownerToken == nil ? nil : beforePoll.observedPublication?.writerDeviceID)
@@ -535,10 +571,16 @@ final class LibraryAppModel: ObservableObject {
             await refreshShowStartOffsetStats(
                 owner: owner, generation: generation, storeIdentity: ObjectIdentifier(roundStore as AnyObject))
             guard await current() else { return }
+            await refreshShowPlaybackSpeedStats(
+                owner: owner, generation: generation, storeIdentity: ObjectIdentifier(roundStore as AnyObject))
+            guard await current() else { return }
         }
         headlinePhoneState.bindLocalOwner(
             saved.ownerToken,
             generation: generation,
+            reviewHold: saved.reviewHold || accountQuarantined)
+        notebookPhoneState.bind(
+            ownerToken: saved.ownerToken, deviceID: deviceID, generation: generation,
             reviewHold: saved.reviewHold || accountQuarantined)
         if let context = await bindMediaOwner() {
             guard await revokeRemovedQueueMedia(previous: priorQueue, current: Set(saved.content.queue.map(\.entryID)), content: saved.content, context: context) else { return }
@@ -546,6 +588,7 @@ final class LibraryAppModel: ObservableObject {
         displayContext = (generation, saved.displayAdmissionRevision)
         entryDurations = saved.content.entries.compactMapValues(\.durationSeconds)
         decisionContent = saved.content
+        notebookPhoneState.mergeRemote(saved.content.notebookEntries, versions: saved.versions, generation: generation)
         pruneFinishedHere()
         if let records = polled?.records {
             checkpoints = Self.checkpoints(from: records, excluding: deviceID)
@@ -565,11 +608,15 @@ final class LibraryAppModel: ObservableObject {
         await resolveDecisions(outcomes: polled?.outcomes ?? [])
         await resolveAdds(outcomes: polled?.outcomes ?? [])
         resolveShowStartOffsetOutcomes(polled?.outcomes ?? [])
+        resolveShowPlaybackSpeedOutcomes(polled?.outcomes ?? [])
         await sendDueShowStartOffsetCommands()
+        await sendDueShowPlaybackSpeedCommands()
         await reconcileHeadlineProjection(
             outcomes: polled?.outcomes ?? [], expectedOwner: saved.ownerToken,
             generation: generation, isCurrent: { await current() })
         await sendPendingHeadlineCommands()
+        await reconcileNotebookCommands(outcomes: polled?.outcomes ?? [], expectedOwner: saved.ownerToken, generation: generation)
+        await sendPendingNotebookCommands()
         await sendDueAdFeedback()
         guard await current() else { return }
         if let failure {
@@ -583,6 +630,7 @@ final class LibraryAppModel: ObservableObject {
     private func applyStoreMetadata(_ saved: LibraryStoreState) {
         outboxOwnerChanged(saved.ownerToken)
         verifyShowStartOffsetOwner(saved.ownerToken)
+        verifyShowPlaybackSpeedOwner(saved.ownerToken)
         finishedHereOwnerSeen(saved.ownerToken)
         accountQuarantined = accountQuarantined || saved.reviewHold
         cachedDisplayIDs = saved.displayPreparedIDs ?? []

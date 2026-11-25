@@ -1,16 +1,29 @@
 import AppKit
 import SwiftUI
 import XCTest
+import WiltedDomain
+import WiltedLibrary
 @testable import WiltedMac
 
 @MainActor
 final class WiltedMacSettingsSectionTests: XCTestCase {
-    func testPhoneAndGenericDeviceEachExposeAMenuButton() throws {
-        let rows = WiltedMacLibrarySyncStatus.deviceRows([
-            .init(deviceID: "fixture-a", kind: "iPhone", isLinked: true, inFlight: []),
-            .init(deviceID: "fixture-b", kind: nil, isLinked: false, inFlight: [])
-        ])
-        XCTAssertEqual(rows.map(\.id), ["fixture-a", "fixture-b"])
+    func testCurrentAndHistoricalDeviceRowsKeepTheirOptionsMenus() throws {
+        let announcedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let entry = try ItemID(rawValue: "fixture-episode")
+        let request = LibraryMediaRequestStatus(
+            intentID: "fixture-request", entryID: entry, stage: .received, updatedAt: announcedAt)
+        let devices = [
+            WiltedMacLinkedDevice(deviceID: "fixture-a", kind: "iPhone", isLinked: true,
+                                  inFlight: [], lastAnnouncedAt: announcedAt),
+            WiltedMacLinkedDevice(deviceID: "fixture-b", kind: "iPad", isLinked: false,
+                                  inFlight: [], lastAnnouncedAt: announcedAt),
+            WiltedMacLinkedDevice(deviceID: "fixture-active", kind: nil, isLinked: false, inFlight: [request]),
+            WiltedMacLinkedDevice(deviceID: "fixture-history", kind: nil, isLinked: false, inFlight: [])
+        ]
+        let rows = WiltedMacLibrarySyncStatus.deviceRows(devices)
+            + WiltedMacLibrarySyncStatus.unidentifiedRequestRows(devices)
+            + WiltedMacLibrarySyncStatus.earlierSyncActivityRows(devices)
+        XCTAssertEqual(rows.map(\.id), ["fixture-a", "fixture-b", "fixture-active", "fixture-history"])
 
         for row in rows {
             let view = WiltedMacDeviceDownloadsRow(row: row, macEnabled: true, onStop: {})

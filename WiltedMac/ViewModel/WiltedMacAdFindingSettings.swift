@@ -33,6 +33,7 @@ final class WiltedMacAdFindingSettings {
     var hasKey: Bool { keyStore.hasKey() }
     private(set) var isOnlineFindingOn: Bool
     private var providerPauseRevision = 0
+    private var requestCountRevision = 0
 
     /// The global confirmation sheet and the eligible feed IDs it previews.
     private(set) var isConfirming = false
@@ -131,8 +132,16 @@ final class WiltedMacAdFindingSettings {
     // MARK: Requests
 
     /// Requests sent to the provider today, and the daily cap.
-    var requestsToday: Int { LabellerRequestCounter(preferences: preferences, now: now).count }
+    var requestsToday: Int {
+        _ = requestCountRevision
+        return LabellerRequestCounter(preferences: preferences, now: now).count
+    }
     var dailyCap: Int { LabellerRequestCounter(preferences: preferences, now: now).cap }
+
+    /// Invalidates the displayed count after a request starts or the local day changes.
+    func refreshRequestCount() {
+        requestCountRevision &+= 1
+    }
 
     /// Listener-facing paused sentence while `providerPausedSince` is stored; nil once cleared.
     var providerPausedSentence: String? {

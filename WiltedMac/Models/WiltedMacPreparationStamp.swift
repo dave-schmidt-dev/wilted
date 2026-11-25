@@ -23,6 +23,10 @@ struct WiltedMacPreparationStamp: Equatable, Hashable, Sendable {
     /// Mac-only note that the episode is not yet playable on iPhone.
     let phoneNote: String?
     let prepared: String?
+    /// Recorded ad and pause time saved by the run behind the ready revision.
+    let timeSavedSummary: String?
+    /// Revision identity used to keep the player line tied to its loaded audio.
+    let preparedRevisionID: String?
     /// When the ready run stopped the labelled path (`ads.label.stop`).
     let stoppedAdCheck: String?
     let passagesLeftIn: [String]
@@ -41,10 +45,17 @@ struct WiltedMacPreparationStamp: Equatable, Hashable, Sendable {
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 
+    func timeSavedSummary(for loadedRevisionID: String?) -> String? {
+        guard loadedRevisionID == preparedRevisionID else { return nil }
+        return timeSavedSummary
+    }
+
     init(
         labellingWait: String? = nil,
         phoneNote: String? = nil,
         prepared: String?,
+        timeSavedSummary: String? = nil,
+        preparedRevisionID: String? = nil,
         stoppedAdCheck: String? = nil,
         passagesLeftIn: [String] = [],
         earlierAdFindingSetting: String? = nil,
@@ -54,6 +65,8 @@ struct WiltedMacPreparationStamp: Equatable, Hashable, Sendable {
         self.labellingWait = labellingWait
         self.phoneNote = phoneNote
         self.prepared = prepared
+        self.timeSavedSummary = timeSavedSummary
+        self.preparedRevisionID = preparedRevisionID
         self.stoppedAdCheck = stoppedAdCheck
         self.passagesLeftIn = passagesLeftIn
         self.earlierAdFindingSetting = earlierAdFindingSetting
@@ -101,6 +114,7 @@ struct WiltedMacPreparationStamp: Equatable, Hashable, Sendable {
         }
 
         var prepared: String?
+        let timeSavedSummary = preparedRun.flatMap(Self.timeSavedSummary(from:))
         if let outcome, let preparedRun {
             prepared = Self.preparedLine(run: preparedRun, fallbackEngineVersion: outcome.semanticVersion)
         }
@@ -135,10 +149,51 @@ struct WiltedMacPreparationStamp: Equatable, Hashable, Sendable {
                 || lastFailure != nil || failureDetail != nil else { return nil }
         return WiltedMacPreparationStamp(
             labellingWait: waitingSentence, phoneNote: phoneNote,
-            prepared: prepared, stoppedAdCheck: stoppedAdCheck,
+            prepared: prepared, timeSavedSummary: timeSavedSummary,
+            preparedRevisionID: preparedRun == nil ? nil : readyRevisionID?.rawValue,
+            stoppedAdCheck: stoppedAdCheck,
             passagesLeftIn: preparedRun.map(Self.passagesKept) ?? [],
             earlierAdFindingSetting: earlierAdFindingSetting,
             lastFailure: lastFailure, failureDetail: failureDetail)
+    }
+
+    private static func timeSavedSummary(from run: PreparationRunSummary) -> String? {
+        guard let evidence = run.entries.last(where: {
+            $0.status.evidence?.kind == "worker-result"
+        })?.status.evidence,
+        let adRaw = evidence.fields["removedSeconds"],
+        let ads = Double(adRaw), ads.isFinite, ads >= 0, ads <= 7 * 24 * 60 * 60 else { return nil }
+
+        let pauses: Double
+        if let pauseRaw = evidence.fields["silenceRemovedSeconds"] {
+            guard let parsed = Double(pauseRaw), parsed.isFinite, parsed >= 0,
+                  parsed <= 7 * 24 * 60 * 60 else { return nil }
+            pauses = parsed
+        } else {
+            pauses = 0
+        }
+        let total = ads + pauses
+        guard total.isFinite, total > 0, total <= 7 * 24 * 60 * 60 else { return nil }
+
+        var parts: [String] = []
+        if ads > 0 { parts.append("\(savedTimeComponent(ads)) of ads") }
+        if pauses > 0 { parts.append("\(savedTimeComponent(pauses)) of pauses") }
+        return "Saved \(savedTimeQuantity(total)): " + parts.joined(separator: ", ")
+    }
+
+    private static func savedTimeComponent(_ seconds: Double) -> String {
+        let rounded = max(1, Int(seconds.rounded()))
+        if rounded >= 60, rounded % 60 == 0 { return String(rounded / 60) }
+        return savedTimeQuantity(Double(rounded))
+    }
+
+    private static func savedTimeQuantity(_ seconds: Double) -> String {
+        let rounded = max(1, Int(seconds.rounded()))
+        let minutes = rounded / 60
+        let remainder = rounded % 60
+        if minutes == 0 { return "\(remainder) sec" }
+        if remainder == 0 { return "\(minutes) min" }
+        return "\(minutes) min \(remainder) sec"
     }
 
     nonisolated static func preparedRun(

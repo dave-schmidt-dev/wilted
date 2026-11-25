@@ -76,6 +76,9 @@ extension LibraryAppModel {
                 } ?? "",
                 fileURL: cached.url, artworkURL: LibraryRowBuilder.artworkURL(entry?.artworkRef),
                 chapters: entry.map(LibraryRowBuilder.chapters) ?? [],
+                podcastChapters: decisionContent.entries[entryID].map {
+                    LibraryRowBuilder.podcastChapters($0, revisionID: cached.revisionID)
+                } ?? [],
                 feedbackRevisionID: entry?.kind == .podcastEpisode ? cached.revisionID : nil)
             let forwardSequence = manualForwardSuffix(from: entryID)
             guard commandState.token == token else { return }
@@ -83,8 +86,7 @@ extension LibraryAppModel {
             // Loading applies phone defaults; the winning Mac rate belongs to this continuation.
             journal?.note("start-request kind=continue-from-mac entry=\(entryID.rawValue)")
             player.pendingPositionSource = (entryID, "other-device")
-            if player.start(item, at: position, autoplay: false) {
-                player.setRate(rate)
+            if player.start(item, at: position, autoplay: false, startingRate: rate) {
                 if player.playAdmitted() { handoffState.forwardSequenceIDs = forwardSequence }
             }
         case let .refused(_, reason, _):

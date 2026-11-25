@@ -157,6 +157,31 @@ final class LibraryPlayerHostedTests: XCTestCase {
         scrubber.increment()
         XCTAssertNotNil(scrubber)
     }
+
+    func testPodcastChapterBarShowsCurrentTitleAndLeavesChapterlessPlayerUnchanged() throws {
+        let player = fixture.makePlayer()
+        let item = LibraryPlayer.Item(
+            entryID: fixture.id("chapters"), title: "Episode", showTitle: "The Show",
+            fileURL: scratch.appendingPathComponent("chapters.m4a"),
+            podcastChapters: [
+                PodcastChapterMark(title: "Opening", startSeconds: 0),
+                PodcastChapterMark(title: "Sponsor", startSeconds: 0),
+                PodcastChapterMark(title: "Interview", startSeconds: 10)
+            ])
+        XCTAssertTrue(player.start(item, at: 0, autoplay: false))
+
+        let hosted = HostedView(LibraryPlayerView(player: player, onClose: {}))
+        XCTAssertEqual(hosted.element("wilted-player-chapter-title")?.label, "Opening")
+        XCTAssertEqual(hosted.element("wilted-player-chapter-position")?.label, "Chapter 1 of 3")
+        XCTAssertTrue(try XCTUnwrap(hosted.element("wilted-player-chapter-list")).isButton)
+        player.selectNextPodcastChapter()
+        hosted.settle()
+        XCTAssertEqual(hosted.element("wilted-player-chapter-title")?.label, "Sponsor")
+
+        let (plainPlayer, _) = started("chapterless", artwork: nil)
+        let chapterless = HostedView(LibraryPlayerView(player: plainPlayer, onClose: {}))
+        XCTAssertNil(chapterless.element("wilted-player-chapters"))
+    }
 }
 
 private final class ManualCounter: @unchecked Sendable {

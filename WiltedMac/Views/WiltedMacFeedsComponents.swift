@@ -33,6 +33,7 @@ struct WiltedMacFeedsSelectionControl: NSViewRepresentable {
 struct WiltedMacFeedsEpisodeRow: View {
     @Bindable var model: WiltedMacModel
     let episode: WiltedMacEpisode
+    var labels: [WiltedMacEpisodeLabel] = []
     let isSelected: Bool
     var isWaitingForSpace = false
     var position: Int? = nil
@@ -67,6 +68,14 @@ struct WiltedMacFeedsEpisodeRow: View {
                     lifecycleLabel: episode.lifecyclePresentation.primaryLabel,
                     identifier: "wilted-feeds-metadata-\(episode.id)"
                 )
+                ForEach(labels.indices, id: \.self) { index in
+                    let label = labels[index]
+                    Text("\(label.kind.rawValue) · \(label.reason)")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("wilted-feeds-label-\(label.kind.rawValue.lowercased().replacingOccurrences(of: " ", with: "-"))-\(episode.id)")
+                }
                 if let earlier = episode.possibleDuplicateOf {
                     WiltedMacPossibleDuplicateNotice(model: model, episode: episode, earlierTitle: earlier)
                 }
@@ -457,15 +466,16 @@ struct WiltedMacFeedCapacityLabel: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @ViewBuilder var body: some View {
-        if let label {
-            Text(label).wiltedFont(.utility)
+        if let renderedLabel {
+            Text(renderedLabel).wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel(renderedLabel)
                 .accessibilityIdentifier("wilted-podcast-feed-count-\(subscription.id)")
         }
     }
 
-    private var label: String? {
+    var renderedLabel: String? {
         if board.loadFailureMessage != nil { return "Settings unavailable" }
         guard board.isLoaded(subscription.id) else { return nil }
         let kept = board.keptCount(forFeed: subscription.id)

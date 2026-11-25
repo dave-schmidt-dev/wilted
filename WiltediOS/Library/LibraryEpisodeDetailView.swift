@@ -93,6 +93,7 @@ struct LibraryEpisodeDetailView: View {
     var onPlay: ((LibraryRow) -> Void)?
     /// When given, the transcript follows this player while the episode is its loaded item.
     var player: LibraryPlayer?
+    var defaultSpeed: Double = 1.25
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -181,6 +182,16 @@ struct LibraryEpisodeDetailView: View {
                     .foregroundStyle(WiltedStatusTone.caution.color(colorScheme))
             }
             LibraryCheckpointLine(row: row, player: player, deviceKind: model.deviceKind, identifier: "wilted-library-detail-checkpoint")
+            if row.kind == .podcastEpisode, let showID = row.showID,
+               let source = model.decisionContent.sources[showID], source.kind == .podcastFeed {
+                NavigationLink {
+                    LibraryShowSettingsView(model: model, source: source, defaultSpeed: defaultSpeed)
+                } label: {
+                    Label("Show settings", systemImage: "slider.horizontal.3")
+                        .frame(maxWidth: .infinity, minHeight: WiltedTheme.Spacing.minimumTouchTarget, alignment: .leading)
+                }
+                .accessibilityIdentifier("wilted-library-detail-show-settings")
+            }
         }
     }
 

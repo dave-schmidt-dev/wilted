@@ -58,6 +58,10 @@ public struct LibraryStoreState: Sendable, Equatable {
     /// Queues a local mutation and applies it to the mirrored content optimistically.
     public mutating func enqueue(_ change: LibraryChange) {
         let key = change.key
+        if case let .notebookEntry(entry) = change,
+           content.notebookEntries[entry.id]?.isDeleted == true, !entry.isDeleted {
+            return
+        }
         let queued = PendingLibraryChange(localSeq: nextLocalSeq, change: change, baseVersion: versions[key] ?? 0)
         nextLocalSeq += 1
         pending.removeAll { $0.key == key }
@@ -128,6 +132,13 @@ public struct StagedLibraryBatch: Sendable {
         self.priorState = priorState
         self.nextState = nextState
     }
+
+    /// True if the staged content attempts to revive an ID already tombstoned locally.
+    public var resurrectsNotebookTombstone: Bool {
+        priorState.content.notebookEntries.contains { id, old in
+            old.isDeleted && nextState.content.notebookEntries[id]?.isDeleted == false
+        }
+    }
 }
 
 /// Local persistence contract for a library replica.
@@ -194,6 +205,7 @@ public actor InMemoryLibraryStore: LibraryStore {
             commitFailure = nil
             throw failure
         }
+        guard !staged.resurrectsNotebookTombstone else { throw LibraryTransportError.notebookTombstoneResurrection }
         guard current.revision == staged.priorState.revision else { throw LibraryTransportError.staleStagedBatch }
         current = staged.nextState
         current.revision += 1

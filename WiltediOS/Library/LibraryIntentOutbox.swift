@@ -23,6 +23,7 @@ struct LibraryIntentOutbox: Sendable {
     struct Decision: Equatable, Sendable {
         let intent: LibraryIntent
         let baseline: EntryPlacement
+        var entryTitle: String? = nil
         let isSilent: Bool
         let retiresEpisode: Bool
         let supersededByRestore: Bool
@@ -122,6 +123,7 @@ private struct File: Codable {
         let removal: LibraryRemoval
         let isQueued: Bool
         let predecessor: ItemID?
+        let entryTitle: String?
         let isSilent: Bool
         let retiresEpisode: Bool
         let supersededByRestore: Bool
@@ -145,7 +147,8 @@ private struct File: Codable {
         ownerToken = saved.ownerToken
         decisions = saved.decisions.map {
             Decision(intent: $0.intent, removal: $0.baseline.removal, isQueued: $0.baseline.isQueued,
-                     predecessor: $0.baseline.predecessor, isSilent: $0.isSilent, retiresEpisode: $0.retiresEpisode,
+                     predecessor: $0.baseline.predecessor, entryTitle: $0.entryTitle,
+                     isSilent: $0.isSilent, retiresEpisode: $0.retiresEpisode,
                      supersededByRestore: $0.supersededByRestore)
         }
         adds = saved.adds.map { Add(intent: $0.intent, title: $0.title) }
@@ -160,7 +163,8 @@ private struct File: Codable {
                 LibraryIntentOutbox.Decision(
                     intent: $0.intent,
                     baseline: EntryPlacement(removal: $0.removal, isQueued: $0.isQueued, predecessor: $0.predecessor),
-                    isSilent: $0.isSilent, retiresEpisode: $0.retiresEpisode, supersededByRestore: $0.supersededByRestore)
+                    entryTitle: $0.entryTitle, isSilent: $0.isSilent,
+                    retiresEpisode: $0.retiresEpisode, supersededByRestore: $0.supersededByRestore)
             },
             adds: adds.map { LibraryIntentOutbox.Add(intent: $0.intent, title: $0.title) },
             acknowledgements: acknowledgements, adFeedback: adFeedback ?? [])

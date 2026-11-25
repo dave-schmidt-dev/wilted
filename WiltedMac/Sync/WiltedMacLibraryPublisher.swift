@@ -21,6 +21,13 @@ struct LibraryPublishReport: Sendable, Equatable {
     static let disabled = Self(isEnabled: false)
 }
 
+struct WiltedMacNotebookWriteAuthority: Sendable {
+    let ownerToken: String?
+    let serverVersion: UInt64
+    let hasPendingMutation: Bool
+    let serverEntry: LibraryNotebookEntry?
+}
+
 /// Exact inputs to `LibraryStateSnapshot.replicatedContent`; transient playback readout is not
 /// replicated and deliberately does not invalidate this value.
 private struct LibraryStateProjectionInputs: Sendable, Equatable {
@@ -28,12 +35,14 @@ private struct LibraryStateProjectionInputs: Sendable, Equatable {
     var episodes: [LibraryEntry]
     var queue: [ItemID]
     var listening: [ListeningRecord]
+    var notebookEntries: [LibraryNotebookEntry]
 
     init(_ state: LibraryStateSnapshot) {
         feeds = state.feeds
         episodes = state.episodes
         queue = state.queue
         listening = state.listening
+        notebookEntries = state.notebookEntries
     }
 }
 
@@ -69,12 +78,14 @@ actor WiltedMacLibraryPublisher {
     private var deliveredIntentIDs = Set<String>()
     private let statsProvider: (@Sendable () async -> LifetimeStatistics?)?
     private let showStartOffsetsProvider: (@Sendable () async -> [String: LibraryShowStartOffset]?)?
+    private let showPlaybackSpeedsProvider: (@Sendable () async -> [String: LibraryShowPlaybackSpeed]?)?
     private let relaysIntents: Bool
     private let clock: @Sendable () -> Date
     private var publishedStats: LibraryStats?
     private let publicationStore: WiltedMacLibraryPublicationStore?
     private let approvedOwner: (@Sendable () async -> String?)?
     private let headlineProjectionProvider: (@MainActor @Sendable () -> LibraryHeadlineProjection?)?
+    private let notebookAcknowledged: (@Sendable (LibraryNotebookEntry, UInt64, String?) async -> Void)?
     private var lastHeadlineProjection: LibraryHeadlineProjection?
     private var hasLoadedHeadlineProjection = false
     private let deviceID: String
@@ -107,12 +118,14 @@ actor WiltedMacLibraryPublisher {
         isEnabled: Bool = true,
         statsProvider: (@Sendable () async -> LifetimeStatistics?)? = nil,
         showStartOffsetsProvider: (@Sendable () async -> [String: LibraryShowStartOffset]?)? = nil,
+        showPlaybackSpeedsProvider: (@Sendable () async -> [String: LibraryShowPlaybackSpeed]?)? = nil,
         relaysIntents: Bool = true,
         clock: @escaping @Sendable () -> Date = { Date() },
         publicationStore: WiltedMacLibraryPublicationStore? = nil,
         deviceID: String = "mac",
         approvedOwner: (@Sendable () async -> String?)? = nil,
         headlineProjectionProvider: (@MainActor @Sendable () -> LibraryHeadlineProjection?)? = nil,
+        notebookAcknowledged: (@Sendable (LibraryNotebookEntry, UInt64, String?) async -> Void)? = nil,
         operationID: @escaping @Sendable () -> String = { UUID().uuidString }
     ) {
         self.relaysIntents = relaysIntents
@@ -122,11 +135,13 @@ actor WiltedMacLibraryPublisher {
         self.isEnabled = isEnabled
         self.statsProvider = statsProvider
         self.showStartOffsetsProvider = showStartOffsetsProvider
+        self.showPlaybackSpeedsProvider = showPlaybackSpeedsProvider
         self.clock = clock
         self.publicationStore = publicationStore
         self.deviceID = deviceID
         self.approvedOwner = approvedOwner
         self.headlineProjectionProvider = headlineProjectionProvider
+        self.notebookAcknowledged = notebookAcknowledged
         self.operationID = operationID
     }
 
@@ -184,6 +199,25 @@ actor WiltedMacLibraryPublisher {
         let value = try await transport.fetchHeadlineProjection()
         try await verify(context)
         return value
+    }
+
+    /// Uses the publisher's observed server version and refuses edits while
+    /// this Mac has a different local value waiting for acknowledgement.
+    func notebookWriteAuthority(for entryID: ItemID) async throws -> WiltedMacNotebookWriteAuthority {
+        let context = try await captureContext()
+        let baseline = try await seededBaseline(context: context)
+        let state = try await source.currentState()
+        let local = try state.replicatedContent()
+        try await verify(context)
+        let key = LibraryRecordKey(kind: .notebookEntry, id: entryID)
+        let envelopeHasPending = envelope?.pending?.remaining.contains { $0.key == key } == true
+        let localChanged = local.notebookEntries[entryID] != baseline.notebookEntries[entryID]
+        return WiltedMacNotebookWriteAuthority(
+            ownerToken: context.owner,
+            serverVersion: versions[key] ?? 0,
+            hasPendingMutation: envelopeHasPending || localChanged,
+            serverEntry: baseline.notebookEntries[entryID]
+        )
     }
 
     /// Loads only the approved owner's durable evidence; it never starts a cloud operation.
@@ -274,16 +308,23 @@ actor WiltedMacLibraryPublisher {
             changes = cachedDiff
             stateDiffReuseCount += 1
         } else {
-            changes = LibraryStateDiffer.diff(from: baseline, to: current)
+            let diff = LibraryStateDiffer.diff(from: baseline, to: current)
+            changes = diff
             cachedDiffInputs = inputs
             cachedDiffBaselineGeneration = publishedBaselineGeneration
             cachedDiff = changes
             stateDiffBuildCount += 1
         }
-        if publicationStore != nil, envelope?.pending == nil, !changes.isEmpty {
+        let newlySendableChanges = changes.filter { change in
+            guard transport.notebookCloudWriteMode != .development else { return true }
+            if case .notebookEntry = change { return false }
+            return true
+        }
+        if publicationStore != nil, envelope?.pending == nil, !newlySendableChanges.isEmpty {
             var next = envelope!
             next.pending = WiltedMacLibraryPublicationPending(
-                id: operationID(), writerDeviceID: deviceID, captured: changes, remaining: changes)
+                id: operationID(), writerDeviceID: deviceID,
+                captured: newlySendableChanges, remaining: newlySendableChanges)
             try await persist(next, context: context)
         }
         if envelope?.pending?.contentAcknowledged == true {
@@ -291,7 +332,13 @@ actor WiltedMacLibraryPublisher {
             return
         }
         var pending: [PendingLibraryChange] = []
-        for change in changes {
+        let outstandingChanges = envelope?.pending?.remaining ?? newlySendableChanges
+        let sendableChanges = outstandingChanges.filter { change in
+            guard transport.notebookCloudWriteMode != .development else { return true }
+            if case .notebookEntry = change { return false }
+            return true
+        }
+        for change in sendableChanges {
             pending.append(PendingLibraryChange(localSeq: nextLocalSeq, change: change,
                                                 baseVersion: versions[change.key] ?? 0))
             nextLocalSeq += 1
@@ -305,13 +352,21 @@ actor WiltedMacLibraryPublisher {
         let failedKeys = Set(result.failures.map(\.key))
         let accepted = result.acknowledged.filter { changesByKey[$0.key] != nil && !failedKeys.contains($0.key) }
         var next = baseline
+        var notebookAcks: [(LibraryNotebookEntry, UInt64)] = []
         for ack in accepted {
             versions[ack.key] = ack.version
-            if let change = changesByKey[ack.key] { next = next.applying(change) }
+            if let change = changesByKey[ack.key] {
+                next = next.applying(change)
+                if case let .notebookEntry(entry) = change { notebookAcks.append((entry, ack.version)) }
+            }
         }
         published = next
         if !accepted.isEmpty { publishedBaselineGeneration &+= 1 }
         report.acknowledged = accepted.count
+        for (entry, version) in notebookAcks {
+            await notebookAcknowledged?(entry, version, context.owner)
+            try await verify(context)
+        }
         for failure in result.failures {
             switch failure.disposition {
             case .conflict:
@@ -325,7 +380,7 @@ actor WiltedMacLibraryPublisher {
             let acknowledged = Set(accepted.map(\.key))
             obligation.remaining.removeAll { acknowledged.contains($0.key) }
             if obligation.remaining.isEmpty, !result.failures.isEmpty {
-                obligation.remaining = changes // An unfulfilled result cannot discard its retry obligation.
+                obligation.remaining = outstandingChanges // An unfulfilled result cannot discard its retry obligation.
             }
             obligation.contentAcknowledged = obligation.remaining.isEmpty && result.failures.isEmpty
             obligation.sentToken = result.token
@@ -397,8 +452,11 @@ actor WiltedMacLibraryPublisher {
         guard let statsProvider, let lifetime = await statsProvider() else { return }
         try await verify(context)
         var next = LibraryStats(lifetime, updatedAt: clock())
-        next.supportedIntentActions = Self.supportedIntentActions
+        next.supportedIntentActions = transport.notebookCloudWriteMode == .development
+            ? Self.supportedIntentActions
+            : Self.supportedIntentActions.filter { $0 != "setNotebookEntry" }
         next.showStartOffsets = await showStartOffsetsProvider?()
+        next.showPlaybackSpeeds = await showPlaybackSpeedsProvider?()
         try await verify(context)
         if let publishedStats {
             if publishedStats.hasSameMetrics(as: next) { return }
@@ -437,7 +495,8 @@ actor WiltedMacLibraryPublisher {
     /// The phone intents this Mac answers beyond the media and decision actions, so a phone sends
     /// only what it sees listed. `addLink` lets the Mac classify a pasted address once.
     static let supportedIntentActions = [
-        "subscribe", "addArticle", "addLink", "adFeedback", "setHeadlineSaved", "setHeadlinePublisherMuted", "setShowStartOffset"
+        "subscribe", "addArticle", "addLink", "adFeedback", "setHeadlineSaved", "setHeadlinePublisherMuted",
+        "setNotebookEntry", "setShowStartOffset", "setShowPlaybackSpeed", "decideNewEpisode"
     ]
 
     // MARK: - Intents

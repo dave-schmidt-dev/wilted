@@ -24,6 +24,7 @@ struct NowPlayingView: View {
             episode
             progress
             transport
+            notebookCapture
             options
             status
         }
@@ -149,6 +150,25 @@ struct NowPlayingView: View {
         .disabled(!model.controlsEnabled)
     }
 
+    private var notebookCapture: some View {
+        Button {
+            model.captureNotebook()
+        } label: {
+            Label {
+                Text(model.isPending(.captureNotebook) ? "Saving…" : "Save clip")
+            } icon: {
+                Image(systemName: model.isPending(.captureNotebook) ? "hourglass" : "bookmark")
+                    .accessibilityLabel(model.isPending(.captureNotebook) ? "Saving" : "Save to Notebook")
+            }
+            .font(.caption)
+            .frame(maxWidth: .infinity, minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+        }
+        .buttonStyle(.bordered)
+        .disabled(!model.canSend(.captureNotebook))
+        .accessibilityLabel("Save last 30 seconds to Notebook")
+        .accessibilityValue(model.notebookFeedback?.message ?? (model.isPending(.captureNotebook) ? "Saving" : ""))
+    }
+
     @ViewBuilder private var sleepLabel: some View {
         switch model.snapshot?.sleep ?? .off {
         case .off: Text("Sleep")
@@ -165,6 +185,11 @@ struct NowPlayingView: View {
 
     private var status: some View {
         VStack(alignment: .leading, spacing: 2) {
+            if let feedback = model.notebookFeedback {
+                Text(feedback.message)
+                    .font(.caption2)
+                    .foregroundStyle(WiltedTheme.color(feedback.isSuccess ? .success : .error, scheme: colorScheme))
+            }
             if let note = model.unreachableNote {
                 Text(note)
                     .font(.caption2)

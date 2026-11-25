@@ -91,7 +91,7 @@ extension WiltedVisualSystemTests {
     /// the Mac baselines always render the player, never the empty state.
     func testProducerCopyNamesOnlyProducerDestinations() {
         let producerDestinations = WiltedMacNavigation.allCases
-        XCTAssertEqual(producerDestinations.map(\.title), ["Larder", "Feeds", "Settings"])
+        XCTAssertEqual(producerDestinations.map(\.title), ["Larder", "Feeds", "Notebook", "Settings"])
 
         XCTAssertFalse(
             WiltedScreenCopy.nowPlayingEmptyDetailProducer.contains(WiltedScreenCopy.downloads),

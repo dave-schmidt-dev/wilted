@@ -175,7 +175,7 @@ extension WiltedVisualSystemTests {
 
     func testNativeInteractionContract() {
         XCTAssertEqual(WiltedNavigation.allCases.map(\.title), [WiltedScreenCopy.library, WiltedScreenCopy.nowPlaying, WiltedScreenCopy.downloads, WiltedScreenCopy.settings])
-        XCTAssertEqual(WiltedMacNavigation.allCases.map(\.title), ["Larder", "Feeds", "Settings"])
+        XCTAssertEqual(WiltedMacNavigation.allCases.map(\.title), ["Larder", "Feeds", "Notebook", "Settings"])
         XCTAssertFalse(WiltedMacNavigation.allCases.map(\.rawValue).contains("nowPlaying"))
         XCTAssertEqual(WiltedScreenCopy.libraryEmpty, "Your larder is empty")
         XCTAssertEqual(WiltedScreenCopy.noArticles, "No articles yet")

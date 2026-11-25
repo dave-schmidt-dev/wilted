@@ -7,12 +7,17 @@ public struct PodcastEpisodePayload: Codable, Sendable, Equatable {
     public let feedURL: URL?
     public let rssGUID: String?
     public let episodeLink: URL?
+    /// Chapters in the prepared clock, when the Mac has chapter evidence for
+    /// this exact prepared revision. Missing on legacy entries.
+    public let preparedChapters: LibraryPodcastChapters?
 
-    public init(enclosureURL: URL, feedURL: URL? = nil, rssGUID: String? = nil, episodeLink: URL? = nil) {
+    public init(enclosureURL: URL, feedURL: URL? = nil, rssGUID: String? = nil, episodeLink: URL? = nil,
+                preparedChapters: LibraryPodcastChapters? = nil) {
         self.enclosureURL = enclosureURL
         self.feedURL = feedURL
         self.rssGUID = rssGUID
         self.episodeLink = episodeLink
+        self.preparedChapters = preparedChapters
     }
 
     /// A fresh encoder with a fixed key order, so equal payloads always encode to equal bytes.

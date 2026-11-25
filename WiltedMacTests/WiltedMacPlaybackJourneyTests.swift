@@ -62,6 +62,21 @@ final class WiltedMacPlaybackJourneyTests: XCTestCase {
         // position is that position over 14 (the original journey scrubbed to 0.685 and 0.81 of the
         // duration and expected cues 67 and 79, which holds when the player reports 1370 s).
         let cues = try XCTUnwrap(model.currentTranscript).cues
+        let cueAfterFirstRemovedAd = try XCTUnwrap(cues.first { $0.startSeconds == 168 })
+        XCTAssertTrue(model.isPlaying)
+        model.togglePlayback()
+        await WiltedMacHeadless.eventually("paused before transcript seek") {
+            !model.isPlaying && model.playbackCommands.pending == nil
+        }
+        model.seekToTranscriptCue(cueAfterFirstRemovedAd)
+        await model.waitForPlaybackOperationForTesting()
+        XCTAssertEqual(cueAfterFirstRemovedAd.startSeconds, 168, "the source cue at 182 seconds follows the 168–182 cut")
+        XCTAssertEqual(model.playbackPositionSeconds, cueAfterFirstRemovedAd.startSeconds, accuracy: 0.5,
+                       "transcript cue seeks on the prepared clock after the removed ad")
+        XCTAssertFalse(model.isPlaying, "seeking from a transcript line preserves pause")
+        model.togglePlayback()
+        await WiltedMacHeadless.eventually("playing after paused seek") { model.isPlaying }
+
         var active: [Int] = []
         for fraction in [0.685, 0.81] {
             await model.seekPlaybackForTesting(to: duration * fraction)
@@ -98,6 +113,24 @@ final class WiltedMacPlaybackJourneyTests: XCTestCase {
         await WiltedMacHeadless.eventually("duration") { model.playbackDurationSeconds > 0 }
         await WiltedMacHeadless.eventually("transcript") { model.currentTranscript?.cues.isEmpty == false }
         await model.seekPlaybackForTesting(to: model.playbackDurationSeconds * 0.685)
+
+        let loadedRevision = try XCTUnwrap(model.playback?.revisionID?.rawValue)
+        model.updateEpisode(episode.id) {
+            $0.preparationStamp = WiltedMacPreparationStamp(
+                prepared: "Ready", timeSavedSummary: "Saved 7 min: 5 of ads, 2 of pauses",
+                preparedRevisionID: loadedRevision, lastFailure: nil, failureDetail: nil)
+        }
+        let larderText = try WiltedMacHeadless.recognizedText(
+            WiltedMacLarderView(model: model, paneMode: .bottom).larderRow(
+                try XCTUnwrap(model.episodes.first { $0.id == episode.id }),
+                position: 1, count: 1, showsGroupName: false),
+            size: CGSize(width: 760, height: 150)).joined(separator: " ")
+        XCTAssertTrue(larderText.contains("Saved 7 min: 5 of ads, 2 of pauses"), larderText)
+        let playerText = try WiltedMacHeadless.recognizedText(WiltedMacFullWindowPlayer(
+            model: model, presentation: .constant(.transcript), onSelect: { _ in }, onCollapse: { _ in }))
+            .joined(separator: " ")
+        XCTAssertTrue(playerText.contains("Saved 7 min: 5 of ads, 2 of pauses"), playerText)
+
 
         for section in WiltedMacPlayerSection.allCases {
             let rail = try WiltedMacHeadless.render(

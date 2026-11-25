@@ -4,7 +4,7 @@ import WiltedDomain
 /// Identity of one synchronized record. Removal state lives on the entry record,
 /// so an entry upsert and a removal change share a key.
 public struct LibraryRecordKey: Hashable, Sendable, Codable, CustomStringConvertible {
-    public enum Kind: String, Codable, Sendable { case source, entry, slot, listening }
+    public enum Kind: String, Codable, Sendable { case source, entry, slot, listening, notebookEntry }
 
     public let kind: Kind
     public let id: ItemID
@@ -26,6 +26,8 @@ public enum LibraryChange: Codable, Sendable, Equatable {
     case slot(QueueSlot)
     case slotRemoved(entryID: ItemID)
     case listening(ListeningRecord)
+    /// Full value replacement, including a durable `deletedAt` tombstone.
+    case notebookEntry(LibraryNotebookEntry)
 
     public var key: LibraryRecordKey {
         switch self {
@@ -35,6 +37,7 @@ public enum LibraryChange: Codable, Sendable, Equatable {
         case let .slot(slot): return .init(kind: .slot, id: slot.entryID)
         case let .slotRemoved(entryID): return .init(kind: .slot, id: entryID)
         case let .listening(record): return .init(kind: .listening, id: record.itemID)
+        case let .notebookEntry(entry): return .init(kind: .notebookEntry, id: entry.id)
         }
     }
 }
@@ -204,6 +207,8 @@ public enum LibraryTransportError: Error, Equatable, Sendable {
     case superseded
     /// Every pending change is held by an unresolved conflict; nothing was sent.
     case sendBlockedByConflicts(count: Int)
+    /// A notebook tombstone is permanent for its record ID; Undo must use a new ID.
+    case notebookTombstoneResurrection
     /// Only the library writer may push state, and a device writes only its own playback records.
     case ownershipViolation(String)
     case transport(String)
@@ -216,6 +221,9 @@ public protocol LibraryTransport: Sendable {
     /// True when this backend supports the isolated, Mac-owned headline catalog endpoints.
     /// Backends that do not implement these endpoints leave ordinary library sync unchanged.
     var supportsHeadlineProjection: Bool { get }
+    /// Whether this runtime may send Notebook mutations through the private CloudKit path.
+    /// Local-only is the compatibility default; Development must be opted into explicitly.
+    var notebookCloudWriteMode: NotebookCloudWriteMode { get }
     /// Generation captured by in-flight work; adapters bump it when ownership changes so
     /// stale results cannot be committed.
     func operationGeneration() async -> UInt64
@@ -299,6 +307,7 @@ public protocol LibraryTransport: Sendable {
 
 public extension LibraryTransport {
     var supportsHeadlineProjection: Bool { false }
+    var notebookCloudWriteMode: NotebookCloudWriteMode { .localOnly }
     func operationGeneration() async -> UInt64 { 0 }
     func verifiedOwnerToken() async -> String? { nil }
     func verifyOwner() async throws {}

@@ -350,6 +350,9 @@ public struct PodcastPreparationPolicySnapshot: Codable, Equatable, Sendable {
     /// Patreon pitches, events and webinars) is cut as well. Off by default:
     /// the detector otherwise keeps self-promotion as programme.
     public let removeSelfPromotion: Bool
+    /// Whether to normalize the delivered audio to podcast listening level.
+    /// Kept off unless a show opts in.
+    public let evenOutVoiceLoudness: Bool
 
     public static let defaultValue = PodcastPreparationPolicySnapshot(
         transcriptPolicy: .bestAvailable,
@@ -359,15 +362,17 @@ public struct PodcastPreparationPolicySnapshot: Codable, Equatable, Sendable {
     public init(
         transcriptPolicy: PodcastTranscriptPolicy,
         removeAds: Bool,
-        removeSelfPromotion: Bool = false
+        removeSelfPromotion: Bool = false,
+        evenOutVoiceLoudness: Bool = false
     ) {
         self.transcriptPolicy = transcriptPolicy
         self.removeAds = removeAds
         self.removeSelfPromotion = removeSelfPromotion
+        self.evenOutVoiceLoudness = evenOutVoiceLoudness
     }
 
     private enum CodingKeys: String, CodingKey {
-        case transcriptPolicy, removeAds, removeSelfPromotion
+        case transcriptPolicy, removeAds, removeSelfPromotion, evenOutVoiceLoudness
     }
 
     /// Snapshots stored before the option existed carry no key and read as off.
@@ -376,6 +381,7 @@ public struct PodcastPreparationPolicySnapshot: Codable, Equatable, Sendable {
         transcriptPolicy = try container.decode(PodcastTranscriptPolicy.self, forKey: .transcriptPolicy)
         removeAds = try container.decode(Bool.self, forKey: .removeAds)
         removeSelfPromotion = try container.decodeIfPresent(Bool.self, forKey: .removeSelfPromotion) ?? false
+        evenOutVoiceLoudness = try container.decodeIfPresent(Bool.self, forKey: .evenOutVoiceLoudness) ?? false
     }
 
     /// The key is written only when on, so every snapshot without the option
@@ -385,5 +391,6 @@ public struct PodcastPreparationPolicySnapshot: Codable, Equatable, Sendable {
         try container.encode(transcriptPolicy, forKey: .transcriptPolicy)
         try container.encode(removeAds, forKey: .removeAds)
         if removeSelfPromotion { try container.encode(true, forKey: .removeSelfPromotion) }
+        if evenOutVoiceLoudness { try container.encode(true, forKey: .evenOutVoiceLoudness) }
     }
 }

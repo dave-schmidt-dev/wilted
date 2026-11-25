@@ -118,7 +118,7 @@ extension CloudKitLibraryTransport {
                     }
                 }
             } catch {
-                let libraryTypes: Set<LibraryRecordType> = [.entry, .source, .slot, .listening]
+                let libraryTypes: Set<LibraryRecordType> = [.entry, .source, .slot, .listening, .notebookEntry]
                 if let type = LibraryRecordType(rawValue: record.recordType), libraryTypes.contains(type) {
                     fetchAcc.error = error
                     return

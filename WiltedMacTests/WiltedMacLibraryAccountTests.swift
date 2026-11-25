@@ -7,6 +7,19 @@ import XCTest
 @testable import WiltedMac
 
 /// Holds a transport call after the server answered and before the caller sees the result.
+private struct NotebookModeLibraryTransport: LibraryTransport {
+    let notebookCloudWriteMode: NotebookCloudWriteMode
+
+    func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
+        LibraryChangeBatch(generationID: "empty", changes: [], token: token)
+    }
+    func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult { LibraryPushResult() }
+    func send(intent: LibraryIntent) async throws {}
+    func listIntents() async throws -> [LibraryIntent] { [] }
+    func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws {}
+    func fetchDeviceRecords() async throws -> LibraryDeviceRecords { LibraryDeviceRecords() }
+}
+
 private actor HeldCall {
     private var arrived = false
     private var released = false
@@ -70,6 +83,17 @@ final class WiltedMacLibraryAccountTests: XCTestCase {
         XCTAssertEqual(seen, value)
         XCTAssertEqual(batch.observedPublication, value)
         XCTAssertEqual(batch.provenance?.ownerToken, "owner")
+    }
+
+    func testAccountGateForwardsNotebookWriteModeWithoutWideningIt() {
+        let gate = WiltedMacLibraryAccountGate(open: true)
+        let development = WiltedMacAccountGatedLibraryTransport(
+            inner: NotebookModeLibraryTransport(notebookCloudWriteMode: .development), gate: gate)
+        let localOnly = WiltedMacAccountGatedLibraryTransport(
+            inner: NotebookModeLibraryTransport(notebookCloudWriteMode: .localOnly), gate: gate)
+
+        XCTAssertEqual(development.notebookCloudWriteMode, .development)
+        XCTAssertEqual(localOnly.notebookCloudWriteMode, .localOnly)
     }
 
     func testReceiptReadSuspendedAcrossCloseReopenIsSuperseded() async throws {

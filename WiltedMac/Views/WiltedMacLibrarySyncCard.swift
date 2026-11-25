@@ -7,6 +7,7 @@ struct WiltedMacLibrarySyncCard: View {
     let model: WiltedMacModel
     @Environment(\.colorScheme) private var colorScheme
     @State private var isReviewing = false
+    @State private var showsEarlierSyncActivity = false
 
     var body: some View {
         let status = model.librarySyncStatus
@@ -40,14 +41,44 @@ struct WiltedMacLibrarySyncCard: View {
             ))
             .wiltedFont(.utility)
             .accessibilityIdentifier("wilted-sync-direct-downloads-toggle")
-            // Each iPhone and iPad this Mac links as soon as it syncs, and the requests it is answering.
+            Text("Lets linked phones download prepared audio from this Mac on your local network; iCloud remains the fallback.")
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("wilted-sync-direct-downloads-explanation")
+            // Only directory-announced devices receive a live link status in this list.
             ForEach(WiltedMacLibrarySyncStatus.deviceRows(activity.devices)) { row in
+                deviceDownloadsRow(row)
+            }
+            let unidentifiedRequests = WiltedMacLibrarySyncStatus.unidentifiedRequestRows(activity.devices)
+            if !unidentifiedRequests.isEmpty {
+                ForEach(unidentifiedRequests) { row in
+                    deviceDownloadsRow(row)
+                }
+                Text("These requests have no matching device announcement, so their device types and link statuses cannot be confirmed.")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("wilted-sync-unidentified-request-explanation")
+            }
+            let earlierActivityRows = WiltedMacLibrarySyncStatus.earlierSyncActivityRows(activity.devices)
+            if !earlierActivityRows.isEmpty {
                 Divider()
-                WiltedMacDeviceDownloadsRow(row: row, macEnabled: model.isDirectDownloadsEnabled,
-                    onStop: { model.stopDirectDownloads(for: row.id) },
-                    onRename: { try await model.renameDevice(row.id, to: $0) },
-                    onRemove: { try await model.removeDevice(row.id) },
-                    hasActiveLANTransfer: { model.hasActiveLANTransfer })
+                DisclosureGroup(isExpanded: $showsEarlierSyncActivity) {
+                    Text("These records have no device announcement. Any name shown is a local label; device type and current link status are unavailable.")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("wilted-sync-earlier-activity-explanation")
+                    ForEach(earlierActivityRows) { row in
+                        deviceDownloadsRow(row)
+                    }
+                } label: {
+                    Text("Earlier sync activity (\(earlierActivityRows.count))")
+                        .wiltedFont(.utility)
+                        .accessibilityIdentifier("wilted-sync-earlier-activity-label")
+                }
+                .accessibilityIdentifier("wilted-sync-earlier-activity")
             }
             // The iCloud request counts are support detail: they live in the Activity window's
             // Requests row, not here.
@@ -78,6 +109,16 @@ struct WiltedMacLibrarySyncCard: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("wilted-sync-controls")
     }
+
+    @ViewBuilder
+    private func deviceDownloadsRow(_ row: WiltedMacLibrarySyncStatus.DeviceRow) -> some View {
+        Divider()
+        WiltedMacDeviceDownloadsRow(row: row, macEnabled: model.isDirectDownloadsEnabled,
+            onStop: { model.stopDirectDownloads(for: row.id) },
+            onRename: { try await model.renameDevice(row.id, to: $0) },
+            onRemove: { try await model.removeDevice(row.id) },
+            hasActiveLANTransfer: { model.hasActiveLANTransfer })
+    }
 }
 
 struct WiltedMacDeviceDownloadsRow: View {
@@ -98,10 +139,12 @@ struct WiltedMacDeviceDownloadsRow: View {
         HStack {
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                 WiltedSettingsRow(row.label, value: row.value, identifier: "wilted-sync-device")
-                Text("Last announced: \(row.lastAnnouncedLabel)")
-                    .wiltedFont(.utility)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("wilted-sync-device-last-announced-\(row.id)")
+                if row.lastAnnouncedAt != nil {
+                    Text("Last announced: \(row.lastAnnouncedLabel)")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("wilted-sync-device-last-announced-\(row.id)")
+                }
             }
             .fixedSize(horizontal: false, vertical: true)
             Button { showsMenu.toggle() } label: {

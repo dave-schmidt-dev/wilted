@@ -4,6 +4,42 @@ import XCTest
 @testable import WiltedMac
 
 extension WiltedPixelSnapshotTests {
+    /// Search remains visible with matching lines in both system appearances.
+    func testNowPlayingTranscriptSearchRendersInBothAppearances() throws {
+        for appearance in WiltedAppearance.allCases {
+            let model = WiltedMacModel(
+                arguments: [], stateDirectoryOverride: wiltedTemporaryDirectory("now-playing-search-\(appearance)"),
+                preferences: WiltedMacTestPreferences.ephemeral())
+            let episode = WiltedMacEpisode(
+                id: "pane-search-machines", title: "Quiet Machines", feedTitle: "Field Notes",
+                summary: "A walk through the machines.", notes: nil, artworkURL: nil,
+                releasedAt: Date(timeIntervalSince1970: 1_699_827_200), durationSeconds: 1482,
+                playbackSeconds: 90, downloadState: .completed, preparationState: .prepared(summary: "Ready"))
+            model.installPlaybackStateForTesting(episode: episode, isPlaying: false, position: 90, duration: 1482)
+            let passages = ["Quiet machines are easy to miss.", "The quiet pump moves water."]
+            model.currentTranscript = WiltedMacTranscript(availability: .available, text: passages.joined(separator: "\n"),
+                cues: passages.enumerated().map { index, text in
+                    WiltedMacTranscriptCue(id: index, startSeconds: Double(index * 75),
+                                          endSeconds: Double((index + 1) * 75), text: text, speaker: nil)
+                }, timingSource: "Synthetic fixture")
+            model.currentTranscriptSearch.setQuery("quiet")
+
+            let pane = WiltedMacNowPlayingPane(model: model, state: .constant(WiltedMacPaneState()))
+            let image = render(
+                pane,
+                variant: .init(appearance: appearance, dynamicType: .standard, reduceMotion: false),
+                size: CGSize(width: 640, height: 740))
+            let shown = try WiltedMacHeadless.recognizedText(pane, size: CGSize(width: 640, height: 740))
+                .joined(separator: " ")
+            XCTAssertTrue(shown.contains("quiet"), shown)
+            XCTAssertTrue(shown.contains("1 of 2 matches"), shown)
+            XCTAssertTrue(shown.contains("The quiet pump moves water"), shown)
+            XCTAssertTrue(shown.contains("Quiet machines are easy to miss"), shown)
+            XCTAssertGreaterThan(distinctColorCount(in: try XCTUnwrap(image.tiffRepresentation.flatMap(NSBitmapImageRep.init(data:)))),
+                                 8, "search results draw in \(appearance)")
+        }
+    }
+
     /// The owner-selected compact pane, using the native synthetic podcast and reader content.
     func testNowPlayingPanePixelBaselines() throws {
         for appearance in WiltedAppearance.allCases {

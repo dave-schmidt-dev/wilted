@@ -13,6 +13,7 @@ public enum LibraryRecordType: String, CaseIterable, Sendable {
     case nowPlaying = "NowPlayingRecord"
     case progress = "ProgressRecord"
     case listening = "ListeningRecord"
+    case notebookEntry = "NotebookEntryRecord"
     case intent = "IntentRecord"
     /// The Mac's offer of audio for one entry (`LibraryMediaOffer`).
     case offer = "MediaOfferRecord"
@@ -49,6 +50,7 @@ public enum LibraryRecordType: String, CaseIterable, Sendable {
         case .nowPlaying: "nowplaying:"
         case .progress: "progress:"
         case .listening: "listening:"
+        case .notebookEntry: "notebook:"
         case .intent: "intent:"
         case .offer: "offer:"
         case .offerIndex: "offerindex:"
@@ -134,6 +136,7 @@ public struct LibraryRecordMapper: Sendable {
         case .source: type = .source
         case .slot: type = .slot
         case .listening: type = .listening
+        case .notebookEntry: type = .notebookEntry
         }
         return CKRecord.ID(recordName: type.namePrefix + key.id.rawValue, zoneID: zoneID)
     }
@@ -141,7 +144,8 @@ public struct LibraryRecordMapper: Sendable {
     /// The library key a record name denotes, or nil for device-written names and unknown prefixes.
     public func key(forRecordName name: String) -> LibraryRecordKey? {
         let table: [(LibraryRecordType, LibraryRecordKey.Kind)] =
-            [(.entry, .entry), (.source, .source), (.slot, .slot), (.listening, .listening)]
+            [(.entry, .entry), (.source, .source), (.slot, .slot), (.listening, .listening),
+             (.notebookEntry, .notebookEntry)]
         for (type, kind) in table where name.hasPrefix(type.namePrefix) {
             guard let id = try? ItemID(rawValue: String(name.dropFirst(type.namePrefix.count))) else { return nil }
             return LibraryRecordKey(kind: kind, id: id)
@@ -228,6 +232,7 @@ public struct LibraryRecordMapper: Sendable {
         case let .entry(value): return .save(try save(.entry, recordID(for: change.key), value, existing))
         case let .slot(value): return .save(try save(.slot, recordID(for: change.key), value, existing))
         case let .listening(value): return .save(try save(.listening, recordID(for: change.key), value, existing))
+        case let .notebookEntry(value): return .save(try save(.notebookEntry, recordID(for: change.key), value, existing))
         case let .slotRemoved(entryID):
             return .delete(recordID(for: LibraryRecordKey(kind: .slot, id: entryID)))
         case let .removal(entryID, state):
@@ -344,6 +349,10 @@ public struct LibraryRecordMapper: Sendable {
                 let value = try Self.decoder.decode(ListeningRecord.self, from: data)
                 try expect(name, recordID(for: LibraryChange.listening(value).key))
                 return .library(.listening(value))
+            case .notebookEntry:
+                let value = try Self.decoder.decode(LibraryNotebookEntry.self, from: data)
+                try expect(name, recordID(for: LibraryChange.notebookEntry(value).key))
+                return .library(.notebookEntry(value))
             case .nowPlaying, .progress:
                 let value = try Self.decoder.decode(DevicePlaybackPosition.self, from: data)
                 let channel: PlaybackChannel = type == .nowPlaying ? .nowPlaying : .progress

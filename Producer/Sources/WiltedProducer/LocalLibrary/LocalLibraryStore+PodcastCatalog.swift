@@ -34,6 +34,7 @@ extension LocalLibraryStore {
     }
 
     public func save(episode: PodcastEpisode) throws {
+        try savePodcastChapterSource(episode.chapterSource, for: episode.itemID)
         let context = ModelContext(container)
         let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
         if let existing = records.first(where: { $0.id == episode.itemID.rawValue }) {
@@ -56,6 +57,7 @@ extension LocalLibraryStore {
                                   enclosureByteCount: record.enclosureByteCount, durationSeconds: record.durationSeconds,
                                   artworkURL: record.artworkURL.flatMap(URL.init),
                                   transcriptSources: try LocalLibrarySchemaV13Models.PodcastEpisodeRecord.decode(record.transcriptSources),
+                                  chapterSource: podcastChapterSource(for: episodeID),
                                   notes: record.notes, episodeLink: try episodeLinks(in: context)[episodeID.rawValue],
                                   createdAt: Timestamp(record.createdAt))
     }
@@ -69,11 +71,15 @@ extension LocalLibraryStore {
                 return matchesFeed && (includeRemoved || (record.retiredAt == nil && record.removalKind == nil))
             }
             .sorted { ($0.publishedTime ?? $0.createdAt) > ($1.publishedTime ?? $1.createdAt) }
-            .compactMap { Self.decodePodcastEpisode($0, link: links[$0.id]) }
+            .compactMap { record in
+                guard let id = try? ItemID(rawValue: record.id) else { return nil }
+                return Self.decodePodcastEpisode(record, link: links[record.id], chapterSource: podcastChapterSource(for: id))
+            }
     }
 
     static func decodePodcastEpisode(
-        _ record: LocalLibrarySchemaV13Models.PodcastEpisodeRecord, link: URL? = nil
+        _ record: LocalLibrarySchemaV13Models.PodcastEpisodeRecord, link: URL? = nil,
+        chapterSource: PodcastChapterSource? = nil
     ) -> PodcastEpisode? {
         guard let id = try? ItemID(rawValue: record.id), let fid = try? ItemID(rawValue: record.feedID),
               let feedURL = URL(string: record.feedURL), let enclosureURL = URL(string: record.enclosureURL) else { return nil }
@@ -82,6 +88,7 @@ extension LocalLibraryStore {
                                    enclosureMediaType: record.enclosureMediaType, enclosureByteCount: record.enclosureByteCount,
                                    durationSeconds: record.durationSeconds, artworkURL: record.artworkURL.flatMap(URL.init),
                                    transcriptSources: (try? LocalLibrarySchemaV13Models.PodcastEpisodeRecord.decode(record.transcriptSources)) ?? [],
+                                   chapterSource: chapterSource,
                                    notes: record.notes, episodeLink: link, createdAt: Timestamp(record.createdAt))
     }
 

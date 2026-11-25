@@ -1,5 +1,8 @@
 import SwiftUI
 import WiltedLibrary
+#if canImport(WiltedProducer)
+import WiltedProducer
+#endif
 
 /// Recent and saved story actions live together in Reports and the player's story cards.
 struct WiltedMacHeadlineHistoryDisclosure: View {
@@ -30,9 +33,10 @@ struct WiltedMacHeadlineHistoryDisclosure: View {
     /// The production list view and its model-backed Listen next actions.
     @MainActor var headlinesList: WiltedHeadlinesList {
         let catalog = model.headlineCatalogState
+        let activeStoryID = self.featuredStoryID
         return WiltedHeadlinesList(
-            recent: catalog.projection?.recent ?? [],
-            saved: catalog.projection?.saved ?? [],
+            recent: catalog.projection?.recent.filter { $0.id != activeStoryID } ?? [],
+            saved: catalog.projection?.saved.filter { $0.id != activeStoryID } ?? [],
             publishers: catalog.projection?.publishers ?? [],
             actionInProgress: catalog.isActionInProgress,
             actionMessage: catalog.actionMessage,
@@ -49,6 +53,18 @@ struct WiltedMacHeadlineHistoryDisclosure: View {
 
     private var localListenNextRequests: [LibraryListenNextRequestSnapshot] {
         listenNextRequests.filter { $0.requesterDeviceID == model.libraryDeviceID() }
+    }
+
+    private var featuredStoryID: String? {
+#if canImport(WiltedProducer)
+        WiltedMacPlayerContent.selectHeadlineCard(
+            speaking: model.speakingBulletin,
+            lastSpokenStoryID: model.bulletinHub.featuredHeadlineStoryID,
+            pendingStoryID: model.bulletinHub.latestHeadlineNarrationStoryID,
+            projection: model.headlineCatalogState.projection)?.id
+#else
+        nil
+#endif
     }
 
     /// The Recent and Saved card action bound to the list's Listen next and Retry buttons.

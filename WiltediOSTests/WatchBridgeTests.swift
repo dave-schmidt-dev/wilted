@@ -324,6 +324,28 @@ final class WatchBridgeTests: XCTestCase {
         XCTAssertEqual(playing.target.performed, [.pause], "a toggle of playing audio pauses")
     }
 
+    func testNotebookWatchIntentRoutesOneTapAndReturnsTypedAcknowledgement() async throws {
+        let saved = await makeReadyRig(nowPlaying: nowPlaying(isPlaying: false))
+
+        let savedReply = try await send(.captureNotebook, on: saved)
+
+        XCTAssertEqual(saved.target.performed, [.captureNotebook(origin: .watch)])
+        XCTAssertEqual(savedReply.value[WatchBridge.okKey] as? Bool, true)
+
+        let failed = await makeReadyRig(nowPlaying: nowPlaying(isPlaying: true))
+        failed.target.outcome = .failed
+        let failedReply = try await send(.captureNotebook, on: failed)
+        XCTAssertEqual(failed.target.performed, [.captureNotebook(origin: .watch)])
+        XCTAssertEqual(failedReply.value[WatchBridge.okKey] as? Bool, false)
+        XCTAssertEqual(failedReply.value[WatchBridge.reasonKey] as? String, WatchRejection.captureFailed.rawValue)
+
+        let idle = await makeReadyRig()
+        let idleReply = try await send(.captureNotebook, on: idle)
+        XCTAssertTrue(idle.target.performed.isEmpty)
+        XCTAssertEqual(idleReply.value[WatchBridge.okKey] as? Bool, false)
+        XCTAssertEqual(idleReply.value[WatchBridge.reasonKey] as? String, WatchRejection.nothingPlaying.rawValue)
+    }
+
     func testToggleUsesTheLiveSourceWhenNoSnapshotPublished() async throws {
         let rig = makeRig()
         rig.source.nowPlayingValue = nowPlaying(isPlaying: true)

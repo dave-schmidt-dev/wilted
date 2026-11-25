@@ -55,6 +55,8 @@ final class LibraryPlayer: ObservableObject {
         var artworkURL: URL? = nil
         /// An audiobook volume's chapters in start order; empty for everything else.
         var chapters: [AudiobookChapter] = []
+        /// Podcast chapters on the exact prepared revision; empty for chapterless and legacy items.
+        var podcastChapters: [PodcastChapterMark] = []
         /// The prepared podcast revision the file holds, which ad feedback is about; nil for anything else.
         var feedbackRevisionID: RevisionID? = nil
     }
@@ -73,6 +75,8 @@ final class LibraryPlayer: ObservableObject {
     private static let maxAccrual: TimeInterval = 5
 
     @Published private(set) var item: Item?
+    /// Identity hint needed when several publisher chapters collapse to one prepared-time point.
+    @Published private(set) var selectedPodcastChapterIndex: Int?
     @Published private(set) var status: Status = .idle {
         // Anything that leaves `.playing` (pause, stop, a new item, a failure) also ends a spoken-bulletin hold.
         didSet {
@@ -240,7 +244,7 @@ final class LibraryPlayer: ObservableObject {
     /// sets `.failed` when the file cannot be loaded or the session or engine refuses.
     @discardableResult
     func start(_ item: Item, at start: TimeInterval = 0, autoplay: Bool = true,
-               traceToken: UInt64 = 0, automatic: Bool = false) -> Bool {
+               traceToken: UInt64 = 0, automatic: Bool = false, startingRate: Double? = nil) -> Bool {
         if let old = self.item, old.entryID != item.entryID { journal?.note("stop reason=replaced entry=\(old.entryID.rawValue) position=\(String(format: "%.1f", position))") }
         _ = cancelRemoteSeeking()
         onCommand?()
@@ -269,12 +273,13 @@ final class LibraryPlayer: ObservableObject {
         }
         LibraryPlaybackTrace.shared.record(.loadCalled, token: traceToken)
         self.item = item
+        selectedPodcastChapterIndex = nil
         journal?.note("start entry=\(item.entryID.rawValue) title=\"\(item.title.prefix(40))\" position=\(String(format: "%.1f", start)) autoplay=\(autoplay) position-source=\(pendingPositionSource?.entryID == item.entryID ? pendingPositionSource?.source ?? "unknown" : start == 0 ? "zero" : "unknown")")
         pendingPositionSource = nil
         artworkData = artwork?.loadedData(for: item.artworkURL)
         if artworkData == nil { loadArtwork(for: item) }
         duration = engine.duration
-        if supportsRate, let defaultRate { rate = Self.clampRate(defaultRate) }
+        if supportsRate, let chosenRate = startingRate ?? defaultRate { rate = Self.clampRate(chosenRate) }
         applyRateToEngine()
         engine.currentTime = min(max(0, start), duration)
         position = engine.currentTime
@@ -359,11 +364,16 @@ final class LibraryPlayer: ObservableObject {
         onCommand?()
         transportCount &+= 1; cancelAdmission()
         guard item != nil else { return }
+        selectedPodcastChapterIndex = nil
         let target = min(max(0, seconds), duration)
         engine.currentTime = target
         position = target
         if status == .ended, target < duration { status = .paused } else if status == .paused { pausedPositionSetAt = Date() }
         publishNowPlaying()
+    }
+
+    func setSelectedPodcastChapterIndex(_ index: Int?) {
+        selectedPodcastChapterIndex = index
     }
 
     func skip(by seconds: TimeInterval) { seek(to: position + seconds) }

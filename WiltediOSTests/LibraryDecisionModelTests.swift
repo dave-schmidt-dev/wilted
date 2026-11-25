@@ -84,6 +84,10 @@ final class LibraryDecisionModelTests: XCTestCase {
 
     private func intents() async throws -> [LibraryIntent] { try await mac.listIntents() }
 
+    private func publishNewEpisodeCapability(_ enabled: Bool) async throws {
+        try await mac.publishStats(LibraryStats(supportedIntentActions: enabled ? ["decideNewEpisode"] : []))
+    }
+
     private func firstIntent() async throws -> LibraryIntent {
         let all = try await intents()
         return try XCTUnwrap(all.first)
@@ -105,6 +109,115 @@ final class LibraryDecisionModelTests: XCTestCase {
         let model = makeModel()
         await model.refresh()
         XCTAssertEqual(ids(model.queued), ["a", "b", "c"])
+    }
+
+    func testPhoneNewEpisodesProjectionUsesPublishedQueueAndAssociationState() async throws {
+        try await seed()
+        try await publishNewEpisodeCapability(true)
+        let model = makeModel()
+        await model.refresh()
+        XCTAssertEqual(model.newEpisodeRows.map { $0.id.rawValue }, ["fresh"])
+        XCTAssertTrue(model.newEpisodeRows[0].memberIDs.contains(id("fresh")))
+        XCTAssertFalse(model.newEpisodeRows.contains { ["a", "old", "gone"].contains($0.id.rawValue) })
+    }
+
+    func testOlderMacCapabilityKeepsNewEpisodeVisibleAndSendsNothing() async throws {
+        try await seed()
+        try await publishNewEpisodeCapability(false)
+        let model = makeModel()
+        await model.refresh()
+        await model.chooseNewEpisode(.keep, entryID: id("fresh"))
+        XCTAssertEqual(model.newEpisodeRows.map { $0.id.rawValue }, ["fresh"])
+        XCTAssertTrue(model.decisions.isEmpty)
+        let sent = try await intents()
+        XCTAssertTrue(sent.isEmpty)
+        XCTAssertEqual(model.newEpisodeNotice, LibraryAppModel.updateMacNewEpisodesText)
+    }
+
+    func testConcurrentNewEpisodeChoicesFromTwoSurfacesSendOneConditionalIntent() async throws {
+        try await seed()
+        try await publishNewEpisodeCapability(true)
+        let model = makeModel()
+        await model.refresh()
+        let firstSurface = Task { @MainActor in await model.chooseNewEpisode(.keep, entryID: id("fresh")) }
+        let secondSurface = Task { @MainActor in await model.chooseNewEpisode(.skip, entryID: id("fresh")) }
+        await firstSurface.value
+        await secondSurface.value
+        let sent = try await intents()
+        XCTAssertEqual(sent.count, 1)
+        guard case .decideNewEpisode(entryID: id("fresh"), decision: _) = sent[0].action else {
+            return XCTFail("The phone must send the conditional New episode action")
+        }
+        XCTAssertEqual(model.decisions.count, 1)
+        XCTAssertEqual(model.newEpisodeRows.map { $0.id.rawValue }, ["fresh"], "pending choices do not remove the authoritative New row")
+    }
+
+    func testUnansweredNewEpisodeChoiceShowsPendingOnMacAndKeepsItsRow() async throws {
+        try await seed()
+        try await publishNewEpisodeCapability(true)
+        let model = makeModel()
+        await model.refresh()
+        await model.chooseNewEpisode(.keep, entryID: id("fresh"))
+
+        clock.advance(61)
+        await model.refresh()
+
+        let row = try XCTUnwrap(model.newEpisodeRows.first)
+        XCTAssertEqual(model.newEpisodeStatus(for: row), "Pending on Mac. Your last published list is still shown.")
+        XCTAssertEqual(model.newEpisodeRows.map(\.id.rawValue), ["fresh"])
+        XCTAssertEqual(model.decisions.count, 1)
+    }
+
+    func testTypedNewEpisodeConflictSettlesPendingRequestAndKeepsCurrentRow() async throws {
+        try await seed()
+        try await publishNewEpisodeCapability(true)
+        let model = makeModel()
+        await model.refresh()
+        await model.chooseNewEpisode(.skip, entryID: id("fresh"))
+        let sent = try await intents()
+        let intent = try XCTUnwrap(sent.first)
+        try await mac.publishIntentOutcome(.rejectedNewEpisode(for: intent, currentState: .kept, at: clock.now))
+        await model.refresh()
+        XCTAssertTrue(model.decisions.isEmpty)
+        XCTAssertEqual(model.newEpisodeConflictStates[id("fresh")], .kept)
+        XCTAssertEqual(model.newEpisodeStatus(for: try XCTUnwrap(model.newEpisodeRows.first)), "Your Mac already kept this episode.")
+        XCTAssertEqual(model.newEpisodeRows.map { $0.id.rawValue }, ["fresh"])
+    }
+
+    func testTypedConflictRemainsNamedAndDismissibleAfterNewRowDisappears() async throws {
+        try await seed()
+        try await publishNewEpisodeCapability(true)
+        let model = makeModel()
+        await model.refresh()
+        await model.chooseNewEpisode(.skip, entryID: id("fresh"))
+        let intent = try await firstIntent()
+
+        try await macPush([.slot(try QueueSlot(entryID: id("fresh"), sortKey: 3))])
+        try await mac.publishIntentOutcome(.rejectedNewEpisode(
+            for: intent, currentState: .kept, at: clock.now))
+        await model.refresh()
+
+        XCTAssertFalse(model.newEpisodeRows.contains { $0.id == id("fresh") })
+        let notice = try XCTUnwrap(model.unlistedNewEpisodeConflictNotices.first)
+        XCTAssertEqual(notice.entryID, id("fresh"))
+        XCTAssertEqual(notice.title, "Title fresh")
+        XCTAssertEqual(notice.state, .kept)
+        model.dismissNewEpisodeConflict(notice.entryID)
+        XCTAssertTrue(model.unlistedNewEpisodeConflictNotices.isEmpty)
+        XCTAssertNil(model.newEpisodeConflictStates[notice.entryID])
+    }
+
+    func testNewEpisodeConflictNoticeIsClearedWhenLibraryAccountChanges() {
+        let model = makeModel()
+        let entryID = id("fresh")
+        model.newEpisodeConflictStates[entryID] = .skipped
+        model.newEpisodeConflictNotices[entryID] = LibraryNewEpisodeConflictNotice(
+            entryID: entryID, title: "Title fresh", state: .skipped, decidedAt: clock.now)
+
+        model.discardDecisionsAfterAccountChange()
+
+        XCTAssertTrue(model.newEpisodeConflictStates.isEmpty)
+        XCTAssertTrue(model.newEpisodeConflictNotices.isEmpty)
     }
 
     func testRemoveAndMarkDoneAreOfferedOnStartedAndUnstartedPodcasts() async throws {

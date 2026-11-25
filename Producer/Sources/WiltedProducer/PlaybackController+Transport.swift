@@ -116,7 +116,11 @@ extension PlaybackController {
             recoverableFault = .podcastMediaUnavailable(episodeID)
             throw PlaybackControllerError.podcastMediaUnavailable(episodeID)
         }
-        let savedRate = try await store.playbackSpeed(for: episodeID).map { Float($0.speed) } ?? defaultRate
+        let episodeRate = try await store.playbackSpeed(for: episodeID)?.speed
+        let feedID = try await store.podcastEpisode(for: episodeID)?.feedID
+        var showRate: Double?
+        if episodeRate == nil, let feedID { showRate = await showPlaybackSpeedProvider?(feedID) }
+        let savedRate = Float(episodeRate ?? showRate ?? Double(defaultRate))
         if let expectedGeneration, loadedBackendGeneration != expectedGeneration {
             throw CancellationError()
         }

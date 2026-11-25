@@ -75,10 +75,12 @@ final class WiltedMacAdFreeFeedPreferenceTests: XCTestCase {
         let other = WiltedMacModel.preparationPolicySnapshot(from: settings, feedID: "feed-b", preferences: preferences)
 
         XCTAssertEqual(adFree, PodcastPreparationPolicySnapshot(
-            transcriptPolicy: .alwaysTranscribe, removeAds: false, removeSelfPromotion: false
+            transcriptPolicy: .alwaysTranscribe, removeAds: false, removeSelfPromotion: false,
+            evenOutVoiceLoudness: true
         ))
         XCTAssertEqual(other, PodcastPreparationPolicySnapshot(
-            transcriptPolicy: .alwaysTranscribe, removeAds: true, removeSelfPromotion: false
+            transcriptPolicy: .alwaysTranscribe, removeAds: true, removeSelfPromotion: false,
+            evenOutVoiceLoudness: true
         ))
         XCTAssertEqual(other, WiltedMacModel.preparationPolicySnapshot(from: settings))
     }

@@ -13,7 +13,12 @@ final class WiltedMacShowSettingsTests: XCTestCase {
         )
         let expected: [WiltedMacShowSettingsView.Section: [String]] = [
             .newEpisodes: ["New episodes", "Auto keep", "Auto download", "Auto prepare",
-                           "Kept limit", "Default:", "Same as default"],
+                           "Kept limit", "Default:", "Same as default",
+                           "Keeps new episodes from this show after a feed refresh",
+                           "Downloads audio after new episodes are kept",
+                           "Prepares downloaded audio for playback",
+                           "Limits how many episodes are kept from this show"],
+            .playback: ["Playback", "Playback speed", "Default:"],
             .ads: ["Ads", "Remove ads", "Remove the show's own promotion", "Send this show for ad finding"],
             .type: ["Type"], .details: ["Details"],
         ]
@@ -37,9 +42,11 @@ final class WiltedMacShowSettingsTests: XCTestCase {
             let fixture = try makeFixture(isArticle: isArticle)
             let lines = try renderedLines(fixture)
             let sections = lines.indices.filter { headings.contains(lines[$0]) }
-            let expected = isArticle ? ["New episodes", "Type", "Details"] : ["New episodes", "Ads", "Type", "Details"]
+            let expected = isArticle
+                ? ["New episodes", "Type", "Details"]
+                : ["New episodes", "Playback", "Ads", "Type", "Details"]
             XCTAssertEqual(sections.map { lines[$0] }, expected)
-            let rows = ["New episodes": "Auto keep", "Ads": "Remove ads",
+            let rows = ["New episodes": "Auto keep", "Playback": "Playback speed", "Ads": "Remove ads",
                         "Type": isArticle ? "Articles" : "Podcast", "Details": "Source URL"]
             for (start, end) in zip(sections, sections.dropFirst() + [lines.endIndex]) {
                 let row = try XCTUnwrap(rows[lines[start]])

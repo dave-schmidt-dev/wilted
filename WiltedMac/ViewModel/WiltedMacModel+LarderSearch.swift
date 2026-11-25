@@ -79,8 +79,23 @@ extension WiltedMacModel {
     /// Larder is not in Feeds.
     var feedsEpisodeCandidates: [WiltedMacEpisode] {
         let waiting = Set(podcastQueueIDs)
-        return larderVisibleEpisodes.filter {
-            logicalMemberIDs($0.id).isDisjoint(with: waiting) && !$0.isAudiobook && !pendingFeedDecisionIDs.contains($0.id)
+        let active = Set(episodes.lazy.filter {
+            $0.removalKind == nil && $0.retiredAt == nil && !self.hiddenEpisodeIDs.contains($0.id)
+        }.map(\.id))
+        return larderVisibleEpisodes.filter { episode in
+            let association = episodeAssociations[episode.id].flatMap { $0.isSupported ? $0 : nil }
+            let members = association.map { Set($0.memberIDs.map(\.rawValue)) } ?? [episode.id]
+            let removal: LibraryRemoval = switch episode.removalKind {
+            case .retired: .retired
+            case .dismissed: .dismissed
+            case nil: .none
+            }
+            let hasActiveMember = !members.isDisjoint(with: active)
+            let projectsNew = LibraryUndecidedEpisodeProjection.isNewEpisodeCandidate(
+                kind: .podcastEpisode, removal: removal, groupIsTerminal: association?.isTerminal,
+                groupHasActiveMember: hasActiveMember, isQueued: !members.isDisjoint(with: waiting),
+                isAudiobook: episode.isAudiobook)
+            return projectsNew && !pendingFeedDecisionIDs.contains(episode.id)
         }
     }
 

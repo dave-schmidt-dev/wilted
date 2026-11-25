@@ -45,6 +45,11 @@ final class FakeDecisionHost: WiltedMacDecisionHost {
         calls.append("adFeedback \(intent.id)")
         return filesFeedback
     }
+    var newEpisodeOutcome: IntentOutcome?
+    func commitNewEpisodeIntent(_ intent: LibraryIntent, decidedAt: Date) async -> IntentOutcome? {
+        calls.append("decideNewEpisode")
+        return newEpisodeOutcome
+    }
 
     private func record(_ name: String, _ entryID: ItemID) -> Bool {
         calls.append("\(name) \(entryID.rawValue)")
@@ -150,6 +155,22 @@ final class WiltedMacIntentApplierTests: XCTestCase {
         XCTAssertEqual(published.first?.disposition, .applied)
         XCTAssertEqual(published.first?.deviceID, phone, "the phone finds its outcomes by its own name")
         XCTAssertEqual(r.appliedCount.value, 1, "an applied decision triggers a republish")
+    }
+
+    func testConditionalNewEpisodeIntentPublishesTypedConflictAndReplaysSavedOutcome() async throws {
+        let host = FakeDecisionHost()
+        let r = rig(host: host)
+        let intent = try intent(.decideNewEpisode(entryID: ids[0], decision: .skip), id: "new-conflict")
+        let expected = try IntentOutcome.rejectedNewEpisode(for: intent, currentState: .kept, at: clock)
+        host.newEpisodeOutcome = expected
+
+        try await r.applier.apply(intent)
+        try await r.applier.apply(intent)
+
+        XCTAssertEqual(host.calls, ["decideNewEpisode"], "the Mac outcome book avoids a second host commit")
+        let published = try await outcomes(r)
+        XCTAssertEqual(published, [expected])
+        XCTAssertEqual(published.first?.currentNewEpisodeState, .kept)
     }
 
     func testKeepOfAnAlreadyQueuedEntryStillGoesThroughTheModelSoItHoldsAManualRecord() async throws {

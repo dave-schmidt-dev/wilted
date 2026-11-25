@@ -17,6 +17,10 @@ public extension LibrarySnapshot {
         case let .slot(slot): next.slots[slot.entryID] = slot
         case let .slotRemoved(entryID): next.slots[entryID] = nil
         case let .listening(record): next.listening[record.itemID] = record
+        case let .notebookEntry(entry):
+            if next.notebookEntries[entry.id]?.isDeleted != true || entry.isDeleted {
+                next.notebookEntries[entry.id] = entry
+            }
         }
         return next
     }

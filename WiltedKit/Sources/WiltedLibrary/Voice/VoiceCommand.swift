@@ -16,6 +16,8 @@ public enum VoiceCommand: Sendable, Equatable {
     /// "Play something", optionally of one show: the first downloaded episode in the app's play order
     /// (partway through first, then not-started oldest first), the one the phone list and autoplay reach first.
     case playFirst(show: String?)
+    /// Save the current podcast's trailing 30 seconds to the Notebook.
+    case saveThat
     case pause
     case resume
     case skipForward
@@ -130,6 +132,8 @@ public enum VoiceAction: Sendable, Equatable {
     case skipBack
     case restart
     case markCompleted(ItemID)
+    /// Capture the loaded podcast at its current playhead through the phone's durable Notebook path.
+    case captureNotebook(origin: LibraryNotebookEntry.CaptureOrigin)
     case setSpeed(Double)
     case startSleepTimer(minutes: Int)
     case stopAfterEpisode

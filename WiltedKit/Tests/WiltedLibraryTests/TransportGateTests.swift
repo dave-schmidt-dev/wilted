@@ -63,6 +63,7 @@ final class TransportPressureClassifierTests: XCTestCase {
 private struct ConcreteOwnerForwardingTransport: LibraryTransport {
     let inner: InMemoryLibraryTransport
     var ownerChecks: Counter? = nil
+    var notebookCloudWriteMode: NotebookCloudWriteMode = .localOnly
     func verifyOwner() async { ownerChecks?.bump() }
     func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
     func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
@@ -93,8 +94,10 @@ final class TransportGateTests: XCTestCase {
     func testConcreteOwnerForwardingPreservesIdentityAndInvalidationGeneration() async {
         let server = InMemoryLibraryServer(writerDeviceID: "mac")
         let inner = InMemoryLibraryTransport(deviceID: "phone", server: server, verifiedOwnerToken: "configured-owner")
-        let forwarding = ConcreteOwnerForwardingTransport(inner: inner)
+        let forwarding = ConcreteOwnerForwardingTransport(inner: inner, notebookCloudWriteMode: .development)
         let wrapped = ThrottledLibraryTransport(wrapping: forwarding, gate: TransportGate())
+        XCTAssertEqual(forwarding.notebookCloudWriteMode, .development)
+        XCTAssertEqual(wrapped.notebookCloudWriteMode, .development, "the throttle must preserve the explicit Development capability")
         let paths: [(String, any LibraryTransport)] = [("actor existential", inner), ("forwarding existential", forwarding), ("throttled wrapper", wrapped)]
         let concreteOwner = await inner.verifiedOwnerToken()
         let concreteGeneration = await inner.operationGeneration()

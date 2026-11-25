@@ -93,6 +93,15 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
         case .restart: return await resumeLoaded(restarting: true)
         case let .markCompleted(entryID):
             return await markCompleted(entryID)
+        case let .captureNotebook(origin):
+            // Snapshot both values before entering the asynchronous capture service. The service
+            // rechecks ownership and playback generation before it durably queues the entry.
+            guard let item = player.item else { return .failed }
+            let position = player.position
+            guard await model.captureNotebookClip(for: item, at: position, capturedOn: origin) != nil else {
+                return .failed
+            }
+            return .done
         case let .setSpeed(rate):
             guard player.supportsRate else { return .failed }
             // The setting makes it stick for the next episodes; the player change is for the loaded one now.

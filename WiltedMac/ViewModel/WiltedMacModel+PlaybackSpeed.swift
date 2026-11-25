@@ -2,6 +2,7 @@ import Foundation
 
 #if canImport(WiltedProducer)
 import WiltedDomain
+import WiltedLibrary
 import WiltedProducer
 
 /// The speed picker's durable save, scoped to its own status line.
@@ -69,6 +70,35 @@ extension WiltedMacModel {
         guard let status = currentSpeedSaveStatus, status.phase == .failed,
               let itemID = try? ItemID(rawValue: status.itemID) else { return }
         savePlaybackSpeed(playbackRate, for: itemID)
+    }
+
+    /// Stores the chosen rate as the Mac-authoritative fallback for the current show's new plays.
+    func savePlaybackSpeedForCurrentShow(_ speed: Double) async {
+        guard PlaybackSpeeds.contains(speed), isPodcastPlayback, let itemID = speedSaveTarget,
+              let store, let episode = try? await store.podcastEpisode(for: itemID) else { return }
+        let owner: String
+        do {
+            if let binding = try await store.libraryAccountBinding() {
+                guard binding.state == .bound, libraryAccountStatus?.allowsSync == true,
+                      let ownerToken = binding.ownerToken else { return }
+                owner = ownerToken
+            } else {
+                owner = "local-library"
+            }
+            let current = try await WiltedMacShowPlaybackSpeedStore(store: store).speeds(owner: owner)
+            let value: LibraryShowPlaybackSpeed
+            if let configured = current[episode.feedID.rawValue] {
+                value = configured
+            } else {
+                value = try LibraryShowPlaybackSpeed(feedID: episode.feedID, speed: nil, revision: 0)
+            }
+            let result = try await WiltedMacShowPlaybackSpeedStore(store: store).apply(
+                commandID: UUID().uuidString, owner: owner, feedID: episode.feedID,
+                speed: speed, basedOnRevision: value.revision)
+            if case .applied = result { librarySyncController?.requestPublish() }
+        } catch {
+            // The live rate already changed; a failed preference save does not undo playback.
+        }
     }
 }
 #endif

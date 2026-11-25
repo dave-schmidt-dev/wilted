@@ -7,7 +7,7 @@ import XCTest
 /// hosted renders prove the root view draws the same bar or pane on every destination.
 @MainActor
 final class WiltedMacShellLayoutTests: XCTestCase {
-    private let destinations: [WiltedMacNavigation] = [.feeds, .larder, .settings]
+    private let destinations: [WiltedMacNavigation] = [.feeds, .larder, .notebook, .settings]
     private let fixture = ["--wilted-ui-fixture-ready", "--wilted-ui-fixture-podcasts"]
 
     /// One window width inside each band, for the shown sidebar: narrow (bottom bar), side (rail
@@ -22,7 +22,7 @@ final class WiltedMacShellLayoutTests: XCTestCase {
         ]
     }
 
-    func testFeedsLarderAndSettingsPlaceTheSameInEveryWidthBand() {
+    func testPermanentDestinationsPlaceTheSameInEveryWidthBand() {
         for band in bands {
             for visible in [true, false] {
                 let layouts = destinations.map {

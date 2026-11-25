@@ -39,6 +39,9 @@ struct LibraryRow: Identifiable, Equatable, Sendable {
     var kind: LibraryKind = .podcastEpisode
     /// An audiobook volume's chapters in start order; empty for every other kind.
     var chapters: [AudiobookChapter] = []
+    /// Podcast chapter data published for one prepared revision.
+    var podcastChapters: [PodcastChapterMark] = []
+    var podcastChapterRevisionID: RevisionID?
     /// Raw backing identities for a coherent logical display row; never cache keys.
     var memberIDs: [ItemID] = []
     /// Raw-member display reports, independent of the selected media backing.
@@ -164,7 +167,8 @@ enum LibraryRowBuilder {
         _ entry: LibraryEntry, content: LibrarySnapshot, checkpoints: [ItemID: ObservedPlayback],
         clock: LibraryClockFormat, started: Set<ItemID>
     ) -> LibraryRow {
-        LibraryRow(
+        let preparedChapters = podcastChapters(entry)
+        return LibraryRow(
             id: entry.id,
             title: entry.title,
             showTitle: showTitle(entry, sources: content.sources),
@@ -186,6 +190,8 @@ enum LibraryRowBuilder {
                 .flatMap { PodcastEpisode.isValidEpisodeLink($0) ? $0 : nil },
             kind: entry.kind,
             chapters: chapters(entry),
+            podcastChapters: preparedChapters?.chapters ?? [],
+            podcastChapterRevisionID: preparedChapters?.revisionID,
             preparationAnnotations: preparationAnnotation(entry, content: content, representativeID: entry.id).map { [$0] } ?? []
         )
     }
@@ -228,6 +234,21 @@ enum LibraryRowBuilder {
             .sorted { $0.startSeconds < $1.startSeconds }
     }
 
+    /// Podcast chapter metadata is accepted only when its embedded identity
+    /// matches the entry carrying it.
+    static func podcastChapters(_ entry: LibraryEntry) -> LibraryPodcastChapters? {
+        guard entry.kind == .podcastEpisode,
+              let payload = try? entry.podcastEpisodePayload(),
+              let value = payload.preparedChapters,
+              value.entryID == entry.id else { return nil }
+        return value
+    }
+
+    static func podcastChapters(_ entry: LibraryEntry, revisionID: RevisionID) -> [PodcastChapterMark] {
+        guard let value = podcastChapters(entry), value.revisionID == revisionID else { return [] }
+        return value.chapters
+    }
+
     private static func audiobook(_ entry: LibraryEntry) -> AudiobookPayload? {
         guard entry.kind == .audiobook else { return nil }
         return try? JSONDecoder().decode(AudiobookPayload.self, from: entry.payload)
@@ -267,9 +288,8 @@ enum LibraryRowBuilder {
     }
 }
 
-/// A Larder row's two factual lines under the title, as on the Mac: "Show - duration", then the
-/// publication date on its own line. Only the show yields space; the duration and the date stay whole.
-/// The lines are separate accessibility elements, so VoiceOver reads the show and duration, then the date.
+/// A Larder's factual detail under the title: show and duration, then publication date.
+/// When the full show and duration do not fit together, the show wraps before the duration moves below.
 struct LibraryRowMetadataView: View {
     let row: LibraryRow
     let namesShow: Bool
@@ -282,14 +302,24 @@ struct LibraryRowMetadataView: View {
                     Image(systemName: "newspaper").accessibilityHidden(true).padding(.trailing, 4)
                 }
                 if namesShow {
-                    Text(row.showLabel)
-                        .lineLimit(1).truncationMode(.tail)
-                    Text(" - ").fixedSize(horizontal: true, vertical: false)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 0) {
+                            Text(row.showLabel).fixedSize(horizontal: true, vertical: false)
+                            Text(" - ").fixedSize(horizontal: true, vertical: false)
+                            durationText
+                        }
+                        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                            Text(row.showLabel)
+                                .lineLimit(2)
+                                .truncationMode(.tail)
+                                .fixedSize(horizontal: false, vertical: true)
+                            durationText
+                        }
+                    }
+                        .layoutPriority(1)
+                } else {
+                    durationText
                 }
-                Text(row.durationLabel)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .layoutPriority(1)
             }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(row.showAndDurationText(namesShow: namesShow))
@@ -300,5 +330,11 @@ struct LibraryRowMetadataView: View {
         }
         .wiltedFont(.utility)
         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+    }
+
+    private var durationText: some View {
+        Text(row.durationLabel)
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
     }
 }

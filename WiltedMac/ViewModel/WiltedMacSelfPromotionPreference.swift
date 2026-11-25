@@ -49,7 +49,8 @@ extension WiltedMacModel {
     static func preparationPolicySnapshot(
         from settings: WiltedAutomationSettings,
         removeAds: Bool? = nil,
-        removeSelfPromotion: Bool = false
+        removeSelfPromotion: Bool = false,
+        evenOutVoiceLoudness: Bool? = nil
     ) -> PodcastPreparationPolicySnapshot {
         let transcriptPolicy: PodcastTranscriptPolicy
         switch settings.transcriptPolicy {
@@ -60,7 +61,8 @@ extension WiltedMacModel {
         return PodcastPreparationPolicySnapshot(
             transcriptPolicy: transcriptPolicy,
             removeAds: removeAds ?? settings.removeAds,
-            removeSelfPromotion: removeSelfPromotion
+            removeSelfPromotion: removeSelfPromotion,
+            evenOutVoiceLoudness: evenOutVoiceLoudness ?? settings.levelVoices
         )
     }
 
@@ -75,7 +77,9 @@ extension WiltedMacModel {
             removeAds: adFree ? false : nil,
             removeSelfPromotion: adFree
                 ? false
-                : WiltedMacSelfPromotionPreference(preferences: preferences).isEnabled(feedID: feedID)
+                : WiltedMacSelfPromotionPreference(preferences: preferences).isEnabled(feedID: feedID),
+            evenOutVoiceLoudness: WiltedMacLoudnessPreference(preferences: preferences)
+                .isEnabled(feedID: feedID, globalDefault: settings.levelVoices)
         )
     }
 

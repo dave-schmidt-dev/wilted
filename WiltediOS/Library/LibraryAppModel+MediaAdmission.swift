@@ -135,6 +135,12 @@ extension LibraryAppModel {
         guard await mediaContextIsCurrent(context, live: true) else { return false }
         mediaRevocations.insert(entryID)
         cancelMediaRequest(entryID: entryID)
+        let cached = await mediaCache.cachedEntries()[entryID]
+        guard await mediaContextIsCurrent(context, live: true) else { return false }
+        if let revisionID = cached?.revisionID {
+            await preserveNotebookExcerptEvidence(entryID: entryID, revisionID: revisionID)
+            guard await mediaContextIsCurrent(context, live: true) else { return false }
+        }
         cancelTranscript(entryID: entryID)
         unacknowledgedMedia[entryID] = nil
         transcripts[entryID] = nil
@@ -181,7 +187,12 @@ extension LibraryAppModel {
         let dismissed = Set(content.entries.values.filter { $0.removal == .dismissed }.map(\.id))
         let newlyDismissed = dismissed.filter { decisionContent.entries[$0]?.removal != .dismissed }
         let immediate = departed.union(dismissed.intersection(previous.union(current))).union(newlyDismissed)
-        for entryID in immediate { withdrawQueuePlayback(entryID) }
+        for entryID in immediate {
+            if dismissed.contains(entryID), let transcript = transcripts[entryID] {
+                await preserveNotebookExcerptEvidence(entryID: entryID, revisionID: transcript.revisionID)
+            }
+            withdrawQueuePlayback(entryID)
+        }
         guard await mediaContextIsCurrent(context, live: true) else { return false }
         guard !dismissed.isEmpty else { return true }
         let cached = await mediaCache.cachedEntries()

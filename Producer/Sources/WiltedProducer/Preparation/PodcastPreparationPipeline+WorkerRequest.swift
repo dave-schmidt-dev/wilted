@@ -28,6 +28,7 @@ extension PodcastPreparationPipeline {
         }
         // Sent only when on, so every other feed's request is unchanged.
         if policy.removeSelfPromotion { request["removeSelfPromotion"] = true }
+        if policy.evenOutVoiceLoudness { request["evenOutVoiceLoudness"] = true }
         if !policy.removeAds, policy.transcriptPolicy != .alwaysTranscribe,
            let published = await fetchPublishedTranscript(for: episode, onStatus: onStatus) {
             request["publishedTranscript"] = published

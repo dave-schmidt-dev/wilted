@@ -1,4 +1,5 @@
 import SwiftUI
+import Observation
 import XCTest
 import WiltedDomain
 import WiltedProducer
@@ -60,6 +61,41 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
 
         try keyStore.remove()
         XCTAssertFalse(model.hasKey)
+    }
+
+    func testRequestCountRefreshesAfterSendAndLocalDayRollover() async throws {
+        let firstDay = Date()
+        let clock = MutableAdFindingClock(firstDay)
+        let (model, preferences, _) = makeModel(shows: { [] }, now: { clock.read() })
+        let counter = LabellerRequestCounter(
+            preferences: preferences,
+            now: { clock.read() },
+            onRequestRecorded: {
+                Task { @MainActor in model.refreshRequestCount() }
+            }
+        )
+
+        let requestStarted = expectation(description: "request start invalidates the visible count")
+        withObservationTracking {
+            XCTAssertEqual(model.requestsToday, 0)
+        } onChange: {
+            requestStarted.fulfill()
+        }
+        counter.record()
+        await fulfillment(of: [requestStarted], timeout: 1)
+        XCTAssertEqual(model.requestsToday, 1)
+
+        let nextLocalDay = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: 1, to: firstDay))
+        let dayRollover = expectation(description: "local-day refresh invalidates the visible count")
+        withObservationTracking {
+            XCTAssertEqual(model.requestsToday, 1)
+        } onChange: {
+            dayRollover.fulfill()
+        }
+        clock.set(nextLocalDay)
+        model.refreshRequestCount()
+        await fulfillment(of: [dayRollover], timeout: 1)
+        XCTAssertEqual(model.requestsToday, 0)
     }
 
     // MARK: Consent stays explicit
@@ -340,11 +376,14 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
 
     // MARK: Helpers
 
-    private func makeModel(shows: @escaping @MainActor () -> [WiltedMacAdFindingSettings.Show])
+    private func makeModel(
+        shows: @escaping @MainActor () -> [WiltedMacAdFindingSettings.Show],
+        now: @escaping @Sendable () -> Date = Date.init
+    )
         -> (model: WiltedMacAdFindingSettings, preferences: UserDefaults, keyStore: InMemoryLabellerKeyStore) {
         let preferences = WiltedMacTestPreferences.ephemeral()
         let keyStore = InMemoryLabellerKeyStore()
-        let model = WiltedMacAdFindingSettings(preferences: preferences, keyStore: keyStore, shows: shows)
+        let model = WiltedMacAdFindingSettings(preferences: preferences, keyStore: keyStore, now: now, shows: shows)
         return (model, preferences, keyStore)
     }
 
@@ -368,5 +407,26 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
                 preferences: AdLabellerPreferences(preferences: preferences),
                 hasKey: keyStore.hasKey(),
                 counter: LabellerRequestCounter(preferences: preferences)))
+    }
+}
+
+private final class MutableAdFindingClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+
+    init(_ value: Date) {
+        self.value = value
+    }
+
+    func read() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func set(_ value: Date) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.value = value
     }
 }

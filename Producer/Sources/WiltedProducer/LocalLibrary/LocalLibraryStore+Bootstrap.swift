@@ -76,6 +76,17 @@ extension LocalLibraryStore {
     /// Identifies the on-disk schema by comparing the store's entity version
     /// hashes with each released schema. Reads metadata only.
     nonisolated static func diskSchemaVersion(at url: URL) throws -> LocalLibraryStoreDiskVersion {
+        try diskSchemaVersion(at: url, recognizedThroughVersion: LocalLibrarySchemaVersion.current.rawValue)
+    }
+
+    /// Applies the same metadata-only compatibility test as a binary that
+    /// knows only the schemas through `recognizedThroughVersion`. Kept internal so tests
+    /// can prove that an older release refuses a newer store before SwiftData
+    /// gets a chance to drop entities it does not know.
+    nonisolated static func diskSchemaVersion(
+        at url: URL,
+        recognizedThroughVersion: Int
+    ) throws -> LocalLibraryStoreDiskVersion {
         guard FileManager.default.fileExists(atPath: url.path) else { return .absent }
         let metadata: [String: Any]
         do {
@@ -85,13 +96,16 @@ extension LocalLibraryStore {
         } catch {
             return .unrecognized("store metadata could not be read: \(error.localizedDescription)")
         }
-        for schema in LocalLibraryCurrentMigrationPlan.schemas.reversed() {
+        let recognizedSchemas = LocalLibraryCurrentMigrationPlan.schemas.filter {
+            $0.versionIdentifier.major <= recognizedThroughVersion
+        }
+        for schema in recognizedSchemas.reversed() {
             guard let model = NSManagedObjectModel.makeManagedObjectModel(for: schema.models) else { continue }
             if model.isConfiguration(withName: nil, compatibleWithStoreMetadata: metadata) {
                 return .known(schema.versionIdentifier.major)
             }
         }
-        return .unrecognized("store matches no schema from V1 through V\(LocalLibrarySchemaVersion.current.rawValue)")
+        return .unrecognized("store matches no schema from V1 through V\(recognizedThroughVersion)")
     }
 
     /// Migrates the checkpointed source in place. Any failure -- including a

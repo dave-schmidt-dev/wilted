@@ -85,6 +85,37 @@ extension PlaybackControllerTests {
         XCTAssertEqual(controller.positionSeconds, 0)
     }
 
+    func testAutomaticAdvanceUsesDestinationShowSpeedInsteadOfOutgoingEpisodeSpeed() async throws {
+        let path = storeURL(); let root = path.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let store = try LocalLibraryStore(url: path)
+        let first = try await storePodcastEpisode(in: store, root: root, index: 85)
+        let second = try await storePodcastEpisode(in: store, root: root, index: 86)
+        try await store.replacePodcastQueue(try PodcastQueueState(
+            episodeIDs: [first.episodeID, second.episodeID], currentEpisodeID: first.episodeID))
+        try await store.save(playbackSpeed: PodcastPlaybackSpeed(
+            itemID: first.episodeID, speed: 1.75, updatedAt: Timestamp(Date())))
+        let backend = FakeBackend()
+        let controller = PlaybackController(store: store, backend: backend)
+        controller.defaultRate = 1
+        var requestedFeeds: [ItemID] = []
+        controller.showPlaybackSpeedProvider = { feedID in
+            requestedFeeds.append(feedID)
+            return feedID == second.feedID ? 1.25 : 0.75
+        }
+
+        await controller.restorePodcastQueue()
+        XCTAssertEqual(controller.playbackRate, 1.75, "the outgoing episode's own choice still applies to it")
+        backend.finish(successfully: true)
+        await waitUntil { controller.itemID == second.episodeID }
+
+        XCTAssertEqual(requestedFeeds.last, second.feedID)
+        XCTAssertEqual(controller.playbackRate, 1.25, "automatic advance resolves the destination show")
+        XCTAssertEqual(backend.rate, 1.25)
+        XCTAssertTrue(backend.isPlaying)
+    }
+
     private func storeShowStartOffsetEpisode(
         in store: LocalLibraryStore, root: URL, index: Int
     ) async throws -> (episodeID: ItemID, feedID: ItemID, stored: StoredAudioRevision) {
@@ -102,5 +133,22 @@ extension PlaybackControllerTests {
         ))
         let stored = try await queueRevision(index: index, root: root, store: store, itemID: episodeID)
         return (episodeID, feedID, stored)
+    }
+
+    private func storePodcastEpisode(
+        in store: LocalLibraryStore, root: URL, index: Int
+    ) async throws -> (episodeID: ItemID, feedID: ItemID) {
+        let feedURL = URL(string: "https://speed-\(index).example.test/feed.xml")!
+        let enclosureURL = URL(string: "https://speed-\(index).example.test/episode.mp3")!
+        let feedID = try ItemID.derivePodcastFeed(from: feedURL)
+        let episodeID = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "episode-\(index)", enclosureURL: enclosureURL)
+        let stamp = Timestamp(Date(timeIntervalSince1970: 1_700_000_000))
+        try await store.save(feed: PodcastFeed(itemID: feedID, canonicalURL: feedURL, title: "Speed Show \(index)", createdAt: stamp))
+        try await store.save(episode: PodcastEpisode(
+            itemID: episodeID, feedID: feedID, feedURL: feedURL, rssGUID: "episode-\(index)",
+            title: "Speed Episode \(index)", enclosureURL: enclosureURL, enclosureMediaType: "audio/mpeg",
+            durationSeconds: 42, createdAt: stamp))
+        _ = try await queueRevision(index: index, root: root, store: store, itemID: episodeID)
+        return (episodeID, feedID)
     }
 }

@@ -7,17 +7,20 @@ public struct LibrarySnapshot: Sendable, Equatable {
     public var entries: [ItemID: LibraryEntry]
     public var slots: [ItemID: QueueSlot]
     public var listening: [ItemID: ListeningRecord]
+    public var notebookEntries: [ItemID: LibraryNotebookEntry]
 
     public init(
         sources: [LibrarySource] = [],
         entries: [LibraryEntry] = [],
         slots: [QueueSlot] = [],
-        listening: [ListeningRecord] = []
+        listening: [ListeningRecord] = [],
+        notebookEntries: [LibraryNotebookEntry] = []
     ) {
         self.sources = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         self.entries = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         self.slots = Dictionary(slots.map { ($0.entryID, $0) }, uniquingKeysWith: { _, last in last })
         self.listening = Dictionary(listening.map { ($0.itemID, $0) }, uniquingKeysWith: { _, last in last })
+        self.notebookEntries = Dictionary(notebookEntries.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
     }
 
     /// Larder in queue order.
@@ -26,7 +29,7 @@ public struct LibrarySnapshot: Sendable, Equatable {
 
 /// Diffs a full Mac snapshot against the last one published, so a publisher sends only
 /// what moved. Output order is deterministic: sources, entries, slot upserts, slot
-/// removals, listening.
+/// removals, listening, Notebook entries.
 ///
 /// Entries and sources are never hard-deleted from a snapshot; disappearance is expressed
 /// by removal state, so an entry missing from `current` produces no change.
@@ -54,6 +57,9 @@ public enum LibraryStateDiffer {
         }
         for id in sortedKeys(current.listening) where old.listening[id] != current.listening[id] {
             if let record = current.listening[id] { changes.append(.listening(record)) }
+        }
+        for id in sortedKeys(current.notebookEntries) where old.notebookEntries[id] != current.notebookEntries[id] {
+            if let entry = current.notebookEntries[id] { changes.append(.notebookEntry(entry)) }
         }
         return changes
     }

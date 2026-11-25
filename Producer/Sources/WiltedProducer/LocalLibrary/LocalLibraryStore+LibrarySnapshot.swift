@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import SwiftData
 import WiltedDomain
+import WiltedLibrary
 
 extension LocalLibraryStore {
     /// Every recorded preparation attempt, newest first.
@@ -107,6 +108,8 @@ extension LocalLibraryStore {
         public let podcastQueue: PodcastQueueState
         public let downloads: [ItemID: PodcastDownload]
         public let readyRevisions: [ItemID: StoredAudioRevision]
+        /// Prepared-clock podcast chapters for the exact ready audio revision.
+        public let preparedPodcastChapters: [ItemID: LibraryPodcastChapters]
         /// Keyed `"itemID|revisionID"`, matching every other composite-keyed table in this store.
         public let playbackStates: [String: PlaybackState]
         public let transcripts: [String: Transcript]
@@ -146,7 +149,10 @@ extension LocalLibraryStore {
         let episodeRecords = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
             .sorted { ($0.publishedTime ?? $0.createdAt) > ($1.publishedTime ?? $1.createdAt) }
         let links = try episodeLinks(in: context)
-        let episodeValues = episodeRecords.compactMap { Self.decodePodcastEpisode($0, link: links[$0.id]) }
+        let episodeValues = episodeRecords.compactMap { record -> PodcastEpisode? in
+            guard let id = try? ItemID(rawValue: record.id) else { return nil }
+            return Self.decodePodcastEpisode(record, link: links[record.id], chapterSource: podcastChapterSource(for: id))
+        }
         var retiredAtByEpisode: [ItemID: Timestamp] = [:]
         var removalKindByEpisode: [ItemID: PodcastEpisodeRemovalKind] = [:]
         for record in episodeRecords {
@@ -176,6 +182,8 @@ extension LocalLibraryStore {
                 return (itemID, revision)
             }
         )
+        let chapterRevisions = Dictionary(uniqueKeysWithValues: readyRevisions.map { ($0.key, $0.value.revisionID) })
+        let preparedPodcastChapters = preparedPodcastChapters(for: chapterRevisions)
 
         podcastLibrarySnapshotFetchCount += 1
         var playbackStates: [String: PlaybackState] = [:]
@@ -259,7 +267,8 @@ extension LocalLibraryStore {
         return PodcastLibrarySnapshot(
             articles: articleValues, episodes: episodeValues, feeds: feeds, subscriptions: subscriptionValues,
             podcastQueue: podcastQueue,
-            downloads: downloads, readyRevisions: readyRevisions, playbackStates: playbackStates,
+            downloads: downloads, readyRevisions: readyRevisions,
+            preparedPodcastChapters: preparedPodcastChapters, playbackStates: playbackStates,
             transcripts: transcripts, preparationOutcomes: preparationOutcomes, listeningStates: listeningStates,
             episodeDecisions: episodeDecisions,
             retiredAtByEpisode: retiredAtByEpisode, removalKindByEpisode: removalKindByEpisode,

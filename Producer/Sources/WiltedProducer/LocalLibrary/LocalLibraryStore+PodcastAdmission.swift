@@ -342,6 +342,7 @@ extension LocalLibraryStore {
         let records = try context.fetch(FetchDescriptor<LocalLibrarySchemaV13Models.PodcastEpisodeRecord>())
         var byID = Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         for episode in episodes {
+            try savePodcastChapterSource(episode.chapterSource, for: episode.itemID)
             if let record = byID[episode.itemID.rawValue] {
                 try Self.apply(episode, to: record)
             } else {

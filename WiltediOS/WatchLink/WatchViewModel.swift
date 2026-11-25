@@ -27,6 +27,37 @@ enum WatchSpeeds {
     }
 }
 
+/// A one-line result for the phone-owned Notebook action.
+enum WatchNotebookFeedback: Equatable {
+    case saved
+    case waitingToSync
+    case nothingPlaying
+    case failed
+    case unreachable
+    case noReply
+
+    var message: String {
+        switch self {
+        case .saved: "Saved to Notebook."
+        case .waitingToSync: "Saved. Waiting to sync."
+        case .nothingPlaying: "Nothing is playing."
+        case .failed: "Couldn't save. Try again."
+        case .unreachable: "iPhone isn't reachable."
+        case .noReply: "No reply from iPhone. Check Notebook before trying again."
+        }
+    }
+
+    var isSuccess: Bool { self == .saved || self == .waitingToSync }
+
+    static func phoneRefusal(reason: String?) -> Self {
+        switch reason {
+        case "nothingPlaying": .nothingPlaying
+        case "notReady": .unreachable
+        default: .failed
+        }
+    }
+}
+
 /// The Watch's read model of the phone's playback state.
 ///
 /// The watch renders the last `WatchSnapshot` it decoded and never blocks on the
@@ -49,6 +80,8 @@ final class WatchViewModel {
     /// A short note for the UI after the phone refused a command or could not
     /// receive it; nil while no command has failed.
     private(set) var commandFailed: String?
+    /// The last one-shot Notebook capture result, shown without interrupting playback.
+    private(set) var notebookFeedback: WatchNotebookFeedback?
     /// Whether the system reports the phone as reachable right now.
     var isPhoneReachable = false { didSet { if !isPhoneReachable { endHold() } } }
     /// The transport commands are handed to; set by the session client.
@@ -58,10 +91,12 @@ final class WatchViewModel {
     enum ControlKey: Hashable {
         case toggle, skipBack, skipForward
         case episode(String), rate(Double), sleepMinutes(Int), sleepEnd, sleepCancel
+        case notebookCapture
     }
 
     /// What an inbound snapshot must show before a pending control is confirmed.
     private enum Expectation {
+        case noChange
         case playing(Bool)
         case speed(Double)
         case movedPosition
@@ -170,11 +205,13 @@ final class WatchViewModel {
             generation: generation, sentAt: now(), baseline: baseline,
             expected: Self.expectation(for: action, in: baseline))
         commandFailed = nil
+        if action == .captureNotebook { notebookFeedback = nil }
         pendingExpiryTasks[key] = Task { [weak self] in
             guard !Task.isCancelled else { return }
             try? await sleep(Self.pendingTimeout)
             guard let self, self.pendingCommands[key]?.generation == generation else { return }
             self.clearPending(key)
+            if action == .captureNotebook { self.notebookFeedback = .noReply }
         }
         commandSender(WatchCommand(action: action))
         return true
@@ -195,6 +232,22 @@ final class WatchViewModel {
         commandFailed = note
     }
 
+    /// Acknowledges a capture only when the phone says it reached its durable path.
+    func notebookCaptureDidSucceed(queued: Bool) {
+        guard pendingControls.contains(.notebookCapture) else { return }
+        clearPending(.notebookCapture)
+        commandFailed = nil
+        notebookFeedback = queued ? .waitingToSync : .saved
+    }
+
+    /// Records a typed refusal from the phone without claiming that the clip was saved.
+    func notebookCaptureDidFail(_ feedback: WatchNotebookFeedback) {
+        guard pendingControls.contains(.notebookCapture) else { return }
+        clearPending(.notebookCapture)
+        commandFailed = nil
+        notebookFeedback = feedback
+    }
+
     /// Eligibility and pending feedback use the exact same semantic key as sending.
     func isPending(_ action: WatchCommand.Action) -> Bool { pendingControls.contains(Self.key(for: action)) }
 
@@ -203,6 +256,7 @@ final class WatchViewModel {
         switch action {
         case let .setRate(rate): return WatchSpeeds.contains(rate)
         case let .startSleep(minutes): return Self.sleepMinutes.contains(minutes)
+        case .captureNotebook: return snapshot?.nowPlaying != nil
         default: return true
         }
     }
@@ -228,7 +282,10 @@ final class WatchViewModel {
     private func expireTimedOutPending() {
         let cutoff = now().addingTimeInterval(-Self.pendingTimeout)
         for key in pendingControls {
-            if let sentAt = pendingCommands[key]?.sentAt, sentAt <= cutoff { clearPending(key) }
+            if let sentAt = pendingCommands[key]?.sentAt, sentAt <= cutoff {
+                clearPending(key)
+                if key == .notebookCapture { notebookFeedback = .noReply }
+            }
         }
     }
 
@@ -246,6 +303,7 @@ final class WatchViewModel {
         if let baseline = pending.baseline?.publishedAt, let published = snapshot.publishedAt,
            published <= baseline { return false }
         switch pending.expected {
+        case .noChange: return false
         case let .playing(expected): return snapshot.nowPlaying?.isPlaying == expected
         case let .speed(expected): return snapshot.rate == expected
         case .movedPosition:
@@ -261,6 +319,7 @@ final class WatchViewModel {
         for action: WatchCommand.Action, in baseline: WatchSnapshot?
     ) -> Expectation {
         switch action {
+        case .captureNotebook: return .noChange
         case .toggle: return .playing(!(baseline?.nowPlaying?.isPlaying ?? false))
         case .skipBack, .skipForward, .seek: return .movedPosition
         case let .playRow(episodeID): return .episode(episodeID)
@@ -273,6 +332,7 @@ final class WatchViewModel {
 
     private static func key(for action: WatchCommand.Action) -> ControlKey {
         switch action {
+        case .captureNotebook: return .notebookCapture
         case let .seek(_, direction, _, _, _, _): return direction == .forward ? .skipForward : .skipBack
         case .toggle: return .toggle
         case .skipBack: return .skipBack
@@ -329,6 +389,10 @@ final class WatchViewModel {
     /// Cancels any running sleep timer.
     @discardableResult
     func cancelSleep() -> Bool { send(.cancelSleep) }
+
+    /// Sends one phone-owned capture request for the current podcast.
+    @discardableResult
+    func captureNotebook() -> Bool { send(.captureNotebook) }
 }
 
 extension WatchViewModel {

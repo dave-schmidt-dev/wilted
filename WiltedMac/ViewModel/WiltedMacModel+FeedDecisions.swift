@@ -163,7 +163,7 @@ extension WiltedMacModel {
         failedFeedDecisionIDs.formUnion(ids.filter { !committed.contains($0) })
     }
 
-    private func advanceLibraryReadProvenance() {
+    func advanceLibraryReadProvenance() {
         libraryReadEpoch &+= 1
         lastAppliedLibraryReadEpoch = libraryReadEpoch
     }

@@ -5,8 +5,8 @@ import XCTest
 import WiltedDomain
 @testable import WiltedProducer
 
-/// V22 adds the first-deferral time and deferral count to the work ticket.
-/// Every ticket written at V21 must open unchanged, with both new fields nil.
+/// V22 adds deferral fields; the current V23 migration must carry them through
+/// unchanged while adding the Notebook entity.
 final class LocalLibraryV22MigrationTests: XCTestCase {
     private let origin = Date(timeIntervalSince1970: 1_700_000_000)
     private let newColumns: Set<String> = ["ZFIRSTDEFERREDAT", "ZDEFERRALCOUNT"]
@@ -73,12 +73,15 @@ final class LocalLibraryV22MigrationTests: XCTestCase {
         let store = try LocalLibraryStore(url: url)
         let version = await store.schemaVersion
         let backupValue = await store.migrationBackupURL
-        XCTAssertEqual(version, .v22)
-        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url), .known(22))
+        XCTAssertEqual(version, .v23)
+        XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url), .known(23))
         let backup = try XCTUnwrap(backupValue, "a V21 store is backed up before it migrates")
         XCTAssertEqual(try Data(contentsOf: backup), original, "the retained backup is the checkpointed V21 source")
         XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: backup), .known(21))
-        XCTAssertEqual(try LocalLibraryStore.tableRowCounts(at: url), before, "every table keeps its exact row count")
+        var expected = before
+        expected["ZNOTEBOOKENTRYRECORD"] = 0
+        expected["ZNOTEBOOKREVISIONCUESRECORD"] = 0
+        XCTAssertEqual(try LocalLibraryStore.tableRowCounts(at: url), expected, "every table keeps its exact row count")
 
         XCTAssertTrue(try columns(of: "ZWORKTICKETRECORD", at: url).isSuperset(of: newColumns))
         XCTAssertEqual(try quotedRows(of: "ZWORKTICKETRECORD", columns: ticketColumns, at: url), rowsBefore,
@@ -108,13 +111,13 @@ final class LocalLibraryV22MigrationTests: XCTestCase {
         XCTAssertEqual(tickets, fixtureTickets())
     }
 
-    func testV22MigrationFailureRestoresTheV21Source() throws {
+    func testCurrentMigrationFailureRestoresTheV21Source() throws {
         let url = makeURL(); defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         try writeV21Fixture(at: url)
         let original = try Data(contentsOf: url)
         let counts = try LocalLibraryStore.tableRowCounts(at: url)
         let hooks = LocalLibraryOpenHooks(afterMigration: {
-            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url), .known(22))
+            XCTAssertEqual(try LocalLibraryStore.diskSchemaVersion(at: url), .known(23))
             throw InjectedMigrationFailure()
         })
         var retained: URL?

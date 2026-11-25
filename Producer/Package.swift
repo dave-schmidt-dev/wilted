@@ -23,6 +23,7 @@ let package = Package(
             name: "WiltedProducerTests",
             dependencies: [
                 "WiltedProducer",
+                .product(name: "WiltedCatalog", package: "WiltedKit"),
                 .product(name: "WiltedDomain", package: "WiltedKit"),
                 .product(name: "WiltedLibrary", package: "WiltedKit"),
             ]

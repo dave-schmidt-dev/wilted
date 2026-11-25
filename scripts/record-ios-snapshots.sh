@@ -59,6 +59,8 @@ for package in WiltedKit Producer CloudSync Playback; do
   cp "$repo_root/$package/Package.swift" "$root/$package/Package.swift"
   cp -R "$repo_root/$package/Sources" "$repo_root/$package/Tests" "$root/$package/"
 done
+mkdir -p "$root/Producer/Runtime/src/wilted"
+cp "$repo_root/Producer/Runtime/src/wilted/article_voice.py" "$root/Producer/Runtime/src/wilted/"
 
 # Remove copied PNGs so each requested output must be created in this run.
 rm -f "$root/$snapshots"/*.png

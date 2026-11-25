@@ -33,16 +33,23 @@ final class WiltedMacFeedPolicyBoard {
     }
     /// The podcast feeds whose preparation also removes the show's own promotion.
     private(set) var selfPromotionFeedIDs: Set<String> = []
+    private(set) var loudnessFeedIDs: Set<String> = []
+    private(set) var loudnessOffFeedIDs: Set<String> = []
     /// The podcast feeds the owner has marked as already ad-free (preparation leaves audio uncut).
     private(set) var adFreeFeedIDs: Set<String> = []
     /// The podcast feeds confirmed to send transcripts to the online ad labeller.
     private(set) var confirmedAdFeedIDs: Set<String> = []
     private(set) var showStartOffsets: [String: LibraryShowStartOffset] = [:]
+    private(set) var showPlaybackSpeeds: [String: LibraryShowPlaybackSpeed] = [:]
     private(set) var showStartOffsetConflictFeedIDs: Set<String> = []
+    private(set) var showPlaybackSpeedConflictFeedIDs: Set<String> = []
     private var showStartOffsetOwner: String?
     private var showStartOffsetsWritable = false
+    private var showPlaybackSpeedsWritable = false
     var showStartOffsetResetRevisions: [String: Int64] = [:]
+    var showPlaybackSpeedResetRevisions: [String: Int64] = [:]
     @ObservationIgnored var showStartOffsetEditTasks: [String: Task<LibraryShowStartOffset?, Never>] = [:]
+    @ObservationIgnored var showPlaybackSpeedEditTasks: [String: Task<LibraryShowPlaybackSpeed?, Never>] = [:]
     @ObservationIgnored private var rules: [String: EpisodeMatchRules] = [:]
     @ObservationIgnored private var editors: [String: WiltedMacFeedRulesEditor] = [:]
     @ObservationIgnored private var writeChain: Task<Void, Never>?
@@ -86,6 +93,8 @@ final class WiltedMacFeedPolicyBoard {
     /// Refreshes the page and Settings summary after consent changes in the global confirmation sheet.
     func refreshAdPreferences() {
         selfPromotionFeedIDs = Set(WiltedMacSelfPromotionPreference(preferences: model.preferences).feedIDs)
+        loudnessFeedIDs = Set(WiltedMacLoudnessPreference(preferences: model.preferences).feedIDs)
+        loudnessOffFeedIDs = Set(WiltedMacLoudnessPreference(preferences: model.preferences).offFeedIDs)
         adFreeFeedIDs = Set(WiltedMacAdFreeFeedPreference(preferences: model.preferences).feedIDs)
         confirmedAdFeedIDs = Set(AdLabellerPreferences(preferences: model.preferences).confirmedFeedIDs)
     }
@@ -102,6 +111,63 @@ final class WiltedMacFeedPolicyBoard {
     func startOffsetSeconds(for feedID: String) -> Double { showStartOffsets[feedID]?.seconds ?? 0 }
 
     func isStartOffsetCustomized(_ feedID: String) -> Bool { startOffsetSeconds(for: feedID) > 0 }
+
+    func showPlaybackSpeed(for feedID: String) -> Double? { showPlaybackSpeeds[feedID]?.speed }
+
+    func globalPlaybackSpeed() -> Double {
+        guard model.preferences.object(forKey: WiltedMacModel.playbackRatePreferenceKey) != nil else {
+            return WiltedMacModel.initialPlaybackRate
+        }
+        return PlaybackSpeeds.nearest(
+            model.preferences.double(forKey: WiltedMacModel.playbackRatePreferenceKey),
+            fallback: WiltedMacModel.initialPlaybackRate)
+    }
+
+    func isShowPlaybackSpeedCustomized(_ feedID: String) -> Bool { showPlaybackSpeed(for: feedID) != nil }
+
+    func canEditShowPlaybackSpeed(_ feedID: String) -> Bool {
+        isLoaded(feedID) && !isArticleFeed(feedID) && showPlaybackSpeedsWritable
+    }
+
+    @discardableResult
+    func setShowPlaybackSpeed(_ speed: Double?, for feedID: String) async -> LibraryShowPlaybackSpeed? {
+        guard showPlaybackSpeedsWritable, let owner = showStartOffsetOwner, let store = model.store,
+              let id = try? ItemID(rawValue: feedID), !isArticleFeed(feedID),
+              speed.map(PlaybackSpeeds.contains) ?? true else { return nil }
+        let current = showPlaybackSpeeds[feedID]
+            ?? (try? LibraryShowPlaybackSpeed(feedID: id, speed: nil, revision: 0))
+        guard let current else { return nil }
+        if current.speed == speed { return current }
+        let result: WiltedMacShowPlaybackSpeedApplyResult
+        do {
+            result = try await WiltedMacShowPlaybackSpeedStore(store: store).apply(
+                commandID: UUID().uuidString, owner: owner, feedID: id,
+                speed: speed, basedOnRevision: current.revision)
+        } catch {
+            Self.log.error("show playback speed save failed: \(LogSafeError.describe(error), privacy: .public)")
+            return nil
+        }
+        switch result {
+        case let .applied(updated):
+            showPlaybackSpeeds[feedID] = updated
+            showPlaybackSpeedConflictFeedIDs.remove(feedID)
+            model.librarySyncController?.requestPublish()
+            return updated
+        case let .conflict(authoritative):
+            showPlaybackSpeeds[feedID] = authoritative
+            showPlaybackSpeedConflictFeedIDs.insert(feedID)
+            return nil
+        }
+    }
+
+    func scheduleShowPlaybackSpeedEdit(_ speed: Double?, for feedID: String, reset: Bool = false) {
+        if reset { showPlaybackSpeedResetRevisions[feedID] = nil }
+        showPlaybackSpeedEditTasks[feedID] = Task { @MainActor in
+            let updated = await self.setShowPlaybackSpeed(speed, for: feedID)
+            if reset, let updated { self.showPlaybackSpeedResetRevisions[feedID] = updated.revision }
+            return updated
+        }
+    }
 
     func canEditStartOffset(_ feedID: String) -> Bool {
         isLoaded(feedID) && !isArticleFeed(feedID) && showStartOffsetsWritable
@@ -167,15 +233,20 @@ final class WiltedMacFeedPolicyBoard {
             let offsetOwner = binding?.ownerToken ?? (binding == nil ? "local-library" : nil)
             if let offsetOwner {
                 showStartOffsets = try await WiltedMacShowStartOffsetStore(store: store).offsets(owner: offsetOwner)
+                showPlaybackSpeeds = try await WiltedMacShowPlaybackSpeedStore(store: store).speeds(owner: offsetOwner)
                 showStartOffsetOwner = offsetOwner
                 showStartOffsetsWritable = binding == nil
                     || (binding?.state == .bound && (model.libraryAccountStatus?.allowsSync ?? false))
+                showPlaybackSpeedsWritable = showStartOffsetsWritable
             } else {
                 showStartOffsets = [:]
+                showPlaybackSpeeds = [:]
                 showStartOffsetOwner = nil
                 showStartOffsetsWritable = false
+                showPlaybackSpeedsWritable = false
             }
             showStartOffsetConflictFeedIDs = []
+            showPlaybackSpeedConflictFeedIDs = []
             let readRevision = mutationRevision
             await reloadReadHookForTesting?()
             guard isActiveReload(reloadID) else { return }
@@ -377,6 +448,25 @@ final class WiltedMacFeedPolicyBoard {
     // MARK: Own promotion
 
     func removesSelfPromotion(_ feedID: String) -> Bool { selfPromotionFeedIDs.contains(feedID) }
+
+    func loudnessOverride(_ feedID: String) -> WiltedMacLoudnessOverride {
+        WiltedMacLoudnessPreference(preferences: model.preferences).override(feedID: feedID)
+    }
+
+    func evensOutLoudness(_ feedID: String) -> Bool {
+        WiltedMacLoudnessPreference(preferences: model.preferences).isEnabled(
+            feedID: feedID, globalDefault: model.automationSettings.levelVoices)
+    }
+
+    @discardableResult
+    func setLoudnessOverride(_ value: WiltedMacLoudnessOverride, for feedID: String) -> Bool {
+        guard isLoaded(feedID), !isArticleFeed(feedID) else { return false }
+        WiltedMacLoudnessPreference(preferences: model.preferences).set(feedID: feedID, override: value)
+        loudnessFeedIDs = Set(WiltedMacLoudnessPreference(preferences: model.preferences).feedIDs)
+        loudnessOffFeedIDs = Set(WiltedMacLoudnessPreference(preferences: model.preferences).offFeedIDs)
+        model.loudnessFeedsDidChange()
+        return true
+    }
 
     /// Saves whether preparation also removes this podcast feed's own promotion, in the
     /// Mac's preferences. Returns false, changing nothing, for a feed that is not loaded or

@@ -93,12 +93,60 @@ assert_contains 'WiltedWatchTests' "$repo_root/project.yml"
 for method in testNowPlayingCapture testUpNextCapture testSpeedCapture testSleepCapture; do
   assert_contains "$method" "$repo_root/WiltedWatchTests/WatchScreenCaptureTests.swift"
 done
+for method in \
+  testNotebookWatchIntentSendsOnePhoneCommandAndShowsAcknowledgement \
+  testNotebookWatchIntentReportsTypedFailureAndAllowsRetry \
+  testNotebookWatchIntentRequiresAnActiveEpisode \
+  testNotebookWatchIntentMapsPhoneRefusalsToHonestFeedback; do
+  assert_contains "$method" "$repo_root/WiltedWatchTests/NotebookCaptureIntentTests.swift"
+done
+assert_contains 'xcresulttool get test-results tests --path "$result_bundle"' "$watch_lib"
+assert_contains 'assert_watch_capture_test_results "$test_results"' "$watch_lib"
+
+python3 - "$tmp_dir" <<'PYCODE'
+import json
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+names = [
+    "testNotebookWatchIntentSendsOnePhoneCommandAndShowsAcknowledgement()",
+    "testNotebookWatchIntentReportsTypedFailureAndAllowsRetry()",
+    "testNotebookWatchIntentRequiresAnActiveEpisode()",
+    "testNotebookWatchIntentMapsPhoneRefusalsToHonestFeedback()",
+]
+for case, fail in (("passed", None), ("missing", "all"), ("failed", names[0])):
+    cases = []
+    for name in names:
+        if fail == "all" and name == names[-1]: continue
+        cases.append({
+            "nodeIdentifier": "NotebookCaptureIntentTests/" + name,
+            "nodeType": "Test Case",
+            "result": "Failed" if name == fail else "Passed",
+        })
+    (root / ("watch-tests-" + case + ".json")).write_text(json.dumps({"testNodes": [{"children": cases}]}))
+PYCODE
+
+for case in passed missing failed; do
+  log="$tmp_dir/watch-tests-$case.log"
+  result=0
+  bash -c 'optin_leg_names=(); optin_leg_fns=(); optin_leg_reports=(); source "$1"; assert_watch_capture_test_results "$2"' \
+    _ "$watch_lib" "$tmp_dir/watch-tests-$case.json" >"$log" 2>&1 || result=$?
+  if [[ "$case" == passed ]]; then
+    [[ "$result" -eq 0 ]] || { cat "$log" >&2; exit 1; }
+assert_contains 'native.watch-tests.passed suite=NotebookCaptureIntentTests cases=4' "$log"
+  else
+    [[ "$result" -ne 0 ]] || { cat "$log" >&2; exit 1; }
+    assert_contains 'native.watch-tests.error' "$log"
+  fi
+done
 for count in 0 3; do
   log="$tmp_dir/count-$count.log"
   [[ "$(run_case "count-$count" "$log" WILTED_GATE_LEGS=watchos-build NATIVE_SELF_TEST_WATCH_COUNT="$count")" -ne 0 ]] || { cat "$log" >&2; exit 1; }
 done
 log="$tmp_dir/summary.log"
 [[ "$(run_case summary "$log" WILTED_GATE_LEGS=watchos-build NATIVE_FORCE_FAILED_RESULT_SUMMARY_LEG=watchos-build)" -ne 0 ]] || { cat "$log" >&2; exit 1; }
+
 
 assert_contains 'leg_watchos_build()' "$watch_lib"
 assert_contains 'native-gate-watch.sh' "$gate"

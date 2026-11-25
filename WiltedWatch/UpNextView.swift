@@ -62,6 +62,11 @@ struct UpNextView: View {
     }
 
     @ViewBuilder private var statusContent: some View {
+        if let feedback = model.notebookFeedback {
+            Text(feedback.message)
+                .font(.caption2)
+                .foregroundStyle(WiltedTheme.color(feedback.isSuccess ? .success : .error, scheme: colorScheme))
+        }
         if let note = model.unreachableNote {
             Text(note)
                 .font(.caption2)

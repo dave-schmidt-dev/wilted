@@ -22,6 +22,8 @@ public struct LibraryStats: Codable, Equatable, Sendable {
     public var supportedIntentActions: [String]?
     /// Mac-authoritative per-feed start offsets. Nil from older Macs means all feeds start at zero.
     public var showStartOffsets: [String: LibraryShowStartOffset]?
+    /// Mac-authoritative per-feed playback rates. Nil from older Macs means no show overrides.
+    public var showPlaybackSpeeds: [String: LibraryShowPlaybackSpeed]?
 
     public init(
         audioProcessedSeconds: Double = 0,
@@ -33,7 +35,8 @@ public struct LibraryStats: Codable, Equatable, Sendable {
         minutesSkipped: Double? = nil,
         updatedAt: Date? = nil,
         supportedIntentActions: [String]? = nil,
-        showStartOffsets: [String: LibraryShowStartOffset]? = nil
+        showStartOffsets: [String: LibraryShowStartOffset]? = nil,
+        showPlaybackSpeeds: [String: LibraryShowPlaybackSpeed]? = nil
     ) {
         self.audioProcessedSeconds = audioProcessedSeconds
         self.speechGeneratedSeconds = speechGeneratedSeconds
@@ -45,6 +48,7 @@ public struct LibraryStats: Codable, Equatable, Sendable {
         self.updatedAt = updatedAt
         self.supportedIntentActions = supportedIntentActions
         self.showStartOffsets = showStartOffsets
+        self.showPlaybackSpeeds = showPlaybackSpeeds
     }
 
     /// Maps the Mac's four lifetime counters onto the wire value. Negative or non-finite

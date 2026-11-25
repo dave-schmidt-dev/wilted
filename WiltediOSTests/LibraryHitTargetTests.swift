@@ -47,6 +47,19 @@ final class LibraryHitTargetTests: XCTestCase {
         }
     }
 
+    /// Lets an animated NavigationStack push finish before inspecting its destination.
+    private func waitForElement<Content: View>(_ identifier: String, in hosted: HostedView<Content>) -> HostedElement? {
+        for _ in 0..<8 {
+            if let element = hosted.element(identifier) { return element }
+            hosted.settle(0.1)
+        }
+        return hosted.element(identifier)
+    }
+
+    private func mountedIdentifiers<Content: View>(in hosted: HostedView<Content>) -> String {
+        hosted.elements().compactMap(\.identifier).joined(separator: ", ")
+    }
+
     func testListRowButtonsAreFullTouchTargetsThatDoNotOverlap() async throws {
         try await seedMixed()
         let hosted = HostedView(NavigationStack { LibraryListView(model: fixture.model, onPlay: { _ in }) })
@@ -75,6 +88,40 @@ final class LibraryHitTargetTests: XCTestCase {
         let fresh = HostedView(NavigationStack { LibraryEpisodeDetailView(model: fixture.model, entryID: fixture.id("b"), onPlay: { _ in }) })
         XCTAssertNotNil(fresh.element("wilted-library-action-done-b"), "W-INV-010: audio on the phone offers it before it is started")
         XCTAssertNotNil(fresh.element("wilted-library-action-remove-b"))
+    }
+
+    func testShowSettingsIsReachableFromTheLarderAndEpisodeDetail() async throws {
+        try await seedMixed()
+        let showID = fixture.id("show")
+        let show = try XCTUnwrap(fixture.model.decisionContent.sources[showID])
+        XCTAssertEqual(show.kind, .podcastFeed)
+        let larder = HostedView(NavigationStack {
+            LibraryListView(model: fixture.model, onPlay: { _ in }, defaultSpeed: 1.25)
+        })
+        let shortcut = try XCTUnwrap(larder.element("wilted-library-row-show-settings-a"))
+        XCTAssertTrue(shortcut.isButton)
+        XCTAssertGreaterThanOrEqual(shortcut.frame.width, minimum)
+        XCTAssertGreaterThanOrEqual(shortcut.frame.height, minimum)
+        let playbackID = "wilted-library-show-playback-speed-\(showID.rawValue)"
+        let startOffsetID = "wilted-library-show-start-offset-\(showID.rawValue)"
+        XCTAssertNil(larder.element(playbackID), "the show page is not mounted before its control is activated")
+        XCTAssertTrue(shortcut.activate())
+        XCTAssertNotNil(
+            waitForElement(playbackID, in: larder),
+            "activating the Larder show-settings control should push the show page; mounted: \(mountedIdentifiers(in: larder))")
+        XCTAssertNotNil(larder.element(startOffsetID))
+
+        let detail = HostedView(NavigationStack {
+            LibraryEpisodeDetailView(model: fixture.model, entryID: fixture.id("a"), defaultSpeed: 1.25)
+        })
+        XCTAssertNil(detail.element(playbackID), "the show page is not mounted before its link is activated")
+        let detailLink = try XCTUnwrap(detail.element("wilted-library-detail-show-settings"))
+        XCTAssertTrue(detailLink.isButton)
+        XCTAssertTrue(detailLink.activate())
+        XCTAssertNotNil(
+            waitForElement(playbackID, in: detail),
+            "activating the episode-detail link should push the show page; mounted: \(mountedIdentifiers(in: detail))")
+        XCTAssertNotNil(detail.element(startOffsetID))
     }
 
     func testSettingsControlsAreFullTouchTargetsExceptTheSystemStepper() async throws {

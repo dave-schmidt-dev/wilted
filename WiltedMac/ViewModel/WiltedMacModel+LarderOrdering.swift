@@ -6,6 +6,7 @@ import os
 #if canImport(WiltedProducer)
 import WiltedDomain
 import WiltedProducer
+import WiltedLibrary
 #endif
 
 #if WILTED_CLOUDKIT_LIVE
@@ -212,48 +213,6 @@ extension WiltedMacModel {
         return larderEpisodes(in: group).count + larderArticles(in: group).count
     }
 
-    // MARK: - Audiobook chapters
-
-    /// The audiobook details of what the player holds, when it holds a book volume with chapter marks.
-    private var currentChapterDetails: WiltedMacAudiobookDetails? {
-        guard isPodcastPlayback, let details = currentEpisode?.audiobook, !details.chapters.isEmpty else { return nil }
-        return details
-    }
-
-    /// The title of the chapter under the playhead, or nil when no book is playing.
-    var currentChapterTitle: String? {
-        guard let details = currentChapterDetails,
-              let index = details.chapterIndex(at: playbackPositionSeconds) else { return nil }
-        return details.chapters[index].title
-    }
-
-    /// `Chapter 3 of 12`, for the player's chapter line.
-    var currentChapterPositionLabel: String? {
-        guard let details = currentChapterDetails,
-              let index = details.chapterIndex(at: playbackPositionSeconds) else { return nil }
-        return "Chapter \(index + 1) of \(details.chapters.count)"
-    }
-
-    var canSelectPreviousChapter: Bool {
-        currentChapterDetails?.previousChapterStart(from: playbackPositionSeconds) != nil
-    }
-
-    var canSelectNextChapter: Bool {
-        currentChapterDetails?.nextChapterStart(from: playbackPositionSeconds) != nil
-    }
-
-    /// Restarts the current chapter, or goes to the one before it from its first seconds. A seek
-    /// inside the volume's single file.
-    func selectPreviousChapter() {
-        guard let start = currentChapterDetails?.previousChapterStart(from: playbackPositionSeconds) else { return }
-        scrub(to: start)
-    }
-
-    func selectNextChapter() {
-        guard let start = currentChapterDetails?.nextChapterStart(from: playbackPositionSeconds) else { return }
-        scrub(to: start)
-    }
-
     func setPlaybackRate(_ value: Double) {
         playbackRate = Self.clampPlaybackRate(value)
         preferences.set(playbackRate, forKey: Self.playbackRatePreferenceKey)
@@ -281,6 +240,10 @@ extension WiltedMacModel {
     /// command and its checkpoint is written behind it (W-INV-040).
     func scrub(to value: Double) {
         guard value.isFinite else { return }
+        if let episodeID = currentPodcastEpisodeID,
+           let row = episodes.firstIndex(where: { $0.id == episodeID }) {
+            episodes[row].selectedPodcastChapterIndex = nil
+        }
         playbackPositionSeconds = min(max(value, 0), max(0, playbackDurationSeconds))
 #if canImport(WiltedProducer)
         // A scrub is exactly the jump the system cannot extrapolate, and a

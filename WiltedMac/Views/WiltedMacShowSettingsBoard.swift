@@ -8,9 +8,12 @@ struct WiltedMacShowSettingsResetUndo {
     fileprivate let isNews: Bool
     fileprivate let isAdFree: Bool
     fileprivate let removesSelfPromotion: Bool
+    fileprivate let loudnessOverride: WiltedMacLoudnessOverride
     fileprivate let sendsForAdFinding: Bool
     fileprivate let startOffset: LibraryShowStartOffset?
     fileprivate let resetStartOffsetRevision: Int64?
+    fileprivate let playbackSpeed: LibraryShowPlaybackSpeed?
+    fileprivate let resetPlaybackSpeedRevision: Int64?
 }
 
 enum WiltedMacShowSetting: String, CaseIterable {
@@ -21,8 +24,10 @@ enum WiltedMacShowSetting: String, CaseIterable {
     case news
     case removeAds
     case selfPromotion
+    case loudness
     case adFinding
     case startOffset
+    case playbackSpeed
 }
 
 extension WiltedMacFeedPolicyBoard {
@@ -43,10 +48,14 @@ extension WiltedMacFeedPolicyBoard {
             !isArticleFeed(feedID) && isAdFree(feedID)
         case .selfPromotion:
             !isArticleFeed(feedID) && removesSelfPromotion(feedID)
+        case .loudness:
+            !isArticleFeed(feedID) && loudnessOverride(feedID) != .inherit
         case .adFinding:
             !isArticleFeed(feedID) && sendsForAdFinding(feedID)
         case .startOffset:
             !isArticleFeed(feedID) && isStartOffsetCustomized(feedID)
+        case .playbackSpeed:
+            !isArticleFeed(feedID) && isShowPlaybackSpeedCustomized(feedID)
         }
     }
 
@@ -64,8 +73,10 @@ extension WiltedMacFeedPolicyBoard {
             case .news: "Headlines only"
             case .removeAds: "Remove ads"
             case .selfPromotion: "Remove the show's own promotion"
+            case .loudness: "Even out loudness"
             case .adFinding: "Send this show for ad finding"
             case .startOffset: "Start new episodes at"
+            case .playbackSpeed: "Playback speed"
             }
         }
     }
@@ -90,10 +101,14 @@ extension WiltedMacFeedPolicyBoard {
             _ = setAdFree(false, for: feedID)
         case .selfPromotion:
             _ = setRemoveSelfPromotion(false, for: feedID)
+        case .loudness:
+            _ = setLoudnessOverride(.inherit, for: feedID)
         case .adFinding:
             if isOverridden(.adFinding, for: feedID) { resetAdFinding(for: feedID) }
         case .startOffset:
             if isStartOffsetCustomized(feedID) { scheduleStartOffsetEdit(0, for: feedID, reset: true) }
+        case .playbackSpeed:
+            if isShowPlaybackSpeedCustomized(feedID) { scheduleShowPlaybackSpeedEdit(nil, for: feedID, reset: true) }
         }
     }
 
@@ -117,8 +132,9 @@ extension WiltedMacFeedPolicyBoard {
         let undo = WiltedMacShowSettingsResetUndo(
             feedID: feedID, policy: policy(for: feedID), isNews: isNews(feedID),
             isAdFree: isAdFree(feedID), removesSelfPromotion: removesSelfPromotion(feedID),
+            loudnessOverride: loudnessOverride(feedID),
             sendsForAdFinding: sendsForAdFinding(feedID), startOffset: showStartOffsets[feedID],
-            resetStartOffsetRevision: nil
+            resetStartOffsetRevision: nil, playbackSpeed: showPlaybackSpeeds[feedID], resetPlaybackSpeedRevision: nil
         )
 
         // Revoke an opt-in before other changes can restart preparation.
@@ -134,12 +150,17 @@ extension WiltedMacFeedPolicyBoard {
         )
         if isOverridden(.news, for: feedID) { reset(.news, for: feedID) }
         if isOverridden(.selfPromotion, for: feedID) { reset(.selfPromotion, for: feedID) }
+        if isOverridden(.loudness, for: feedID) { reset(.loudness, for: feedID) }
         if isOverridden(.removeAds, for: feedID) { reset(.removeAds, for: feedID) }
         if isOverridden(.startOffset, for: feedID) { reset(.startOffset, for: feedID) }
+        if isOverridden(.playbackSpeed, for: feedID) { reset(.playbackSpeed, for: feedID) }
         return WiltedMacShowSettingsResetUndo(
             feedID: undo.feedID, policy: undo.policy, isNews: undo.isNews, isAdFree: undo.isAdFree,
-            removesSelfPromotion: undo.removesSelfPromotion, sendsForAdFinding: undo.sendsForAdFinding,
-            startOffset: undo.startOffset, resetStartOffsetRevision: showStartOffsetResetRevisions[feedID])
+            removesSelfPromotion: undo.removesSelfPromotion, loudnessOverride: undo.loudnessOverride,
+            sendsForAdFinding: undo.sendsForAdFinding,
+            startOffset: undo.startOffset, resetStartOffsetRevision: showStartOffsetResetRevisions[feedID],
+            playbackSpeed: undo.playbackSpeed,
+            resetPlaybackSpeedRevision: showPlaybackSpeedResetRevisions[feedID])
     }
 
     /// Restores reset choices that still have their reset value, preserving any later edits.
@@ -150,6 +171,7 @@ extension WiltedMacFeedPolicyBoard {
         await settle()
         if model.store != nil {
             await showStartOffsetEditTasks[feedID]?.value
+            await showPlaybackSpeedEditTasks[feedID]?.value
             await reload()
             guard loadState == .loaded, isLoaded(feedID) else { return false }
         }
@@ -168,6 +190,9 @@ extension WiltedMacFeedPolicyBoard {
         if !removesSelfPromotion(feedID), undo.removesSelfPromotion {
             _ = setRemoveSelfPromotion(true, for: feedID)
         }
+        if loudnessOverride(feedID) == .inherit, undo.loudnessOverride != .inherit {
+            _ = setLoudnessOverride(undo.loudnessOverride, for: feedID)
+        }
         if !isAdFree(feedID), undo.isAdFree {
             _ = setAdFree(true, for: feedID)
         }
@@ -181,6 +206,12 @@ extension WiltedMacFeedPolicyBoard {
            showStartOffsets[feedID]?.revision == resetRevision {
             guard let restored = await setStartOffsetSeconds(oldOffset.seconds, for: feedID),
                   restored.seconds == oldOffset.seconds else { return false }
+        }
+        if let oldSpeed = undo.playbackSpeed, let resetRevision = undo.resetPlaybackSpeedRevision,
+           showPlaybackSpeeds[feedID]?.speed == nil,
+           showPlaybackSpeeds[feedID]?.revision == resetRevision {
+            guard let restored = await setShowPlaybackSpeed(oldSpeed.speed, for: feedID),
+                  restored.speed == oldSpeed.speed else { return false }
         }
         let expectedPolicy = policy(for: feedID)
         let expectedHeadlinesOnly = isNews(feedID)

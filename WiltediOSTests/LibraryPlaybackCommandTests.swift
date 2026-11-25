@@ -7,10 +7,11 @@ import XCTest
 @testable import WiltediOS
 
 /// An engine that counts loads and can refuse to play, like a route the system will not open.
-private final class CommandEngine: ListenerAudioEngine, @unchecked Sendable {
+private final class CommandEngine: ListenerAudioEngine, LibraryRateAdjustable, @unchecked Sendable {
     var duration = 600.0
     var currentTime = 0.0
     var isPlaying = false
+    var rate: Float = 1
     var refusesPlay = false
     private(set) var loads = 0
     func load(url: URL) throws { loads += 1 }
@@ -55,7 +56,7 @@ final class LibraryPlaybackCommandTests: XCTestCase {
     private func id(_ raw: String) -> ItemID { try! ItemID(rawValue: raw) }
 
     /// Episodes "a" and "b" queued and both on the phone; the cache can hold its next lookup.
-    private func makeRig(firstID: String = "a") async throws -> Rig {
+    private func makeRig(firstID: String = "a", chapterRevision: String? = nil) async throws -> Rig {
         let suite = "wilted.command.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
@@ -67,9 +68,23 @@ final class LibraryPlaybackCommandTests: XCTestCase {
         let payload = Data((0..<2_000).map { UInt8($0 % 251) })
         let hash = MediaHash.prefix + SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
         for (offset, raw) in [firstID, "b"].enumerated() {
-            changes.append(.entry(try LibraryEntry(
-                id: id(raw), kind: .podcastEpisode, sourceID: show.id, title: "Episode \(raw.uppercased())", summary: "",
-                publishedAt: Date(timeIntervalSince1970: 1_600_000_000 + Double(offset) * 86_400), durationSeconds: 600)))
+            let entry: LibraryEntry
+            if raw == firstID, let chapterRevision {
+                let chapters = try LibraryPodcastChapters(
+                    entryID: id(raw), revisionID: RevisionID(rawValue: chapterRevision),
+                    chapters: [PodcastChapterMark(title: "Opening", startSeconds: 0)])
+                entry = try LibraryEntry.podcastEpisode(
+                    id: id(raw), sourceID: show.id, title: "Episode \(raw.uppercased())", summary: "",
+                    publishedAt: Date(timeIntervalSince1970: 1_600_000_000 + Double(offset) * 86_400), durationSeconds: 600,
+                    payload: PodcastEpisodePayload(
+                        enclosureURL: URL(string: "https://media.example.test/\(raw).mp3")!,
+                        preparedChapters: chapters))
+            } else {
+                entry = try LibraryEntry(
+                    id: id(raw), kind: .podcastEpisode, sourceID: show.id, title: "Episode \(raw.uppercased())", summary: "",
+                    publishedAt: Date(timeIntervalSince1970: 1_600_000_000 + Double(offset) * 86_400), durationSeconds: 600)
+            }
+            changes.append(.entry(entry))
             changes.append(.slot(try QueueSlot(entryID: id(raw), sortKey: Double(offset))))
 
         }
@@ -130,6 +145,21 @@ final class LibraryPlaybackCommandTests: XCTestCase {
         XCTAssertEqual(outcome, .failed(.missingMedia))
         XCTAssertEqual(rig.engine.loads, 0)
         XCTAssertFalse(rig.engine.isPlaying)
+    }
+
+    func testStartCarriesPodcastChaptersOnlyForTheExactCachedRevision() async throws {
+        let matching = try await makeRig(chapterRevision: "rev-1")
+        let matchingRow = try matching.row("a")
+        let matchingOutcome = await matching.model.startCached(matchingRow, kind: .select)
+        XCTAssertEqual(matchingOutcome, .started)
+        XCTAssertEqual(matching.player.item?.podcastChapters.map(\.title), ["Opening"])
+
+        let stale = try await makeRig(chapterRevision: "older-revision")
+        let staleRow = try stale.row("a")
+        let staleOutcome = await stale.model.startCached(staleRow, kind: .select)
+        XCTAssertEqual(staleOutcome, .started)
+        XCTAssertTrue(stale.player.item?.podcastChapters.isEmpty == true,
+                      "chapter marks from a replaced prepared revision cannot steer this file")
     }
 
     func testDeletedURLCapturedDuringManualStartFailsBeforeEngineEffect() async throws {
@@ -207,6 +237,24 @@ final class LibraryPlaybackCommandTests: XCTestCase {
         XCTAssertEqual(outcome, .started)
         XCTAssertNil(rig.model.playbackCommand)
         XCTAssertTrue(rig.player.isPlaying)
+    }
+
+    func testShowSpeedStartsFreshEpisodeAndPausedResumeKeepsTheChosenRate() async throws {
+        let rig = try await makeRig()
+        let row = try rig.row("a")
+        let showID = try XCTUnwrap(row.showID)
+        rig.model.showPlaybackSpeeds[showID.rawValue] = try LibraryShowPlaybackSpeed(
+            feedID: showID, speed: 1.5, revision: 1)
+
+        let started = await rig.model.startCached(row, kind: .select)
+        XCTAssertEqual(started, .started)
+        XCTAssertEqual(rig.engine.rate, 1.5, "a fresh episode uses its show's Mac-authoritative speed")
+
+        rig.player.pause(reason: "test")
+        rig.player.setRate(1.75)
+        let resumed = await rig.model.startCached(row, kind: .select)
+        XCTAssertEqual(resumed, .resumed)
+        XCTAssertEqual(rig.engine.rate, 1.75, "resuming the loaded paused episode keeps its current speed")
     }
 
     // MARK: Duplicate and supersession (RACE phone/carplay)

@@ -221,6 +221,7 @@ public actor InMemoryLibraryServer {
         case .entry: return snapshot.entries[key.id].map(LibraryChange.entry)
         case .slot: return snapshot.slots[key.id].map(LibraryChange.slot) ?? .slotRemoved(entryID: key.id)
         case .listening: return snapshot.listening[key.id].map(LibraryChange.listening)
+        case .notebookEntry: return snapshot.notebookEntries[key.id].map(LibraryChange.notebookEntry)
         }
     }
 }

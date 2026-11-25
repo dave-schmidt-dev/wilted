@@ -27,6 +27,8 @@ public struct WatchCommand: Codable, Equatable, Sendable {
         case startSleepEndOfEpisode
         /// Cancel any running sleep timer.
         case cancelSleep
+        /// Ask the phone to capture its current podcast playhead to Notebook.
+        case captureNotebook
     }
 
     /// Version of the wire format this value uses.
@@ -59,6 +61,7 @@ extension WatchCommand.Action: Codable {
         case startSleep
         case startSleepEndOfEpisode
         case cancelSleep
+        case captureNotebook
     }
 
     public init(from decoder: Decoder) throws {
@@ -96,6 +99,8 @@ extension WatchCommand.Action: Codable {
             self = .startSleepEndOfEpisode
         case .cancelSleep:
             self = .cancelSleep
+        case .captureNotebook:
+            self = .captureNotebook
         }
     }
 
@@ -129,6 +134,8 @@ extension WatchCommand.Action: Codable {
             try container.encode(Kind.startSleepEndOfEpisode, forKey: .type)
         case .cancelSleep:
             try container.encode(Kind.cancelSleep, forKey: .type)
+        case .captureNotebook:
+            try container.encode(Kind.captureNotebook, forKey: .type)
         }
     }
 }

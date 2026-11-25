@@ -95,7 +95,6 @@ extension LibraryAppModel {
             mediaState(for: $0.id) == .onPhone && !isFinishedHere($0.id)
                 && LibraryListing.completionDate($0, finished: logicalFinished) == nil
         }
-        let rate = completion.rate
         for candidate in candidates {
             // Re-read after every await: a command given while the previous candidate was
             // looked at cancels the whole walk.
@@ -109,7 +108,15 @@ extension LibraryAppModel {
             }
             switch outcome {
             case .started, .resumed:
-                player.setRate(rate)
+                // Keep the live listener choice while advancing within the same show, unless
+                // that show has an explicit policy. A new show's start already resolved its
+                // own speed (or the phone default) in `startCached`; never copy the finished
+                // show's rate over that destination decision.
+                if endedRow?.kind == .podcastEpisode, candidate.kind == .podcastEpisode,
+                   let endedShowID = endedRow?.showID, candidate.showID == endedShowID,
+                   showPlaybackSpeed(for: endedShowID) == nil {
+                    player.setRate(completion.rate)
+                }
                 return
             case .superseded:
                 // Withdrawal fences this candidate's delayed start without

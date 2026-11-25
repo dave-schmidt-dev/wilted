@@ -154,6 +154,7 @@ from there. The planner, `SleepTimer` and `LibraryPlayer.stopsAfterCurrentItem` 
 | | nothing loaded | none | "Nothing is playing." |
 | | already at its end | none | "<title> has finished." |
 | sleepTimer(off) | always | cancel the timer (minutes or end of episode) | "Sleep timer is off." |
+| saveThat | current episode loaded | capture the trailing 30 seconds through the phone's durable Notebook outbox | "Saved to Notebook." after durable capture; an unavailable capture reports failure |
 
 - Time left is wall time at the current speed (`(duration - position) / rate`), so it matches what the listener
   will sit through, and it is the same while paused.
@@ -209,7 +210,7 @@ Apple's App Selection guidance (written with music apps as its examples) lists i
 2. **Library count.** `MediaSiriContext` sets `INMediaUserContext.numberOfLibraryItems` to the count of episodes downloaded on the phone and calls `becomeCurrent()`.
 3. **Show vocabulary.** `MediaSiriContext` registers the current show titles with `INVocabulary.shared().setVocabularyStrings(showTitles, of: .mediaShowTitle)` so Siri recognizes the user's podcast shows when spoken. Both context signals refresh whenever the library queue or media states change.
 
-## App Shortcut phrases (9 of 10)
+## App Shortcut phrases (10 of 10)
 
 Every phrase names the app, none starts with pause, resume, continue, stop or skip, and none stands in
 for "resume" (Siri's own "resume" covers it; Play next would skip ahead).
@@ -225,6 +226,7 @@ for "resume" (Siri's own "resume" covers it; Play next would skip ahead).
 | Downloaded | "What's downloaded in Wilted", "What episodes do I have in Wilted" |
 | Time left | "How much is left in Wilted", "How much time is left in Wilted", "How long is left in Wilted" |
 | Set speed | "Set speed to <0.5, 0.75, 1, 1.25, 1.5, 1.75 or 2> in Wilted", "Set the speed to <speed> in Wilted" |
+| Save clip | "Save that in Wilted" |
 
 Unverified on a physical iPhone: how Siri's speech recognition matches the numeric speed titles and the
 minute presets (the enum cases carry spoken synonyms such as "one and a half" and "an hour"). The

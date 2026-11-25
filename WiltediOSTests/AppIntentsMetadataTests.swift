@@ -11,7 +11,7 @@ final class AppIntentsMetadataTests: XCTestCase {
         "PlayNextEpisodeIntent", "PlayEpisodeIntent", "PlayFirstEpisodeIntent", "PauseEpisodeIntent",
         "ResumeEpisodeIntent", "SkipForwardIntent", "SkipBackIntent", "RestartEpisodeIntent",
         "MarkCompletedIntent", "WhatsPlayingIntent", "ListDownloadedIntent",
-        "TimeLeftIntent", "SetSpeedIntent", "SleepTimerIntent",
+        "TimeLeftIntent", "SetSpeedIntent", "SleepTimerIntent", "SaveThatIntent",
     ]
     /// Voiced by Siri's own transport commands, so they have no App Shortcut phrase.
     private static let unvoiced: Set<String> = [
@@ -56,7 +56,7 @@ final class AppIntentsMetadataTests: XCTestCase {
         XCTAssertEqual(
             withPhrases, Self.intents.subtracting(Self.unvoiced),
             "pause, resume and skip are voiced by Siri's own transport commands and the sleep timer has no shortcut; every other intent has a phrase")
-        XCTAssertEqual(shortcuts.count, 9, "nine App Shortcuts are declared, one slot is free")
+        XCTAssertEqual(shortcuts.count, 10, "App Shortcuts must stay within the system limit")
     }
 
     func testNoPhraseCollidesWithSiriTransportOrStandsInForResume() throws {
@@ -82,5 +82,8 @@ final class AppIntentsMetadataTests: XCTestCase {
         XCTAssertNil(phraseCount["SleepTimerIntent"], "the sleep timer is Shortcuts-app only: Siri sends \"sleep timer\" to the Clock")
         XCTAssertGreaterThanOrEqual(phraseCount["TimeLeftIntent"] ?? 0, 3)
         XCTAssertGreaterThanOrEqual(phraseCount["SetSpeedIntent"] ?? 0, 2)
+        let saveThat = try XCTUnwrap(shortcuts.first { ($0["actionIdentifier"] as? String) == "SaveThatIntent" })
+        let phrases = (saveThat["phraseTemplates"] as? [[String: Any]] ?? []).compactMap { $0["key"] as? String }
+        XCTAssertEqual(phrases, ["Save that in ${applicationName}"], "the save action uses only the app-qualified approved phrase")
     }
 }

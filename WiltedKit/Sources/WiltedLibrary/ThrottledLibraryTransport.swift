@@ -12,6 +12,7 @@ public struct ThrottledLibraryTransport: LibraryTransport {
     private let inner: any LibraryTransport
     public let gate: TransportGate
     public var supportsHeadlineProjection: Bool { inner.supportsHeadlineProjection }
+    public var notebookCloudWriteMode: NotebookCloudWriteMode { inner.notebookCloudWriteMode }
 
     public init(wrapping inner: any LibraryTransport, gate: TransportGate) {
         self.inner = inner

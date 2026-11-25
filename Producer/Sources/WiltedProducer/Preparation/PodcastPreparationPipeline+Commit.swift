@@ -13,6 +13,7 @@ extension PodcastPreparationPipeline {
         audioURL: URL,
         policy: PodcastPreparationPolicySnapshot,
         labelledProvenance: LabelledRunProvenance? = nil,
+        sourceChapters: [PodcastChapterMark] = [],
         onStatus: @escaping @Sendable (PodcastPreparationProgress) -> Void
     ) async throws -> PodcastPreparationResult {
         let sourceContribution = LifetimeStatisticContribution(
@@ -41,6 +42,9 @@ extension PodcastPreparationPipeline {
             )
             try await store.saveReadyRevision(downloadedRevision, mediaURL: audioURL, transcript: transcript,
                                               outcome: outcome, lifetimeStatistics: [sourceContribution])
+            await savePreparedChapterMarks(sourceChapters, for: episode.itemID,
+                                           revisionID: downloadedRevision.revisionID,
+                                           keepIntervals: payload.keepIntervals)
             return finish(payload, revision: downloadedRevision, mediaURL: audioURL,
                           transcript: transcript, onStatus: onStatus)
         }
@@ -118,19 +122,22 @@ extension PodcastPreparationPipeline {
             carrying: carried,
             lifetimeStatistics: lifetimeStatistics
         )
+        await savePreparedChapterMarks(sourceChapters, for: episode.itemID,
+                                       revisionID: revision.revisionID,
+                                       keepIntervals: payload.keepIntervals)
         // Only now is the outcome durable, so only now is the original safe to
         // reclaim: a crash before this point leaves it in place for a retry to
         // find again, and a crash after it leaves an idempotent no-op.
-        reclaimSupersededPodcastAudio(at: audioURL, keeping: finalURL)
+        await reclaimSupersededPodcastAudio(at: audioURL, keeping: finalURL)
         return finish(payload, revision: revision, mediaURL: finalURL, transcript: transcript, onStatus: onStatus)
     }
 
     /// Deletes a superseded episode's source audio once its replacement is
     /// durable. Safe to call more than once, and safe to call when the file
     /// was already removed by an earlier, interrupted attempt.
-    private func reclaimSupersededPodcastAudio(at audioURL: URL, keeping finalURL: URL) {
-        guard audioURL != finalURL, FileManager.default.fileExists(atPath: audioURL.path) else { return }
-        try? FileManager.default.removeItem(at: audioURL)
+    private func reclaimSupersededPodcastAudio(at audioURL: URL, keeping finalURL: URL) async {
+        guard audioURL != finalURL else { return }
+        await store.deleteMediaIfUnreferenced([audioURL])
     }
 
     /// Attaches a bounded policy digest to journal evidence fields.
@@ -143,7 +150,7 @@ extension PodcastPreparationPipeline {
     /// prepared without it keeps the digest it was stored with. A remote
     /// labelled outcome also folds the route, model, level and prompt version;
     /// a local outcome's digest is unchanged.
-    static func policyDigest(
+    public static func policyDigest(
         _ policy: PodcastPreparationPolicySnapshot,
         labelled: LabelledRunProvenance? = nil
     ) -> String {
@@ -151,6 +158,7 @@ extension PodcastPreparationPipeline {
         hasher.update(data: Data(policy.transcriptPolicy.rawValue.utf8))
         hasher.update(data: Data([0, policy.removeAds ? 1 : 0]))
         if policy.removeSelfPromotion { hasher.update(data: Data([0]) + Data("removeSelfPromotion".utf8)) }
+        if policy.evenOutVoiceLoudness { hasher.update(data: Data([0]) + Data("evenOutVoiceLoudness".utf8)) }
         if let labelled {
             hasher.update(data: Data([0]) + Data("labelledRoute".utf8))
             hasher.update(data: Data(labelled.route.utf8))
@@ -214,6 +222,15 @@ extension PodcastPreparationPipeline {
         fields.merge(payload.adAuditDiagnostics) { _, diagnostic in diagnostic }
         fields["adRemovalOutcome"] = payload.adRemovalOutcome
         fields["adsMayRemain"] = payload.adsMayRemain ? "true" : "false"
+        if let loudness = payload.audioLoudness {
+            for key in ["inputIntegratedLufs", "inputTruePeakDbtp", "outputIntegratedLufs",
+                        "outputTruePeakDbtp", "targetIntegratedLufs", "truePeakCeilingDbtp"] {
+                if let value = loudness[key] { fields["loudness.\(key)"] = String(format: "%.2f", value) }
+            }
+        }
+        if let reason = payload.audioLoudnessSkippedReason {
+            fields["loudness.skippedReason"] = reason
+        }
         if let warning = payload.warning { fields["warning"] = String(warning.prefix(256)) }
         // Kept apart from `removedSeconds`, which counts advertisements only.
         let silenceSeconds = payload.silenceTrims.reduce(0) { $0 + ($1.upperBound - $1.lowerBound) }
@@ -224,7 +241,9 @@ extension PodcastPreparationPipeline {
         }
         let evidence = try? PreparationEvidence(kind: "worker-result", fields: fields)
         return PodcastPreparationProgress(stage: "pipeline.result",
-                                          detail: payload.warning ?? "audio \(payload.audioChanged ? "changed" : "unchanged") · \(payload.adSegments.count) ads · \(payload.cues.count) cues" + pauses,
+                                          detail: payload.warning
+                                            ?? payload.audioLoudnessSkippedReason.map { "Voice leveling skipped (\($0))" }
+                                            ?? "audio \(payload.audioChanged ? "changed" : "unchanged") · \(payload.adSegments.count) ads · \(payload.cues.count) cues" + pauses,
                                           evidence: evidence)
     }
 

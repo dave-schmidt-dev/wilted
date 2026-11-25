@@ -21,12 +21,20 @@ final class HeardHeadlineHistoryTests: XCTestCase {
         configure(library.model, wait: 10)
 
         let original = try bulletin("headline:npr", "NPR. \(title)", at: clock.now)
+        try publishCatalog([original], on: library.model, at: clock.now)
         let liveChannel = try channel([original], at: clock.now)
+        initial.channelUpdated(try channel([], at: clock.now))
         initial.channelUpdated(liveChannel)
+        await WiltedMacHeadless.eventually("the first voice attempt starts after rendering") {
+            speakers.all.first?.attempts == 1
+        }
         XCTAssertEqual(speakers.all.map(\.attempts), [1])
         XCTAssertEqual(speakers.all.flatMap(\.texts), [])
 
         configure(library.model, wait: 20)
+        await WiltedMacHeadless.eventually("the selected voice retries the failed start") {
+            speakers.all.count >= 2 && speakers.all[1].texts == [original.text]
+        }
         XCTAssertEqual(speakers.all.flatMap(\.texts), [original.text], "failed starts can be retried")
         clock.advance(minutes: 40)
         configure(library.model, wait: 30)
@@ -47,10 +55,15 @@ final class HeardHeadlineHistoryTests: XCTestCase {
 
         hub.channelUpdated(liveChannel)
         let copy = try bulletin("headline:bbc", "BBC. \(reworded)", at: clock.now)
+        try publishCatalog([copy], on: relaunched, at: clock.now)
         hub.channelUpdated(try channel([copy], at: clock.now))
         XCTAssertTrue(freshSpeakers.all.flatMap(\.texts).isEmpty)
         let major = try bulletin("headline:ap", "AP. \(update)", at: clock.now)
+        try publishCatalog([major], on: relaunched, at: clock.now)
         hub.channelUpdated(try channel([major], at: clock.now))
+        await WiltedMacHeadless.eventually("an eligible major update is rendered and spoken") {
+            freshSpeakers.all.flatMap(\.texts) == [major.text]
+        }
         XCTAssertEqual(freshSpeakers.all.flatMap(\.texts), [major.text])
         await relaunched.close()
     }
@@ -101,9 +114,22 @@ final class HeardHeadlineHistoryTests: XCTestCase {
         let location = WiltedLocationProvider(manager: HubFakeLocationManager(), wifi: HubFakeWiFi())
         let hub = WiltedMacBulletinHub(model: model, location: location, makeSpeaker: { speakers.make() },
                                       makeRouteSource: { HeadlineTestRoute() }, makeAlertSource: { _ in HubCountingSource() },
-                                      now: { clock.now }, producerFactory: { clock.producer() })
+                                      now: { clock.now }, producerFactory: { clock.producer() },
+                                      makeHeadlineNarration: { self.makeNarration(now: { clock.now }) })
         model.installBulletinHubForTesting(hub)
+        model.selectReadingVoice(ApprovedReadingVoiceID.caseyKasem.rawValue)
         return hub
+    }
+
+    private func makeNarration(now: @escaping @Sendable () -> Date) -> WiltedMacHeadlineNarration {
+        WiltedMacHeadlineNarration(
+            render: { _, voiceID, outputURL in
+                try Data(repeating: 0x39, count: 128).write(to: outputURL)
+                return ArticleNarrationAudio(
+                    audioURL: outputURL, duration: 1,
+                    voiceRevision: ArticleNarrationCoordinator.voiceRevision(for: voiceID))
+            },
+            availability: { _ in .available }, now: now)
     }
 
     private func configure(_ model: WiltedMacModel, wait: Int) {
@@ -124,8 +150,30 @@ final class HeardHeadlineHistoryTests: XCTestCase {
 
     private func bulletin(_ id: String, _ text: String, at time: Date) throws -> Bulletin {
         // Immediate scheduling makes a mistaken replay observable in this call.
-        try Bulletin(id: id, kind: .headline, text: text, severity: .extreme,
-                     issuedAt: time, expiresAt: time.addingTimeInterval(3600))
+        let publisherID = String(id.dropFirst("headline:".count))
+        let publisherName = String(text.prefix { $0 != "." })
+        let storyID = publisherID
+        let link = URL(string: "https://\(publisherID).example.test/\(storyID)")
+        return try Bulletin(id: id, kind: .headline, text: text, severity: .extreme,
+                            issuedAt: time, expiresAt: time.addingTimeInterval(3600), storyID: storyID,
+                            publisherID: publisherID, publisherName: publisherName,
+                            headline: BulletinProducer.headlineTitle(of: text), link: link, publishedAt: time)
+    }
+
+    private func publishCatalog(_ bulletins: [Bulletin], on model: WiltedMacModel, at time: Date) throws {
+        let stories = try bulletins.map { bulletin -> LibraryHeadlineStory in
+            try LibraryHeadlineStory(
+                id: XCTUnwrap(bulletin.headlineStoryID),
+                title: XCTUnwrap(bulletin.headline),
+                publisherID: try XCTUnwrap(bulletin.publisherID),
+                publisherName: try XCTUnwrap(bulletin.publisherName),
+                link: bulletin.link,
+                publishedAt: bulletin.publishedAt ?? time,
+                firstSeenAt: time,
+                lastSeenAt: time)
+        }
+        _ = try model.headlineCatalogStore.mergeRecent(stories, at: time)
+        model.headlineCatalogState.refresh(at: time)
     }
 
     private func channel(_ bulletins: [Bulletin], at time: Date) throws -> LibraryBulletins {
@@ -146,6 +194,13 @@ private final class HeadlineTestSpeaker: BulletinSpeaking {
         guard startsSpeech else { return false }
         texts.append(text)
         return true
+    }
+
+    /// Selected-voice test double: headlines are accepted through the typed bulletin path.
+    func speak(_ bulletin: Bulletin, playbackVolume: Float,
+               finished: @escaping @MainActor () -> Void) -> Bool {
+        guard bulletin.kind == .headline else { return false }
+        return speak(bulletin.text, playbackVolume: playbackVolume, finished: finished)
     }
 
     func stop() {}

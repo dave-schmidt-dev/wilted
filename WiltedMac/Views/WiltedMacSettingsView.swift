@@ -173,6 +173,11 @@ struct WiltedMacSettingsView: View {
                     }
                 }
                 .accessibilityIdentifier("wilted-automation-refresh-policy")
+                Text("Manual waits for Refresh. On launch checks when Wilted opens; while-open schedules repeat only while it stays open.")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("wilted-automation-refresh-policy-explanation")
 
                 Picker("Episodes to list when adding a feed", selection: initialMetadataPreset) {
                     Text("5").tag(5)
@@ -228,6 +233,11 @@ struct WiltedMacSettingsView: View {
                     .tag(WiltedAutomationProcessingPolicy.offPeak(defaultOffPeakWindow).settingsControlLabel)
             }
             .accessibilityIdentifier("wilted-automation-processing-policy")
+            Text("Immediately starts downloaded episodes as they arrive. Manual waits for Prepare; Off-peak waits for the local-time window below.")
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("wilted-automation-processing-policy-explanation")
 
             if isOffPeakProcessing {
                 DatePicker("Start", selection: offPeakStartBinding, displayedComponents: .hourAndMinute)
@@ -244,6 +254,13 @@ struct WiltedMacSettingsView: View {
             Toggle("Prepare in the background", isOn: $processesInBackground)
                 .accessibilityIdentifier("wilted-processing-low-priority")
             Text("Gives preparation a low priority so it doesn't slow down the rest of your Mac. Playback is unaffected. Applies from the next preparation.")
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+
+            Toggle("Level voices", isOn: levelVoicesBinding)
+                .accessibilityIdentifier("wilted-automation-level-voices")
+            Text("Brings quiet and loud voices closer together. Adds preparation time for new episodes. You can choose a different setting for each show.")
                 .wiltedFont(.utility)
                 .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                 .fixedSize(horizontal: false, vertical: true)
@@ -273,6 +290,11 @@ struct WiltedMacSettingsView: View {
         WiltedSettingsCard(title: "Automation") {
             Toggle("Remove ads", isOn: removeAdsBinding)
                 .accessibilityIdentifier("wilted-automation-remove-ads")
+            Text("Applies to newly prepared episodes when this show is selected for ad finding.")
+                .wiltedFont(.utility)
+                .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("wilted-automation-remove-ads-explanation")
             Toggle("Chime where an ad was removed", isOn: Binding(
                 get: { model.marksRemovedAds }, set: { model.marksRemovedAds = $0 }
             ))
@@ -356,6 +378,11 @@ struct WiltedMacSettingsView: View {
         Binding(get: { model.automationSettings.removeAds }, set: { replaceAutomationSettings(removeAds: $0) })
     }
 
+    private var levelVoicesBinding: Binding<Bool> {
+        Binding(get: { model.automationSettings.levelVoices },
+                set: { replaceAutomationSettings(levelVoices: $0) })
+    }
+
     private var autoAddPreparedToLarderBinding: Binding<Bool> {
         Binding(get: { model.automationSettings.autoAddPreparedToLarder },
                 set: { replaceAutomationSettings(autoAddPreparedToLarder: $0) })
@@ -420,6 +447,7 @@ struct WiltedMacSettingsView: View {
         processingPolicy: WiltedAutomationProcessingPolicy? = nil,
         transcriptPolicy: WiltedAutomationTranscriptPolicy? = nil,
         removeAds: Bool? = nil,
+        levelVoices: Bool? = nil,
         autoAddPreparedToLarder: Bool? = nil,
         downloadEverythingOnLarder: Bool? = nil,
         prepareEverythingDownloaded: Bool? = nil,
@@ -432,6 +460,7 @@ struct WiltedMacSettingsView: View {
                 processingPolicy: processingPolicy ?? settings.processingPolicy,
                 transcriptPolicy: transcriptPolicy ?? settings.transcriptPolicy,
                 removeAds: removeAds ?? settings.removeAds,
+                levelVoices: levelVoices ?? settings.levelVoices,
                 autoAddPreparedToLarder: autoAddPreparedToLarder ?? settings.autoAddPreparedToLarder,
                 downloadEverythingOnLarder: downloadEverythingOnLarder ?? settings.downloadEverythingOnLarder,
                 prepareEverythingDownloaded: prepareEverythingDownloaded ?? settings.prepareEverythingDownloaded,

@@ -612,6 +612,33 @@ extension WiltedMacModel {
             }
             return offsets[feedID.rawValue]?.seconds
         }
+        playback?.showPlaybackSpeedProvider = { [weak self, weak configuredStore] feedID in
+            guard let self, let configuredStore, self.store === configuredStore else { return nil }
+            let binding: LocalLibraryAccountBinding?
+            do { binding = try await configuredStore.libraryAccountBinding() }
+            catch { return nil }
+            let owner: String
+            if let binding {
+                guard binding.state == .bound, self.libraryAccountStatus?.allowsSync == true,
+                      let ownerToken = binding.ownerToken else { return nil }
+                owner = ownerToken
+            } else {
+                owner = "local-library"
+            }
+            let speeds = try? await WiltedMacShowPlaybackSpeedStore(store: configuredStore).speeds(owner: owner)
+            guard let speed = speeds?[feedID.rawValue], self.store === configuredStore else { return nil }
+            let currentBinding: LocalLibraryAccountBinding?
+            do { currentBinding = try await configuredStore.libraryAccountBinding() }
+            catch { return nil }
+            if let binding {
+                guard currentBinding?.ownerToken == binding.ownerToken,
+                      currentBinding?.state == .bound,
+                      self.libraryAccountStatus?.allowsSync == true else { return nil }
+            } else if currentBinding != nil {
+                return nil
+            }
+            return speed.speed
+        }
         playback?.podcastStateHandler = { [weak self] itemID, fault in
             self?.applyPodcastPlaybackObservation(itemID: itemID, fault: fault)
         }
@@ -693,7 +720,9 @@ extension WiltedMacModel {
             }
         }
         let labellerPreferences = AdLabellerPreferences(preferences: preferences)
-        let labellerCounter = LabellerRequestCounter(preferences: preferences)
+        let labellerCounter = LabellerRequestCounter(preferences: preferences, onRequestRecorded: { [weak self] in
+            Task { @MainActor [weak self] in self?.adFinding.refreshRequestCount() }
+        })
         let labellerSender: any LabellerSending = ConfiguredLabellerSender(
             preferences: labellerPreferences,
             keyStore: adLabellerKeyStore

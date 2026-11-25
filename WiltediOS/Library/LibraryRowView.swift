@@ -34,6 +34,8 @@ struct LibraryRowView: View {
     var voiceOverActions: [LibraryRowVoiceAction] = []
     /// When false, the detail line leaves out the show, which a feed section header already names.
     var showsShowName = true
+    /// Opens this podcast's shared playback settings directly from the Larder.
+    var showSettingsRoute: LibraryShowSettingsRoute?
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -48,7 +50,23 @@ struct LibraryRowView: View {
                         ForEach(voiceOverActions, id: \.name) { action in Button(action.name, action: action.perform) }
                     }
                     .accessibilityIdentifier("wilted-library-title-\(row.id.rawValue)")
-                LibraryRowMetadataView(row: row, namesShow: showsShowName)
+                HStack(spacing: WiltedTheme.Spacing.small) {
+                    LibraryRowMetadataView(row: row, namesShow: showsShowName)
+                    Spacer(minLength: 0)
+                    if let showSettingsRoute {
+                        NavigationLink(value: showSettingsRoute) {
+                            Image(systemName: "slider.horizontal.3")
+                                .frame(
+                                    minWidth: WiltedTheme.Spacing.minimumTouchTarget,
+                                    minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Show settings")
+                        .accessibilityHint("Adjust playback speed and new episode start")
+                        .accessibilityIdentifier("wilted-library-row-show-settings-\(row.id.rawValue)")
+                    }
+                }
                 if let status = Self.listeningStatus(row: row, progress: progress, completed: isCompleted) {
                     Text(status)
                         .wiltedFont(.utility)

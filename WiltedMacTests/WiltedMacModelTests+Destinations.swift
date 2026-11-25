@@ -8,11 +8,11 @@ import WiltedProducer
 @testable import WiltedMac
 
 extension WiltedMacModelTests {
-    // MARK: Phase 0 — the two-destination restructure
+    // MARK: Permanent producer destinations
 
-    func testNavigationHasExactlyTheThreeSurvivingDestinations() {
-        XCTAssertEqual(WiltedMacNavigation.allCases, [.larder, .feeds, .settings])
-        XCTAssertEqual(WiltedMacNavigation.allCases.map(\.title), ["Larder", "Feeds", "Settings"])
+    func testNavigationIncludesNotebookAmongPermanentDestinations() {
+        XCTAssertEqual(WiltedMacNavigation.allCases, [.larder, .feeds, .notebook, .settings])
+        XCTAssertEqual(WiltedMacNavigation.allCases.map(\.title), ["Larder", "Feeds", "Notebook", "Settings"])
     }
 
     func testOnlyKeptEpisodesMayResumeDurableDownloadClaims() {

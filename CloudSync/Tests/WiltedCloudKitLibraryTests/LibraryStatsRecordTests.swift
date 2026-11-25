@@ -40,6 +40,18 @@ final class LibraryStatsRecordTests: XCTestCase {
         XCTAssertEqual(try mapper.decode(mapper.record(stats: value)), .stats(value))
     }
 
+    func testShowPlaybackSpeedsRoundTripInsideTheStatsRecord() throws {
+        let feed = try ItemID(rawValue: "feed-speed")
+        let speed = try LibraryShowPlaybackSpeed(feedID: feed, speed: 1.5, revision: 2)
+        let reset = try LibraryShowPlaybackSpeed(feedID: feed, speed: nil, revision: 3)
+        for value in [
+            LibraryStats(updatedAt: stamp, showPlaybackSpeeds: [feed.rawValue: speed]),
+            LibraryStats(updatedAt: stamp, showPlaybackSpeeds: [feed.rawValue: reset])
+        ] {
+            XCTAssertEqual(try mapper.decode(mapper.record(stats: value)), .stats(value))
+        }
+    }
+
     func testAMalformedStatsPayloadThrowsAndAnOldPayloadDecodes() throws {
         let bad = CKRecord(recordType: "LibraryStatsRecord", recordID: mapper.statsRecordID)
         bad[LibraryRecordMapper.payloadField] = Data("nope".utf8) as CKRecordValue

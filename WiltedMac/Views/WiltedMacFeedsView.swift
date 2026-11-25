@@ -9,43 +9,6 @@ enum WiltedMacFeedHistoryAccessibilityID {
     static func restoreRemoved(_ episodeID: String) -> String { "wilted-feeds-restore-removed-\(episodeID)" }
 }
 
-struct WiltedMacFeedRenameInteraction {
-    private(set) var drafts: [String: WiltedMacFeedRenameDraft] = [:]
-
-    mutating func begin(_ subscription: WiltedMacSubscription) {
-        var draft = WiltedMacFeedRenameDraft()
-        draft.begin(subscription)
-        drafts[subscription.id] = draft
-    }
-
-    mutating func update(_ feedID: String, text: String) {
-        guard var draft = drafts[feedID] else { return }
-        draft.text = text
-        drafts[feedID] = draft
-    }
-
-    mutating func cancel(_ feedID: String) {
-        guard var draft = drafts[feedID] else { return }
-        draft.cancel()
-        drafts.removeValue(forKey: feedID)
-    }
-
-    /// Removes the editor synchronously; the caller starts async persistence after this returns.
-    mutating func submit(_ feedID: String) -> String? {
-        guard var draft = drafts[feedID], draft.beginSaving() else { return nil }
-        drafts.removeValue(forKey: feedID)
-        return draft.text
-    }
-
-    mutating func restoreFailure(_ subscription: WiltedMacSubscription, text: String, error: String) {
-        var draft = WiltedMacFeedRenameDraft()
-        draft.begin(subscription)
-        draft.text = text
-        draft.finish(error: error)
-        drafts[subscription.id] = draft
-    }
-}
-
 /// Feed upkeep on one page: what arrived, and what the app does with each
 /// followed feed -- refresh it, hide it, or drop it. Following a new show is
 /// the Add sheet's job, opened from the toolbar.
@@ -56,6 +19,8 @@ struct WiltedMacFeedsView: View {
     private var inboxSortRawValue: String = WiltedMacLarderSort.age.rawValue
     @AppStorage("wilted.mac.episode-list.feeds.direction")
     private var inboxDirectionRawValue: String = WiltedMacLarderSortDirection.ascending.rawValue
+    @AppStorage(WiltedMacEpisodeLabelPreference.key)
+    private var showsEpisodeLabels = true
     private var selectedFeedEpisodeIDs: Set<String> {
         get { model.navigationState.selectedFeedEpisodeIDs }
         nonmutating set { model.navigationState.selectedFeedEpisodeIDs = newValue }
@@ -191,6 +156,7 @@ struct WiltedMacFeedsView: View {
         let selected = visible.filter { selectedFeedEpisodeIDs.contains($0.id) }
         let waitingIDs = policyBoard.waitingEpisodeIDs.intersection(visibleIDs)
         let articles = model.feedsOfferedArticles
+        let labelsByID = showsEpisodeLabels ? model.feedEpisodeLabelsByID : [:]
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.medium) {
             if visible.isEmpty && articles.isEmpty {
                 Text("No new episodes.")
@@ -212,6 +178,12 @@ struct WiltedMacFeedsView: View {
                     label: "Feeds", identifierPrefix: "wilted-feeds",
                     sort: inboxSort, direction: inboxDirection
                 )
+                Toggle("Show episode labels", isOn: $showsEpisodeLabels)
+                    .toggleStyle(.switch)
+                    .accessibilityIdentifier("wilted-feeds-episode-labels-toggle")
+                Text("Suggestions only. Labels never change Keep, Skip, or feed rules.")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             }
             if !visible.isEmpty {
                 if !waitingIDs.isEmpty {
@@ -245,6 +217,7 @@ struct WiltedMacFeedsView: View {
                         if index > 0 { Divider() }
                         WiltedMacFeedsEpisodeRow(
                             model: model, episode: episode,
+                            labels: labelsByID[episode.id] ?? [],
                             isSelected: selectedFeedEpisodeIDs.contains(episode.id),
                             isWaitingForSpace: waitingIDs.contains(episode.id),
                             position: index + 1, count: visible.count,

@@ -381,7 +381,11 @@ extension LibraryAppModel {
         let isManual = kind != .automatic
         let item = LibraryPlayer.Item(
             entryID: rawID, title: row.title, showTitle: row.showTitle, fileURL: cached.url, artworkURL: row.artworkURL,
-            chapters: row.chapters, feedbackRevisionID: row.kind == .podcastEpisode ? cached.revisionID : nil)
+            chapters: row.chapters,
+            podcastChapters: decisionContent.entries[rawID].map {
+                LibraryRowBuilder.podcastChapters($0, revisionID: cached.revisionID)
+            } ?? [],
+            feedbackRevisionID: row.kind == .podcastEpisode ? cached.revisionID : nil)
         guard player.item?.entryID != rawID || player.item?.fileURL != cached.url else {
             // Loaded already: playing stays playing (a start made during the lookup is not undone).
             if player.isPlaying { return .alreadyPlaying }
@@ -434,7 +438,10 @@ extension LibraryAppModel {
             playableDurationSeconds: row.durationSeconds ?? entryDurations[rawID],
             hasSavedPlayback: hasSavedPlayback)
         let startPosition = position > 0 || hasSavedPlayback ? position : freshOffset
-        guard player.start(item, at: startPosition, traceToken: token, automatic: kind == .automatic) else {
+        let showRate = row.kind == .podcastEpisode ? row.showID.flatMap { showPlaybackSpeed(for: $0) } : nil
+        guard player.start(
+            item, at: startPosition, traceToken: token, automatic: kind == .automatic, startingRate: showRate
+        ) else {
             return failStart(row, player.lastFailure ?? .engineRefused, kind: kind)
         }
         if isManual { handoffState.forwardSequenceIDs = forwardSequence }

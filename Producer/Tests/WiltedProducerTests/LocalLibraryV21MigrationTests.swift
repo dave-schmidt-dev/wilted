@@ -148,6 +148,8 @@ final class LocalLibraryV21MigrationTests: XCTestCase {
             XCTAssertNil(after[table], "\(table) is dropped")
             expected.removeValue(forKey: table)
         }
+        expected["ZNOTEBOOKENTRYRECORD"] = 0
+        expected["ZNOTEBOOKREVISIONCUESRECORD"] = 0
         XCTAssertEqual(after, expected, "every live table keeps its exact row count")
         let playbackColumns = try columns(of: "ZPLAYBACKRECORD", at: url)
         XCTAssertFalse(playbackColumns.contains(systemFieldsColumn))
