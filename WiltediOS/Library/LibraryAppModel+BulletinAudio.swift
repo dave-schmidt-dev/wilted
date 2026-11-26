@@ -166,7 +166,7 @@ final class LibraryBulletinAudioManager {
             pendingBulletins[entry.requestID] = bulletin
             return
         }
-        guard !pendingBulletins.values.contains(where: { Self.matches($0, bulletin: bulletin) }),
+        guard !pendingBulletins.values.contains(where: { Self.sameBulletin($0, bulletin) }),
               let requestID = Self.requestID(for: bulletin, deviceID: model?.deviceID ?? "") else { return }
         pendingBulletins[requestID] = bulletin
     }
@@ -195,7 +195,7 @@ final class LibraryBulletinAudioManager {
             .filter { $0.ownerToken == owner && Self.matches($0, bulletin: bulletin) }
             .map(\.requestID)
         let queuedIDs = pendingBulletins
-            .filter { Self.matches($0.value, bulletin: bulletin) }
+            .filter { Self.sameBulletin($0.value, bulletin) }
             .map(\.key)
         for id in Set(previousIDs).union(queuedIDs) {
             try? cache.removeAudio(for: id, ownerToken: owner)
@@ -622,6 +622,11 @@ final class LibraryBulletinAudioManager {
     private static func matches(_ entry: LibraryBulletinAudioEntry, bulletin: Bulletin) -> Bool {
         entry.bulletinID == bulletin.id && entry.issuedAt == bulletin.issuedAt
             && entry.expiresAt == bulletin.expiresAt && entry.textHash == textDigest(bulletin.text)
+    }
+
+    private static func sameBulletin(_ lhs: Bulletin, _ rhs: Bulletin) -> Bool {
+        lhs.id == rhs.id && lhs.issuedAt == rhs.issuedAt && lhs.expiresAt == rhs.expiresAt
+            && textDigest(lhs.text) == textDigest(rhs.text)
     }
 
     private static func textDigest(_ text: String) -> String {
