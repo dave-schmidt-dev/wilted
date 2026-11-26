@@ -31,17 +31,48 @@ struct WiltedMacAdFeedbackStoredState: Codable {
 
     static func recover(from url: URL) -> Recovery {
         let archiveURL = url.appendingPathExtension("unreadable")
-        let current = read(url)
-        let archived = read(archiveURL)
+        let currentResult = read(url)
+        let archiveResult = read(archiveURL)
         var failure: String?
 
-        if current == nil && FileManager.default.fileExists(atPath: url.path) {
-            preserve(url)
-            failure = "An unsupported ad-feedback file was preserved; new writes are paused."
+        var current: WiltedMacAdFeedbackStoredState?
+        switch currentResult {
+        case .missing:
+            break
+        case .readable(let state):
+            current = state
+        case .corrupt:
+            if !preserve(url) {
+                failure = "A corrupt ad-feedback file could not be preserved; new writes are paused."
+            }
+        case .unsupported:
+            if preserve(url) {
+                failure = "An unsupported ad-feedback file was preserved; new writes are paused."
+            } else {
+                failure = "An unsupported ad-feedback file could not be preserved; new writes are paused."
+            }
+        case .inaccessible:
+            failure = "An unreadable ad-feedback file could not be preserved; new writes are paused."
         }
-        if archived == nil && FileManager.default.fileExists(atPath: archiveURL.path) {
-            preserve(archiveURL)
+
+        var archived: WiltedMacAdFeedbackStoredState?
+        switch archiveResult {
+        case .missing:
+            break
+        case .readable(let state):
+            archived = state
+        case .corrupt, .unsupported:
+            if preserve(archiveURL) {
+                failure = "A previous ad-feedback archive could not be read; new writes are paused."
+            } else {
+                failure = "A previous ad-feedback archive could not be preserved; new writes are paused."
+            }
+        case .inaccessible:
             failure = "A previous ad-feedback archive could not be read; new writes are paused."
+        }
+
+        if case .corrupt = currentResult, archived != nil {
+            failure = "A saved ad-feedback archive was recovered after current-file corruption; new writes are paused."
         }
 
         let needsMerge = current != nil && archived != nil
@@ -72,17 +103,29 @@ struct WiltedMacAdFeedbackStoredState: Codable {
         )
     }
 
-    private static func read(_ url: URL) -> WiltedMacAdFeedbackStoredState? {
-        guard let bytes = try? Data(contentsOf: url) else { return nil }
+    private enum ReadResult {
+        case missing
+        case readable(WiltedMacAdFeedbackStoredState)
+        case corrupt
+        case unsupported
+        case inaccessible
+    }
+
+    private static func read(_ url: URL) -> ReadResult {
+        guard FileManager.default.fileExists(atPath: url.path) else { return .missing }
+        guard let bytes = try? Data(contentsOf: url) else { return .inaccessible }
+        guard let object = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
+              let version = object["version"] as? Int else { return .corrupt }
+        guard version == 1 || version == 2 else { return .unsupported }
+
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         guard let state = try? decoder.decode(Self.self, from: bytes),
-              state.version == 1 || state.version == 2,
               (state.version != 2 || state.handledActions != nil),
               Set(state.entries.map(\.id)).count == state.entries.count,
               Set((state.handledActions ?? []).map(\.actionID)).count == (state.handledActions ?? []).count
-        else { return nil }
-        return state
+        else { return .corrupt }
+        return .readable(state)
     }
 
     private static func canonical(
@@ -102,11 +145,16 @@ struct WiltedMacAdFeedbackStoredState: Codable {
                         failure: failure)
     }
 
-    private static func preserve(_ source: URL) {
+    private static func preserve(_ source: URL) -> Bool {
         let base = source.appendingPathExtension("unreadable")
         let target = FileManager.default.fileExists(atPath: base.path)
             ? source.appendingPathExtension("unreadable-\(UUID().uuidString)") : base
-        try? FileManager.default.moveItem(at: source, to: target)
+        do {
+            try FileManager.default.moveItem(at: source, to: target)
+            return true
+        } catch {
+            return false
+        }
     }
 }
 

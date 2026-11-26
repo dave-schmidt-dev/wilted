@@ -255,6 +255,29 @@ final class WiltedMacAdFeedbackTests: XCTestCase {
         XCTAssertEqual(fresh, ["fresh"])
     }
 
+    func testUnsupportedInboxVersionIsSetAsideAndWritesStayPaused() async throws {
+        let directory = wiltedTemporaryDirectory("unsupported-version")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent(WiltedMacAdFeedbackInbox.fileName)
+        let futureBytes = Data("{\"version\":99,\"entries\":[]}".utf8)
+        try futureBytes.write(to: url)
+
+        let inbox = WiltedMacAdFeedbackInbox(fileURL: url)
+        let afterSetAside = await inbox.all()
+        XCTAssertTrue(afterSetAside.isEmpty)
+        let aside = url.appendingPathExtension("unreadable")
+        XCTAssertEqual(try Data(contentsOf: aside), futureBytes)
+        do {
+            try await inbox.add(entry(id: "fresh", timeline: nil))
+            XCTFail("a future store version must not be overwritten")
+        } catch let error as WiltedMacAdFeedbackStoreRecoveryError {
+            guard case .writesPaused = error else {
+                return XCTFail("unexpected recovery error: \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
     func testAFailedWriteKeepsTheInboxAsItWas() async throws {
         let inbox = WiltedMacAdFeedbackInbox(fileURL: wiltedTemporaryDirectory("fail").appendingPathComponent("x.json"),
                                              write: { _, _ in throw POSIXError(.ENOSPC) })

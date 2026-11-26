@@ -269,7 +269,7 @@ final class WiltedMacPlaylistDiscoverabilityTests: XCTestCase {
             episode: episode(), isPlaying: false, position: 0, duration: 60)
         let lines = try WiltedMacHeadless.recognizedText(
             WiltedMacPlaybackShareLink(model: model).padding(12), size: CGSize(width: 360, height: 100))
-        XCTAssertTrue(lines.contains { $0.localizedCaseInsensitiveContains("Share") },
+        XCTAssertTrue(lines.contains { $0.localizedCaseInsensitiveContains("Share with summary") },
                       "the control names itself: \(lines)")
         XCTAssertFalse(lines.contains { $0.localizedCaseInsensitiveContains("transcript summary") },
                        "the summary popover stays closed until asked: \(lines)")

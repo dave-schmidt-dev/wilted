@@ -29,9 +29,12 @@ final class WiltedMacShareComposerTests: XCTestCase {
         let menuEnd = try XCTUnwrap(composer.range(of: "} label:", range: menuStart.upperBound..<composer.endIndex))
         let items = composer[menuStart.upperBound..<menuEnd.lowerBound]
         XCTAssertTrue(items.contains("WiltedMacPlaybackShareItems(model: model)"))
-        XCTAssertTrue(composer.contains(#"Label("Share with summary", systemImage: "square.and.arrow.up")"#))
-        XCTAssertTrue(composer.contains("} primaryAction: {\n            state.startOrAttach()"),
-                      "the visible Share with summary face starts work in one click")
+        XCTAssertTrue(composer.contains(#"Text("Share with summary")"#),
+                      "the one-click action has visible text")
+        XCTAssertTrue(composer.contains("Button {\n                state.startOrAttach()"),
+                      "the visible Share with summary button starts work in one click")
+        XCTAssertTrue(composer.contains(#".accessibilityLabel("More share options")"#))
+        XCTAssertTrue(composer.contains(#".accessibilityIdentifier("wilted-player-share-options")"#))
         XCTAssertTrue(composer.contains(".accessibilityHint(\"Create and review a local summary."))
         XCTAssertTrue(composer.contains("if let preview {"), "the share control appears only after a verified preview exists")
         XCTAssertTrue(composer.contains("ShareLink(item: payload(preview)"), "sending remains an explicit follow-up action")

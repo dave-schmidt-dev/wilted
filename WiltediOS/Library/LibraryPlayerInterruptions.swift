@@ -183,13 +183,18 @@ final class LibraryInterruptionController: ObservableObject {
     @Published private(set) var activeSpokenHeadline: Bulletin?
     /// The most recently read story remains available after its speech ends.
     @Published private(set) var lastSpokenHeadline: Bulletin?
-    /// A failed or not-yet-rendered headline stays visible with its recovery action.
+    /// An unstarted headline is surfaced only when its audio issue offers a recovery action.
     @Published private(set) var availableHeadline: Bulletin?
     var nowPlayingHeadline: Bulletin? {
-        if let activeSpokenHeadline, let availableHeadline,
-           activeSpokenHeadline.id == availableHeadline.id,
-           activeSpokenHeadline.text != availableHeadline.text { return availableHeadline }
-        return activeSpokenHeadline ?? availableHeadline ?? lastSpokenHeadline
+        if let activeSpokenHeadline {
+            if let availableHeadline, activeSpokenHeadline.id == availableHeadline.id,
+               activeSpokenHeadline.text != availableHeadline.text,
+               deps.speaker.bulletinAudioIssue(for: availableHeadline) != nil { return availableHeadline }
+            return activeSpokenHeadline
+        }
+        if let availableHeadline,
+           deps.speaker.bulletinAudioIssue(for: availableHeadline) != nil { return availableHeadline }
+        return lastSpokenHeadline
     }
     /// The alert currently being read, or the last alert read, with its official source text.
     @Published private(set) var activeSpokenWeatherAlert: Bulletin?

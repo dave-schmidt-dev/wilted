@@ -206,19 +206,21 @@ struct WiltedMacShareComposer: View {
     }
     var body: some View {
         @Bindable var state = state
-        Menu {
-            WiltedMacPlaybackShareItems(model: model)
-        } label: {
-            ViewThatFits(in: .horizontal) {
-                Label("Share with summary", systemImage: "square.and.arrow.up")
-                Label("Share with summary", systemImage: "square.and.arrow.up").labelStyle(.iconOnly)
+        HStack(spacing: 2) {
+            Button {
+                state.startOrAttach()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.and.arrow.up")
+                    Text("Share with summary").lineLimit(1)
+                }
+                .fixedSize(horizontal: true, vertical: false)
             }
-        } primaryAction: {
-            state.startOrAttach()
-        }
-            .help("Share with summary; use the menu for other share choices")
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("Create and review a local summary")
             .accessibilityLabel("Share with summary")
-            .accessibilityHint("Create and review a local summary. Open the menu for a page or title share.")
+            .accessibilityHint("Create and review a local summary.")
             .accessibilityIdentifier("wilted-player-share")
             .popover(isPresented: $state.presented) {
                 WiltedMacShareComposerPanel(progress: state.progress, failure: state.failure,
@@ -226,9 +228,21 @@ struct WiltedMacShareComposer: View {
                     onRetry: state.summarize, onCancel: state.cancelAndDismiss,
                     payload: { value in state.payload(.init(text: value.text, title: value.title, url: value.url)) }).padding()
             }
-            .onChange(of: state.presented) { _, visible in if !visible { state.dismiss() } }
-            .onChange(of: model.isClosingTemporaryState) { state.invalidateContext() }
-            .onDisappear { state.dismiss() }
+            Menu {
+                WiltedMacPlaybackShareItems(model: model)
+            } label: {
+                Image(systemName: "chevron.down")
+                    .frame(minWidth: 24, minHeight: 24)
+            }
+            .menuStyle(.borderlessButton)
+            .help("More share options")
+            .accessibilityLabel("More share options")
+            .accessibilityHint("Share the page link or title and show.")
+            .accessibilityIdentifier("wilted-player-share-options")
+        }
+        .onChange(of: state.presented) { _, visible in if !visible { state.dismiss() } }
+        .onChange(of: model.isClosingTemporaryState) { state.invalidateContext() }
+        .onDisappear { state.dismiss() }
     }
     static func message(for error: Error) -> String {
         switch error {
