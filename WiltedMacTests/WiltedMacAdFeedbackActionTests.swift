@@ -298,7 +298,9 @@ final class WiltedMacAdFeedbackActionTests: XCTestCase {
     }
 
     func payload(
-        _ entries: [WiltedMacAdFeedbackEntry], reportedPositionWasCut: Bool = true
+        _ entries: [WiltedMacAdFeedbackEntry], reportedPositionWasCut: Bool = true,
+        candidateBranch: String = "ad-tuning/test",
+        replayCommand: String = "[\"phase2_replay_score.py\"]"
     ) -> WiltedMacAdFeedbackActionPayload {
         let candidate = String(repeating: "a", count: 40)
         let report = String(repeating: "b", count: 64)
@@ -314,19 +316,19 @@ final class WiltedMacAdFeedbackActionTests: XCTestCase {
                 nearestCutAnyCut: isGoodCut ? true : (isNotAnAd ? false : nil))
             return WiltedMacAdFeedbackActionPayload.Replay(
                 candidateCommit: candidate, reportSHA256: report, fixtureID: "fixture-id",
-                replayCommand: "[\"phase2_replay_score.py\"]", passed: true, clean: true,
+                replayCommand: replayCommand, passed: true, clean: true,
                 skipped: false, coverageComplete: true, localEvidence: evidence)
         }
         let replay = entries.first.map(replayForEntry) ?? WiltedMacAdFeedbackActionPayload.Replay(
             candidateCommit: candidate, reportSHA256: report, fixtureID: "fixture-id",
-            replayCommand: "[\"phase2_replay_score.py\"]", passed: true, clean: true,
+            replayCommand: replayCommand, passed: true, clean: true,
             skipped: false, coverageComplete: true,
             localEvidence: .init(label: "must-cut", startSeconds: 20, endSeconds: 40,
                                  reportedPositionSeconds: 25, localVerdictPassed: true,
                                  reportedPositionWasCut: reportedPositionWasCut,
                                  nearestCutFullyCut: nil, nearestCutAnyCut: nil))
         return WiltedMacAdFeedbackActionPayload(
-            schemaVersion: 1, candidateCommit: replay.candidateCommit, candidateBranch: "ad-tuning/test",
+            schemaVersion: 1, candidateCommit: replay.candidateCommit, candidateBranch: candidateBranch,
             intakeSnapshotSHA256: String(repeating: "c", count: 64),
             replayReportSHA256: replay.reportSHA256,
             entries: entries.map {

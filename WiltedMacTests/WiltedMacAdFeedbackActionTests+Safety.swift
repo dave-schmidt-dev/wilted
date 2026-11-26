@@ -5,6 +5,40 @@ import WiltedLibrary
 @testable import WiltedMac
 
 extension WiltedMacAdFeedbackActionTests {
+    func testMainCandidateAndReplayCommandLengthMatchProducerBoundary() async throws {
+        for (commandLength, argumentLength) in [(4096, 4092), (4097, 4093)] {
+            let root = wiltedTemporaryDirectory("handled-command-\(commandLength)")
+            let store = root.appendingPathComponent(WiltedMacAdFeedbackInbox.fileName)
+            let actions = root.appendingPathComponent("actions", isDirectory: true)
+            try makePrivateDirectory(actions)
+            let entry = try feedback(
+                id: "main-command-\(commandLength)", kind: .adHere, played: 25, timeline: timeline())
+            let priorStore = try WiltedMacAdFeedbackInbox.encoder.encode(
+                VersionOneStore(version: 1, entries: [entry]))
+            try priorStore.write(to: store, options: .atomic)
+            let command = "[\"" + String(repeating: "x", count: argumentLength) + "\"]"
+            XCTAssertEqual(command.count, commandLength)
+            let action = payload([entry], candidateBranch: "main", replayCommand: command)
+            let (_, requestURL) = try writeRequest(payload: action, to: actions)
+            let inbox = WiltedMacAdFeedbackInbox(fileURL: store, actionDirectory: actions)
+
+            let processed = await inbox.processPendingHandledActions(at: now)
+            if commandLength == 4096 {
+                XCTAssertNil(processed.failure)
+                XCTAssertEqual(processed.receipts.map(\.outcome), [.applied])
+                let handledEntries = await inbox.all()
+                XCTAssertEqual(handledEntries.first?.handledAt, now)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: requestURL.path))
+            } else {
+                XCTAssertNotNil(processed.failure)
+                XCTAssertTrue(processed.receipts.isEmpty)
+                let unchanged = await inbox.all()
+                XCTAssertNil(unchanged.first?.handledAt)
+                XCTAssertTrue(FileManager.default.fileExists(atPath: requestURL.appendingPathExtension("invalid").path))
+            }
+        }
+    }
+
     func testHandledBatchLimitAcceptsTwoHundredAndRejectsTwoHundredOne() async throws {
         for count in [200, 201] {
             let root = wiltedTemporaryDirectory("handled-batch-\(count)")

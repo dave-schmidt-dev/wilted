@@ -239,6 +239,25 @@ class HandledActionTests(unittest.TestCase):
         payload = self.build()
         self.assertEqual(payload["candidateBranch"], "main")
 
+    def test_replay_command_limit_matches_swift_4096_character_boundary(self):
+        for argument_length, command_length in ((4092, 4096), (4093, 4097)):
+            with self.subTest(command_length=command_length):
+                report = json.loads(self.report.read_text(encoding="utf-8"))
+                report["replayCommand"] = ["x" * argument_length]
+                self.report.write_text(json.dumps(report), encoding="utf-8")
+                command = json.dumps(report["replayCommand"], ensure_ascii=False, separators=(",", ":"))
+                self.assertEqual(len(command), command_length)
+
+                proof = json.loads(self.proof.read_text(encoding="utf-8"))
+                proof["replayReportSHA256"] = hashlib.sha256(self.report.read_bytes()).hexdigest()
+                self.proof.write_text(json.dumps(proof), encoding="utf-8")
+                if command_length == 4096:
+                    payload = self.build()
+                    self.assertEqual(len(payload["entries"][0]["replay"]["replayCommand"]), 4096)
+                else:
+                    with self.assertRaisesRegex(handle.ActionError, "replay command identity is too long"):
+                        self.build()
+
     def test_handled_batch_limit_accepts_two_hundred_and_rejects_two_hundred_one(self):
         self.configure_batch(200)
         payload = self.build()
