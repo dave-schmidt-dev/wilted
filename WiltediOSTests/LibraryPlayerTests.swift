@@ -1,5 +1,6 @@
 import Foundation
 import WiltedDomain
+import WiltedLibrary
 import WiltedPlayback
 import XCTest
 @testable import WiltediOS
@@ -138,8 +139,10 @@ final class LibraryPlayerTests: XCTestCase {
         rig.player.stop(reason: .explicitStop)
 
         let journal = try String(contentsOf: journalURL, encoding: .utf8)
-        XCTAssertTrue(journal.contains("stop reason=unload trigger=queue-removed entry=entry-1 position=42.0"))
-        XCTAssertTrue(journal.contains("stop reason=unload trigger=explicit-stop entry=entry-1 position=51.0"))
+        let itemTag = PlaybackJournalRecord.itemTag(item.entryID)
+        XCTAssertTrue(journal.contains("schema=2 stop reason=unload trigger=queue-removed item=\(itemTag) position=42.0"))
+        XCTAssertTrue(journal.contains("schema=2 stop reason=unload trigger=explicit-stop item=\(itemTag) position=51.0"))
+        XCTAssertFalse(journal.contains(item.entryID.rawValue), "the journal hashes the item identifier")
     }
 
     private func waitUntil(_ condition: @escaping @MainActor () -> Bool, file: StaticString = #filePath, line: UInt = #line) async {

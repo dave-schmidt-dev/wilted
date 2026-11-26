@@ -13,6 +13,11 @@ final class AppIntentsMetadataTests: XCTestCase {
         "MarkCompletedIntent", "WhatsPlayingIntent", "ListDownloadedIntent",
         "TimeLeftIntent", "SetSpeedIntent", "SleepTimerIntent", "SaveThatIntent",
     ]
+    private static let audioSchemaIntents: Set<String> = ["WiltedPlayAudioIntent"]
+    private static let testFixtureIntents: Set<String> = [
+        "WiltedSiriFixtureSetupIntent", "WiltedSiriFixtureLoadCompletionIntent",
+        "WiltedSiriFixtureProbeIntent", "WiltedSiriFixtureAudioSearchProbeIntent",
+    ]
     /// Voiced by Siri's own transport commands, so they have no App Shortcut phrase.
     private static let unvoiced: Set<String> = [
         "PauseEpisodeIntent", "ResumeEpisodeIntent", "SkipForwardIntent", "SkipBackIntent",
@@ -29,14 +34,26 @@ final class AppIntentsMetadataTests: XCTestCase {
 
     func testEveryIntentAndEntityIsExported() throws {
         let metadata = try metadata()
-        let actions = Set(try XCTUnwrap(metadata["actions"] as? [String: Any]).keys)
-        XCTAssertEqual(actions, Self.intents, "exported intents differ from the expected set")
+        let actionMetadata = try XCTUnwrap(metadata["actions"] as? [String: Any])
+        let actions = Set(actionMetadata.keys)
+        XCTAssertEqual(
+            actions, Self.intents.union(Self.audioSchemaIntents).union(Self.testFixtureIntents),
+            "exported intents differ from the expected set")
+        for identifier in Self.testFixtureIntents {
+            let action = try XCTUnwrap(actionMetadata[identifier] as? [String: Any], identifier)
+            XCTAssertEqual(action["isDiscoverable"] as? Bool, false, "test-only intent \(identifier) must remain hidden")
+        }
+        let audioAction = try XCTUnwrap(actionMetadata["WiltedPlayAudioIntent"] as? [String: Any])
+        XCTAssertEqual(audioAction["isDiscoverable"] as? Bool, true, "the production audio intent must be discoverable")
         let entities = Set(try XCTUnwrap(metadata["entities"] as? [String: Any]).keys)
-        XCTAssertEqual(entities, ["ShowEntity", "EpisodeEntity"])
+        XCTAssertEqual(entities, [
+            "ShowEntity", "EpisodeEntity", "WiltedPodcastShowEntity", "WiltedPodcastEpisodeEntity",
+            "WiltedWarmupAudioQueueResult",
+        ])
         let enums = Set((metadata["enums"] as? [[String: Any]] ?? []).compactMap { $0["identifier"] as? String })
         XCTAssertTrue(enums.isSuperset(of: ["SpeedOption", "SleepTimerOption"]), "exported enums: \(enums.sorted())")
         let queries = Set(try XCTUnwrap(metadata["queries"] as? [String: Any]).keys)
-        XCTAssertEqual(queries, ["ShowEntityQuery", "EpisodeEntityQuery"])
+        XCTAssertEqual(queries, ["ShowEntityQuery", "EpisodeEntityQuery", "PodcastShowQuery", "PodcastEpisodeQuery"])
     }
 
     func testEveryAppShortcutPhraseNamesTheAppAndTheCountIsWithinTheLimit() throws {

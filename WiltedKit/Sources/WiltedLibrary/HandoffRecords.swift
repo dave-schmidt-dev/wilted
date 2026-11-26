@@ -141,10 +141,14 @@ public enum PlaybackJournalPrivacy {
         "kind": ["toggle", "select", "continue-from-mac", "remote", "queue"],
         "outcome": ["started", "skipped", "failed", "handled", "done", "nothing-to-resume"],
         "position-source": ["zero", "own", "other-device", "mac", "phone", "unknown"],
-        "reason": ["replaced", "pause", "interruption", "routeLost", "route-loss", "withdraw", "natural-end", "fail", "finished-here", "audio-session", "engine-refused", "playback-no-longer-active"],
+        "reason": ["replaced", "pause", "interruption", "routeLost", "route-loss", "withdraw", "unload", "natural-end", "fail", "finished-here", "audio-session", "engine-refused", "playback-no-longer-active"],
         "pause-reason": ["direct", "interruption", "routeLost", "relinquish", "remote"],
         "result": ["handled", "failed", "resumed", "nothing-to-resume", "already-loaded", "start-under-way", "paused", "started"],
-        "trigger": ["queue-removed", "remote", "finished-here"],
+        "trigger": [
+            "queue-removed", "remote", "finished-here", "explicit-stop", "eligibility-changed",
+            "media-unavailable", "media-not-prepared", "media-revoked", "account-unavailable",
+            "account-changed", "playback-admission-denied", "seek-admission-denied"
+        ],
         "why": ["finished-here", "user"]
     ]
     private static let booleanKeys: Set<String> = [

@@ -244,7 +244,9 @@ final class LibraryVoiceTargetTests: XCTestCase {
 
         let snapshot = await rig.target.voiceSnapshot()
         let nowPlaying = try XCTUnwrap(snapshot.nowPlaying)
-        XCTAssertEqual(nowPlaying.episode, VoiceEpisode(id: id("a"), title: "Episode A", showTitle: "The Show"))
+        XCTAssertEqual(nowPlaying.episode, VoiceEpisode(
+            id: id("a"), title: "Episode A", showTitle: "The Show", publishedAt: Date(timeIntervalSince1970: 1_600_000_000),
+            showID: id("show"), duration: 600))
         XCTAssertTrue(nowPlaying.isPlaying)
         let row = try XCTUnwrap(rig.model.queued.first { $0.id == id("a") })
         XCTAssertEqual(

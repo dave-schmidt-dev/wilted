@@ -53,6 +53,22 @@ final class PlaybackJournalRecordTests: XCTestCase {
         XCTAssertFalse(line.contains("owner-secret"))
     }
 
+    func testUnloadLegacyLineKeepsBoundedReasonAndTriggerAndHashesItem() throws {
+        let raw = "entry-1"
+        let item = try ItemID(rawValue: raw)
+        let line = PlaybackJournalPrivacy.sanitizeLegacyLine(
+            "stop reason=unload trigger=explicit-stop entry=\(raw) position=51.0")
+
+        XCTAssertEqual(
+            line,
+            "schema=2 stop reason=unload trigger=explicit-stop item=\(PlaybackJournalRecord.itemTag(item)) position=51.0")
+        XCTAssertEqual(
+            PlaybackJournalPrivacy.publicLogLine(from: line),
+            "schema=2 source=phone event=stop cause=unload")
+        XCTAssertFalse(line.contains(raw))
+        XCTAssertFalse(PlaybackJournalPrivacy.publicLogLine(from: line).contains("item="))
+    }
+
     func testUnknownLegacyEventAndQuotedValuesAreNotWritten() {
         let line = PlaybackJournalPrivacy.sanitizeLegacyLine(
             "private-title question=\"Delete Show?\" reason=\"raw account details\" owner=owner-id")
