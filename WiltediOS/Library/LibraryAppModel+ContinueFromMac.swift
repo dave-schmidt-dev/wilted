@@ -74,6 +74,7 @@ extension LibraryAppModel {
                         ? LibraryRowBuilder.showTitle($0, sources: decisionContent.sources)
                         : decisionContent.sources[$0.sourceID]?.title ?? ""
                 } ?? "",
+                showID: entry?.kind == .podcastEpisode ? entry?.sourceID : nil,
                 fileURL: cached.url, artworkURL: LibraryRowBuilder.artworkURL(entry?.artworkRef),
                 chapters: entry.map(LibraryRowBuilder.chapters) ?? [],
                 podcastChapters: decisionContent.entries[entryID].map {

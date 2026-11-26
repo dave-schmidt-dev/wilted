@@ -374,7 +374,7 @@ cp "$repo_root/scripts/lib/test-runner.sh" "$repo_root/scripts/lib/test-temp-sta
   "$repo_root/scripts/lib/mac-test-parent.sh" "$repo_root/scripts/lib/native-gate-xcode.sh" \
   "$repo_root/scripts/lib/canonical-path.sh" "$repo_root/scripts/lib/canonical_path.py" "$capture_repo/scripts/lib/"
 printf 'fixture\n' >"$capture_repo/project.yml"
-for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests WiltediOSIntents WiltediOSUITests WiltedWatch WiltedWatchTests; do
+for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests WiltediOSIntents WiltediOSUITests WiltediOS27UITests WiltedWatch WiltedWatchTests; do
   mkdir -p "$capture_repo/$directory"
 done
 for package in WiltedKit Producer CloudSync Playback; do

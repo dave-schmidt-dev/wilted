@@ -21,7 +21,7 @@ cp "$repo_root/scripts/lib/test-temp-state.sh" "$fixture/scripts/lib/"
 cp "$repo_root/scripts/lib/canonical-path.sh" "$repo_root/scripts/lib/canonical_path.py" "$fixture/scripts/lib/"
 cp "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift" "$fixture/WiltediOSUITests/"
 printf '%s\n' fixture >"$fixture/project.yml"
-for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests WiltediOSIntents WiltedWatch WiltedWatchTests; do mkdir -p "$fixture/$directory"; done
+for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests WiltediOSIntents WiltediOS27UITests WiltedWatch WiltedWatchTests; do mkdir -p "$fixture/$directory"; done
 printf watch-source-sentinel >"$fixture/WiltedWatch/source.swift"
 printf watch-test-sentinel >"$fixture/WiltedWatchTests/test.swift"
 for package in WiltedKit Producer CloudSync Playback; do

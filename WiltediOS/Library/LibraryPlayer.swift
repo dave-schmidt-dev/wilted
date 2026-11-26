@@ -1,4 +1,5 @@
 import AVFoundation
+import AppIntents
 import Combine
 import Foundation
 import MediaPlayer
@@ -61,6 +62,8 @@ final class LibraryPlayer: ObservableObject {
         let entryID: ItemID
         let title: String
         let showTitle: String
+        /// Stable feed identity for iOS 27's podcast App Entity handoff.
+        var showID: ItemID? = nil
         let fileURL: URL
         /// Set only for generated headline narration, which keeps progress and
         /// completion in the request ledger rather than episode sync records.
@@ -298,7 +301,13 @@ final class LibraryPlayer: ObservableObject {
         LibraryPlaybackTrace.shared.record(.loadCalled, token: traceToken)
         self.item = item
         selectedPodcastChapterIndex = nil
-        journal?.note("start entry=\(item.entryID.rawValue) title=\"\(item.title.prefix(40))\" position=\(String(format: "%.1f", start)) autoplay=\(autoplay) position-source=\(pendingPositionSource?.entryID == item.entryID ? pendingPositionSource?.source ?? "unknown" : start == 0 ? "zero" : "unknown")")
+        let positionSourceName = pendingPositionSource?.entryID == item.entryID
+            ? pendingPositionSource?.source ?? "unknown"
+            : start == 0 ? "zero" : "unknown"
+        let positionSource = PlaybackJournalPositionSource(rawValue: positionSourceName) ?? .unknown
+        journal?.note(PlaybackJournalRecord(
+            source: .phone, event: .start, itemID: item.entryID,
+            positionSeconds: start, positionSource: positionSource))
         pendingPositionSource = nil
         artworkData = artwork?.loadedData(for: item.artworkURL)
         if artworkData == nil { loadArtwork(for: item) }
@@ -371,7 +380,17 @@ final class LibraryPlayer: ObservableObject {
         stopTicking()
         lastAccrual = nil
         if !holdsOwnPosition, engineWasPlaying { position = min(engine.currentTime, duration) }
-        journal?.note("stop reason=pause pause-reason=\(reason) entry=\(item?.entryID.rawValue ?? "") position=\(String(format: "%.1f", position))")
+        let cause: PlaybackJournalCause = switch reason {
+        case "routeLost": .routeLoss
+        case "interruption": .interruption
+        case "relinquish": .relinquish
+        default: .explicit
+        }
+        let event: PlaybackJournalEvent = reason == "routeLost" ? .routeLost : .pause
+        journal?.note(PlaybackJournalRecord(
+            source: .phone, event: event, itemID: item?.entryID,
+            positionSeconds: position, cause: cause, result: .paused,
+            isPlaying: false, speechHeld: speechHold != nil))
         engineStoppedAt = nil
         if status == .playing { status = .paused }
         publishNowPlaying()
@@ -675,9 +694,17 @@ final class LibraryPlayer: ObservableObject {
 
     func publishNowPlaying() {
         guard let item else { return }
+        var appEntityIdentifiers: [EntityIdentifier] = []
+        if #available(iOS 27.0, *), let showID = item.showID {
+            appEntityIdentifiers = [
+                EntityIdentifier(for: WiltedPodcastEpisodeEntity.self, identifier: item.entryID.rawValue),
+                EntityIdentifier(for: WiltedPodcastShowEntity.self, identifier: showID.rawValue),
+            ]
+        }
         nowPlaying.update(ListenerNowPlayingInfo(
             title: speechHold?.title ?? item.title, artist: speechHold == nil ? item.showTitle : item.title, duration: duration, position: position,
-            rate: isPlaying && !isRemoteSeeking ? rate : 0, defaultRate: rate, artworkData: artworkData))
+            rate: isPlaying && !isRemoteSeeking ? rate : 0, defaultRate: rate, artworkData: artworkData,
+            appEntityIdentifiers: appEntityIdentifiers))
     }
 
     func startTicking() {

@@ -218,6 +218,89 @@ final class CloudKitOperationCountersTests: XCTestCase {
         XCTAssertEqual(t6Summary.count(for: .handoff), 1, "totals since launch still track handoff")
     }
 
+    func testSummaryAttributesOperationBytesEngineChangesAndRebuildReasons() {
+        let counters = CloudKitOperationCounters(startLoggingTask: false)
+        counters.record(caller: .poll, operation: .fetchRecordsIfPresent, recordCount: 2, bytes: 30, result: .ok)
+        counters.record(caller: .poll, operation: .fetchChanges, recordCount: 0, bytes: 0,
+                        result: .throttled(retryAfter: 30))
+        counters.record(caller: .stats, operation: .fetchChanges, recordCount: 0, bytes: 0,
+                        result: .throttled(retryAfter: 10))
+        counters.recordEngineFetch(caller: .poll, metrics: CloudKitEngineFetchMetrics(
+            receivedRecords: 3, receivedBytes: 90, decodedRecords: 2, decodedBytes: 50,
+            receivedDeletions: 1, mappedDeletions: 1))
+        counters.recordEngineRebuild(.tokenMismatch)
+        counters.recordEngineRebuild(.recovery)
+        counters.recordNamedReads(caller: .poll, metrics: [
+            CloudKitNamedReadMetrics(recordType: .progress, freshness: .unchanged, records: 1, bytes: 10),
+            CloudKitNamedReadMetrics(recordType: .nowPlaying, freshness: .changed, records: 1, bytes: 20),
+        ])
+
+        let summary = counters.summary().summaryString()
+        XCTAssertTrue(summary.contains("poll.fetchRecordsIfPresent: 1 reqs (2 records, 30 B)"), summary)
+        XCTAssertTrue(summary.contains("last 5m engine changes: [poll: received 3 records/90 B, mapped 2/50 B, deletions 1/1]"), summary)
+        XCTAssertTrue(summary.contains("recovery: 1, tokenMismatch: 1"), summary)
+        XCTAssertTrue(summary.contains("last 5m throttles: [poll: 1, stats: 1]"), summary)
+        XCTAssertTrue(summary.contains("poll.ProgressRecord.unchanged: 1 records/10 B"), summary)
+        XCTAssertTrue(summary.contains("poll.NowPlayingRecord.changed: 1 records/20 B"), summary)
+    }
+
+    func testPollProgressReadsDistinguishActiveHotAndInactivePairsWithoutNames() async throws {
+        let fixture = try MediaFixture()
+        let counters = CloudKitOperationCounters(startLoggingTask: false)
+        let mac = try fixture.endpoint("mac", writer: true, counters: counters)
+        let phone = try fixture.endpoint("phone", writer: false)
+        let active = try DevicePlaybackPosition(deviceID: "phone", entryID: item("ep-secret"),
+                                                revision: RevisionID(rawValue: "rev-1"), positionSeconds: 10,
+                                                isPlaying: true, epoch: 1)
+        let paused = try DevicePlaybackPosition(deviceID: "phone", entryID: item("ep-secret"),
+                                                revision: RevisionID(rawValue: "rev-1"), positionSeconds: 10,
+                                                isPlaying: false, epoch: 1)
+        try await phone.transport.publish(active, as: .nowPlaying)
+        try await phone.transport.publish(paused, as: .progress)
+        await mac.transport.track(devices: ["phone"])
+
+        _ = try await mac.transport.poll([.deviceRecords])
+        var summary = await mac.transport.operationSummary().summaryString()
+        XCTAssertTrue(summary.contains("poll.active.firstSeen: 1 records/"), summary)
+        XCTAssertFalse(summary.contains("ep-secret"), "progress attribution must not expose entry IDs")
+
+        _ = try await mac.transport.poll([.deviceRecords])
+        summary = await mac.transport.operationSummary().summaryString()
+        XCTAssertTrue(summary.contains("poll.active.unchanged: 1 records/"), summary)
+
+        try await phone.transport.publish(paused, as: .nowPlaying)
+        _ = try await mac.transport.poll([.deviceRecords])
+        summary = await mac.transport.operationSummary().summaryString()
+        XCTAssertTrue(summary.contains("poll.hot.unchanged: 1 records/"), summary)
+
+        await fixture.server.remove(try fixture.mapper.recordID(nowPlayingFor: "phone"), via: "test")
+        _ = try await mac.transport.poll([.deviceRecords])
+        summary = await mac.transport.operationSummary().summaryString()
+        XCTAssertTrue(summary.contains("poll.inactive.unchanged: 1 records/"), summary)
+        XCTAssertFalse(summary.contains("phone"), "progress attribution must not expose device IDs")
+    }
+
+    func testNamedReadMetricsClassifyFirstSeenUnchangedAndChangedWithoutRecordNames() async throws {
+        let fixture = try MediaFixture()
+        let counters = CloudKitOperationCounters(startLoggingTask: false)
+        let endpoint = try fixture.endpoint("mac", writer: true, counters: counters)
+        let mapper = fixture.mapper
+        let directory = LibraryDeviceDirectory()
+        let id = mapper.deviceDirectoryRecordID
+        _ = await fixture.server.putEngine(try mapper.record(deviceDirectory: directory))
+
+        _ = try await endpoint.transport.poll([.deviceDirectory])
+        _ = try await endpoint.transport.poll([.deviceDirectory])
+        _ = await fixture.server.putEngine(try mapper.record(deviceDirectory: directory))
+        _ = try await endpoint.transport.poll([.deviceDirectory])
+
+        let summary = await endpoint.transport.operationSummary().summaryString()
+        XCTAssertTrue(summary.contains("poll.LibraryDeviceDirectoryRecord.firstSeen: 1 records/"), summary)
+        XCTAssertTrue(summary.contains("poll.LibraryDeviceDirectoryRecord.unchanged: 1 records/"), summary)
+        XCTAssertTrue(summary.contains("poll.LibraryDeviceDirectoryRecord.changed: 1 records/"), summary)
+        XCTAssertFalse(summary.contains(id.recordName), "read summaries must not expose record names")
+    }
+
     func testRecordingPastTheLogIntervalLogsWithoutDeadlockAndKeepsOnlyTheRecentWindow() {
         let base = Date(timeIntervalSince1970: 1_000)
         let counters = CloudKitOperationCounters(clock: { base }, logInterval: 10, startLoggingTask: false)
@@ -237,7 +320,7 @@ final class CloudKitOperationCountersTests: XCTestCase {
         let file = folder.appendingPathComponent("Logs/cloudkit-operations.log")
         let base = Date(timeIntervalSince1970: 1_000)
         let counters = CloudKitOperationCounters(clock: { base }, startLoggingTask: false,
-                                                 archive: CloudKitOperationArchive(url: file, maxBytes: 400))
+                                                 archive: CloudKitOperationArchive(url: file, maxBytes: 600))
         counters.record(caller: .poll, recordCount: 3, bytes: 90, result: .ok)
         counters.logNoticeSummary()
 
@@ -249,6 +332,6 @@ final class CloudKitOperationCountersTests: XCTestCase {
         for _ in 0..<3 { counters.logNoticeSummary() }
         let backup = file.appendingPathExtension("1")
         XCTAssertTrue(FileManager.default.fileExists(atPath: backup.path), "a full file moves to .1")
-        XCTAssertLessThan(try Data(contentsOf: file).count, 400)
+        XCTAssertLessThan(try Data(contentsOf: file).count, 600)
     }
 }

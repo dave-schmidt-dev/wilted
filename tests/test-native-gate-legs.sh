@@ -64,12 +64,12 @@ log="$tmp_dir/single.log"
 [[ "$(run_case single "$log" WILTED_GATE_LEGS=wiltedkit-tests)" -eq 0 ]] || { cat "$log" >&2; exit 1; }
 assert_contains 'native.leg.start name=wiltedkit-tests' "$log"
 [[ "$(grep -c '^native.leg.start' "$log")" -eq 1 ]] || { cat "$log" >&2; exit 1; }
-[[ "$(grep -c '^native.leg.skipped' "$log")" -eq 8 ]] || { cat "$log" >&2; exit 1; }
+[[ "$(grep -c '^native.leg.skipped' "$log")" -eq 9 ]] || { cat "$log" >&2; exit 1; }
 assert_contains 'native.leg.skipped name=macos-ui-tests reason=not-in-WILTED_GATE_LEGS' "$log"
 assert_contains 'native.complete failed_legs=0 total_legs=1 deferred_legs=0' "$log"
 assert_contains 'native.filtered selected=wiltedkit-tests skipped=xcodegen-reproducible cloudsync-tests' "$log"
 assert_contains 'receipt=never' "$log"
-assert_contains 'native.passed count=1 filtered=8' "$log"
+assert_contains 'native.passed count=1 filtered=9' "$log"
 if grep -Eq '^native\.passed count=[0-9]+$' "$log"; then
   printf '%s\n' 'assertion failed: a filtered run emitted the unqualified native.passed line' >&2
   exit 1
@@ -87,13 +87,13 @@ log="$tmp_dir/deferred.log"
 [[ "$(run_case deferred "$log" WILTED_GATE_LEGS=playback-tests,macos-ui-tests)" -eq 0 ]] || { cat "$log" >&2; exit 1; }
 assert_contains 'native.leg.deferred name=macos-ui-tests' "$log"
 assert_contains 'native.complete failed_legs=0 total_legs=1 deferred_legs=1' "$log"
-assert_contains 'native.passed count=1 deferred=1 filtered=7' "$log"
+assert_contains 'native.passed count=1 deferred=1 filtered=8' "$log"
 
-# An unfiltered run is unchanged: nine stubbed legs, no filter lines.
+# An unfiltered run completes all ten legs with no filter lines.
 log="$tmp_dir/full.log"
 [[ "$(run_case full "$log" WILTED_MAC_UI=1)" -eq 0 ]] || { cat "$log" >&2; exit 1; }
-assert_contains 'native.complete failed_legs=0 total_legs=9 deferred_legs=0' "$log"
-assert_contains 'native.passed count=9' "$log"
+assert_contains 'native.complete failed_legs=0 total_legs=10 deferred_legs=0' "$log"
+assert_contains 'native.passed count=10' "$log"
 assert_absent 'native.filtered' "$log"
 assert_absent 'native.leg.skipped' "$log"
 
@@ -170,15 +170,18 @@ from pathlib import Path
 ROOT, WORK = map(Path, sys.argv[1:])
 
 class TerminalRetentionTests(unittest.TestCase):
-    def execute(self, case, action='success', leg='ios-unit-tests', destination=True, negative=False):
+    def execute(self, case, action='success', leg='ios-unit-tests', destination=True, negative=False,
+                real_failure_retention=False):
         base = (WORK / ('retention-' + case)).resolve(); base.mkdir()
         repo = base / 'repo'; (repo / '.logs').mkdir(parents=True)
         scratch = base / 'scratch'; scratch.mkdir()
         evidence = repo / '.logs' / 'results'
+        failure_retention_stub = '' if real_failure_retention else 'retain_ui_failure_bundle() { return 7; }\n'
         prelude = f'''set -Eeuo pipefail
 repo_root={str(repo)!r}; tmp_root={str(scratch)!r}
 bounded_runner={str(ROOT / 'scripts/run-bounded.py')!r}; native_leg_timeout_seconds=30
 native_results_dir={str(evidence) if destination else ''!r}
+macos_ui_failure_diagnostics_dir={str(base / 'external-failure-evidence')!r}
 native_self_test=0; declare -i completed_legs=0 failed_legs=0 deferred_legs=0; deferred_leg_names=()
 status() {{ printf '%s\\n' "$*"; }}
 source {str(ROOT / 'scripts/lib/native-gate-validation.sh')!r}
@@ -190,7 +193,7 @@ is_forced_failure() {{ return 1; }}; is_forced_zero() {{ return 1; }}
 wilted_start_logger() {{ exec 9>"$1"; }}; wilted_finish_logger() {{ exec 9>&-; touch "$tmp_root/logger-finished"; }}
 wilted_temp_audit_leg() {{ return 0; }}
 assert_result_bundle_tests() {{ [[ -f "$tmp_root/logger-finished" && {action!r} != zero ]]; }}
-clear_ui_failure_bundle() {{ :; }}; retain_ui_failure_bundle() {{ return 7; }}
+clear_ui_failure_bundle() {{ :; }}; {failure_retention_stub}
 producer() {{
  [[ {action!r} == publishfail || ! -e "$native_results_dir/$1.xcresult" ]] || return 9
  [[ {action!r} == missing ]] && return 0
@@ -221,7 +224,7 @@ prepare_native_results_dir || exit $?
         return evidence, run.stdout+run.stderr
 
     def test_three_complete_trees_survive_terminal_cleanup(self):
-        for leg in ['macos-unit-tests','ios-unit-tests','ios-pixel-snapshot-tests']:
+        for leg in ['macos-unit-tests','ios-unit-tests','ios27-appintents-tests','ios-pixel-snapshot-tests']:
             with self.subTest(leg=leg):
                 evidence,log=self.execute(leg,leg=leg)
                 self.assertEqual((evidence/(leg+'.xcresult')/'Data/terminal').read_text(),'actual')
@@ -243,6 +246,17 @@ prepare_native_results_dir || exit $?
                 if action=='publishfail': self.assertEqual((evidence/'ios-unit-tests.xcresult/foreign').read_text(),'foreign')
                 else: self.assertFalse((evidence/'ios-unit-tests.xcresult').exists())
                 self.assertFalse(list(evidence.glob('.*.staging*')))
+
+    def test_ios27_failure_evidence_is_retained_outside_ephemeral_tree(self):
+        case = 'ios27-failure-retention'
+        evidence, log = self.execute(case, action='childfail', leg='ios27-appintents-tests',
+                                     real_failure_retention=True)
+        retained = WORK / ('retention-' + case) / 'external-failure-evidence' / 'ios27-appintents-tests.xcresult'
+        self.assertEqual((retained / 'Data/terminal').read_text(), 'actual')
+        self.assertTrue((retained / 'Info.plist').is_file())
+        self.assertIn('native.ui-leg.failure-bundle leg=ios27-appintents-tests', log)
+        self.assertIn('final failed=1 completed=1', log)
+        self.assertFalse((evidence / 'ios27-appintents-tests.xcresult').exists())
 
     def test_negative_control_omits_retention(self):
         evidence,_=self.execute('negative',negative=True)
@@ -322,6 +336,7 @@ done
   fail() { printf 'native.error %s\n' "$1" >&2; exit 1; }
   source "$repo_root/scripts/lib/native-gate-validation.sh"
   [[ "$(expected_test_count_floor macos-unit-tests)" == 30 ]]
+  [[ "$(expected_test_count_floor ios27-appintents-tests)" == 5 ]]
   WILTED_MAC_UNIT_SELECTORS='Foo/testBar'
   [[ "$(expected_test_count_floor macos-unit-tests)" == 1 ]]
 ) || { printf '%s\n' 'assertion failed: unit selector floor' >&2; exit 1; }
@@ -333,13 +348,13 @@ log="$tmp_dir/unit-filtered-summary.log"
   WILTED_MAC_UNIT_SELECTORS=WiltedMacFooTests/testBar WILTED_MAC_UNIT_ITERATIONS=2)" -eq 0 ]] ||
   { cat "$log" >&2; exit 1; }
 assert_contains 'native.filtered.tests leg=macos-unit-tests selectors=WiltedMacFooTests/testBar iterations=2 receipt=never' "$log"
-assert_contains 'native.passed count=2 filtered=7' "$log"
+assert_contains 'native.passed count=2 filtered=8' "$log"
 
 log="$tmp_dir/unit-unfiltered-legs-summary.log"
 [[ "$(run_case unit-unfiltered-legs-summary "$log" WILTED_MAC_UI=1 \
   WILTED_MAC_UNIT_SELECTORS=WiltedMacFooTests/testBar)" -eq 0 ]] ||
   { cat "$log" >&2; exit 1; }
-assert_contains 'native.passed count=9 filtered=0' "$log"
+assert_contains 'native.passed count=10 filtered=0' "$log"
 if grep -Eq '^native\.passed count=[0-9]+$' "$log"; then
   printf '%s\n' 'assertion failed: a unit-filtered run emitted the unqualified native.passed line' >&2
   cat "$log" >&2
@@ -358,35 +373,56 @@ build_with_cache="$tmp_root/fake-build-with-cache"
 xcode_test_timeout_seconds=1
 xcode_build_and_test_timeout_seconds=1
 record_argv="$tmp_root/argv-$label.txt"
+record_events="$tmp_root/events-$label.txt"
+record_scheme="$tmp_root/scheme-$label.txt"
 mkdir -p "$tmp_root/fake/Fake.xcodeproj" "$WILTED_TEMP_LEG_WORK"
 GATE_HARNESS_PROJECT_PATH="$tmp_root/fake/Fake.xcodeproj"
 GATE_HARNESS_BUILD_ARGUMENTS_FILE="$tmp_root/build-argv-$label.txt"
+if [[ "$label" == ios27-appintents-tests ]]; then
+  integration_root="$tmp_root/staged"
+  mkdir -p "$integration_root/WiltediOSIntents"
+  printf '%s\n' 'private-intents-plist' >"$integration_root/WiltediOSIntents/Info.plist"
+  wilted_gate_xcodegen_inputs=(WiltediOSIntents/Info.plist)
+fi
 source "$repo_root/tests/lib/gate-harness-stubs.sh"
-wilted_mac_test_scheme_configure() { return 0; }
+wilted_mac_test_scheme_configure() { printf '%s\n' "$@" >"$record_scheme"; }
 wilted_mac_test_cleanup_roots() { return 0; }
 wilted_stop_active_ui_lock() { return 0; }
 wilted_stop_active_supervisor() { return 0; }
 wilted_wait_active_supervisor() { wait "$WILTED_ACTIVE_SUPERVISOR_PID"; }
 gate_ui_test_lock() { printf '%s\n' "$@" >"$record_argv"; }
 wilted_gate_simulator_session() { printf '%s\n' "$@" >"$record_argv"; }
+run_bounded_native_command() { printf '%s\n' "$*" >>"$record_events"; }
 # shellcheck source=/dev/null
 source "$repo_root/scripts/lib/native-gate-xcode.sh"
 wilted_testmanagerd_preflight() { :; }
-xcode_test_leg "$label" "$tmp_root/sources" "$scheme" "$destination" "$target"
+xcode_test_leg "$label" "$tmp_root/sources" "$scheme" "$destination" "$target" "${@:7}"
 HARNESS
 }
 
 run_xcode_harness() {
   local leg="$1" scheme="$2" destination="$3" target="$4" mode="$5"
   shift 5
+  local -a env_args=() extra_targets=()
+  while (($#)); do
+    if [[ "$1" == "--" ]]; then
+      shift
+      extra_targets=("$@")
+      break
+    fi
+    env_args+=("$1")
+    shift
+  done
   local root="$tmp_dir/xcode-$leg-$mode" log="$tmp_dir/xcode-$leg-$mode.log"
   mkdir -p "$root"
   if [[ "$mode" == filtered ]]; then
-    env "$@" bash "$xcode_harness" "$repo_root" "$root" "$leg" "$scheme" "$destination" "$target"
+    env "${env_args[@]}" bash "$xcode_harness" "$repo_root" "$root" "$leg" "$scheme" "$destination" "$target" \
+      ${extra_targets[@]+"${extra_targets[@]}"}
   else
     env -u WILTED_MAC_UNIT_SELECTORS -u WILTED_MAC_UNIT_ITERATIONS \
       -u WILTED_IOS_UNIT_SELECTORS -u WILTED_IOS_UNIT_ITERATIONS \
-      bash "$xcode_harness" "$repo_root" "$root" "$leg" "$scheme" "$destination" "$target"
+      bash "$xcode_harness" "$repo_root" "$root" "$leg" "$scheme" "$destination" "$target" \
+      ${extra_targets[@]+"${extra_targets[@]}"}
   fi >"$log" 2>&1 || { cat "$log" >&2; exit 1; }
   printf '%s\n' "$root/argv-$leg.txt"
 }
@@ -429,6 +465,37 @@ ios_unfiltered_argv="$(run_xcode_harness ios-unit-tests WiltediOS 'platform=iOS 
 assert_contains '-only-testing:WiltediOSTests' "$ios_unfiltered_argv"
 assert_absent '-test-iterations' "$ios_unfiltered_argv"
 
+ios27_argv="$(run_xcode_harness ios27-appintents-tests WiltediOS27 'platform=iOS Simulator,id=FAKE-27' \
+  WiltediOS27UITests/WiltedSiriAppIntentsTests/testAudioSchemaQueryAndPlaybackThroughSystemRunner unfiltered -- \
+  WiltediOS27UITests/WiltedSiriAppIntentsTests/testAmbiguousShowWaitsForChosenEntityAndPlaysLatest \
+  WiltediOS27UITests/WiltedSiriAppIntentsTests/testDuplicateEpisodeTitlesAreDisambiguatedByShow \
+  WiltediOS27UITests/WiltedSiriAppIntentsTests/testQueueLocationNextDoesNotStartPlayback \
+  WiltediOS27UITests/WiltedSiriAppIntentsTests/testMarkCompletedIntentPersistsOutboxBeforeTransportAck)"
+ios27_root="$(dirname "$ios27_argv")"
+ios27_build_argv="$ios27_root/build-argv-ios27-appintents-tests.txt"
+[[ "$(cat "$ios27_root/ios27-appintents-tests-project/WiltediOSIntents/Info.plist")" == 'private-intents-plist' ]]
+for method in testAudioSchemaQueryAndPlaybackThroughSystemRunner \
+  testAmbiguousShowWaitsForChosenEntityAndPlaysLatest \
+  testDuplicateEpisodeTitlesAreDisambiguatedByShow \
+  testQueueLocationNextDoesNotStartPlayback \
+  testMarkCompletedIntentPersistsOutboxBeforeTransportAck; do
+  assert_contains "-only-testing:WiltediOS27UITests/WiltedSiriAppIntentsTests/$method" "$ios27_build_argv"
+  assert_contains "-only-testing:WiltediOS27UITests/WiltedSiriAppIntentsTests/$method" "$ios27_argv"
+done
+assert_contains '-scheme' "$ios27_argv"
+assert_contains 'WiltediOS27' "$ios27_argv"
+assert_contains 'CODE_SIGNING_ALLOWED=YES' "$ios27_argv"
+assert_contains 'CODE_SIGN_IDENTITY=-' "$ios27_argv"
+assert_contains '--label' "$ios27_argv"
+assert_contains 'Wilted iOS 27 App Intents tests' "$ios27_argv"
+assert_contains '--simulator-udid' "$ios27_argv"
+assert_contains 'FAKE-27' "$ios27_argv"
+assert_contains 'simctl boot FAKE-27' "$ios27_root/events-ios27-appintents-tests.txt"
+assert_contains 'simctl bootstatus FAKE-27 -b' "$ios27_root/events-ios27-appintents-tests.txt"
+assert_contains "WILTED_TEST_TMPDIR=$ios27_root/work" "$ios27_root/scheme-ios27-appintents-tests.txt"
+assert_contains "DYLD_FRAMEWORK_PATH=$ios27_root/products/Debug-iphonesimulator/WiltediOS.app/Frameworks" \
+  "$ios27_root/scheme-ios27-appintents-tests.txt"
+
 # The Make targets hand TEST and ITERATIONS to the gate through the
 # environment, so a quote in TEST reaches validation instead of the shell.
 run_make_case() {
@@ -452,6 +519,10 @@ assert_contains 'native.filtered.tests leg=macos-unit-tests selectors=WiltedMacF
 log="$tmp_dir/make-ios-unit.log"
 [[ "$(run_make_case make-ios-unit "$log" native-ios-unit TEST=WiltediOSFooTests)" -eq 0 ]] || { cat "$log" >&2; exit 1; }
 assert_contains 'native.filtered.tests leg=ios-unit-tests selectors=WiltediOSFooTests iterations=1 receipt=never' "$log"
+log="$tmp_dir/make-ios27-appintents.log"
+[[ "$(run_make_case make-ios27-appintents "$log" native-ios-appintents-27)" -eq 0 ]] || { cat "$log" >&2; exit 1; }
+assert_contains 'native.filtered selected=ios27-appintents-tests' "$log"
+assert_contains 'receipt=never' "$log"
 log="$tmp_dir/make-mac-unit-usage.log"
 [[ "$(run_make_case make-mac-unit-usage "$log" native-mac-unit)" -eq 2 ]] || { cat "$log" >&2; exit 1; }
 assert_contains 'usage: make native-mac-unit TEST=' "$log"

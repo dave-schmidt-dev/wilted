@@ -454,7 +454,8 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
         XCTAssertEqual(rig.engine.currentTime, 48)
 
         let journal = try String(contentsOf: journalURL, encoding: .utf8)
-        XCTAssertTrue(journal.contains("bulletin-resume outcome=started"))
+        XCTAssertTrue(journal.contains("source=phone event=bulletin-resume"))
+        XCTAssertTrue(journal.contains("result=started"))
         XCTAssertTrue(journal.contains("audio-session event=interruption-began"))
         XCTAssertTrue(journal.contains("audio-session event=interruption-ended should-resume=true resume-requested=true"))
         XCTAssertFalse(journal.contains("Spoken text for headline-1"), "journal records outcomes, never bulletin content")
@@ -478,6 +479,10 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
 
     func testRouteLossDuringSpeechLeavesPlaybackPausedAtTheCheckpoint() async {
         let rig = makeInterruptionRig(channel: headlineChannel(), defaults: defaults)
+        let journalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("route-loss-journal-\(UUID().uuidString).log")
+        defer { try? FileManager.default.removeItem(at: journalURL) }
+        rig.player.journal = LibraryJournal(url: journalURL)
         await rig.play(at: 42)
         await rig.controller.syncTick()
         rig.crossAdBreak()
@@ -489,6 +494,10 @@ final class LibraryPlayerInterruptionTests: XCTestCase {
         XCTAssertEqual(rig.player.position, 42.75)
         XCTAssertEqual(rig.engine.currentTime, 42.75)
         XCTAssertEqual(rig.speaker.stops, 2)
+        let journal = (try? String(contentsOf: journalURL, encoding: .utf8)) ?? ""
+        XCTAssertTrue(journal.contains("source=phone event=route-lost"), journal)
+        XCTAssertTrue(journal.contains("cause=route-loss result=paused"), journal)
+        XCTAssertTrue(journal.contains("speech-held=true"), journal)
     }
 
     func testSpeechThatCannotStartIsRetriedAtTheNextBreak() async {

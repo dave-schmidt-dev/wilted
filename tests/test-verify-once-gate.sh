@@ -70,7 +70,7 @@ fi
 # Every declared input glob matches tracked files in this checkout, and the central
 # tool accepts the adapter: `begin` computes each leg's digest without running anything.
 for leg in xcodegen-reproducible wiltedkit-tests cloudsync-tests playback-tests wiltedproducer-tests \
-  macos-unit-tests ios-unit-tests ios-pixel-snapshot-tests macos-ui-tests; do
+  macos-unit-tests ios-unit-tests ios27-appintents-tests ios-pixel-snapshot-tests macos-ui-tests; do
   output="$(cd "$repo_root" && PYTHONPATH="$central" python3 -m release_tools gate-receipt --action begin \
     --adapter .release/release-adapter.json --repository . --leg "$leg" -- \
     env "WILTED_GATE_LEGS=$leg" bash scripts/test-gate.sh 2>&1)" || { printf '%s\n' "$output" >&2; fail "begin failed for $leg"; }

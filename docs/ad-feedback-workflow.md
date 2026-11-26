@@ -8,9 +8,66 @@ The operator owns the inventory, evidence, experiments, and dispositions.
 ## 1. Preserve and account for every report
 
 At intake, snapshot the current `ad-feedback.json` and record its capture time.
-Keep the snapshot and supporting evidence together outside the repository. Retain
-the original report.
+Keep the snapshot and supporting evidence together under the private, ignored
+`.logs/ad-feedback-weekly/` directory, or outside the repository. Never commit
+the owner inbox or investigation artifacts. Retain the original report.
 An investigation must not silently relabel or dismiss the owner's inbox entry.
+
+### Weekly intake runner
+
+Start each scheduled pass with:
+
+```sh
+make ad-feedback-weekly
+```
+
+The runner reads the app-owned inbox without changing it. It discovers prior
+ad-feedback ledgers under `.logs`, then writes one content-addressed directory
+per Monday and exact inbox snapshot:
+`.logs/ad-feedback-weekly/<Monday>/<snapshot-SHA-256>/`. The directory contains
+the byte-for-byte `ad-feedback.json` snapshot, `run.json`, `ledger.json`,
+`summary.json`, and `REPORT.md`. Directories are owner-only; files are owner-only.
+Git ignores `.logs`.
+
+`REPORT.md` separates reports that are present and unhandled from reports that
+are new, previously investigated, previously captured but still pending, or
+changed since prior evidence. The ledger carries a prior disposition and its
+evidence references forward only when the full feedback identity still matches,
+including kind, item, revision, position, review, label, and review time. A
+changed identity returns to `needs-verification`; it does not inherit a clean
+replay result. Historical reports remain in the ledger even if no longer in the
+current inbox.
+When an archived ledger shares a directory with its captured `ad-feedback.json`,
+the raw snapshot supplies the prior identity. The snapshot digest is recorded in
+the new history manifest; this avoids treating older derived ledger fields as
+the original report when their representation changed.
+
+The runner does not classify a report, replay a model, edit the manifest, write
+the app inbox, queue an app action, or launch Wilted. It will not infer that an
+older replay applies to a new feedback ID. Use the exact snapshot for later
+draft generation, for example:
+
+```sh
+make ad-feedback-drafts FEEDBACK=<weekly-run>/ad-feedback.json OUT=<private-file-outside-the-repo>
+```
+
+The draft exporter groups by item ID. Split drafts by revision and verified
+source identity before using them as corpus cases. To score saved break objects,
+run `phase2_replay_score.py` against the exact fixture and write its report
+outside that fixture, under the same private weekly run directory. Preserve the
+candidate commit, fixture identity, command, and report digest for any later
+handled proof.
+
+Rerunning with the same Monday and inbox bytes reuses the same directory. The
+snapshot is immutable; the ledger and report are atomically replaced rather than
+appended. If a run stops after saving the snapshot or ledger, the next invocation
+resumes that directory before capturing current input. If report installation
+succeeded but its directory sync was uncertain, a retry verifies and syncs the
+existing bytes. A changed inbox gets a separate SHA-256 directory, so a retry
+does not hide new presses or duplicate the prior report.
+If a newly recognized historical snapshot changes an automatically generated
+disposition, the same run refreshes that derived status while retaining operator
+notes and evidence references.
 
 Create one ledger row per feedback ID, including dismissed, duplicate, unmapped,
 and contradictory reports. Record item ID, revision ID, engine version, pipeline

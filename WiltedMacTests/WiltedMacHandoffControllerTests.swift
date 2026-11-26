@@ -62,7 +62,10 @@ final class WiltedMacHandoffControllerTests: XCTestCase {
         var records: LibraryDeviceRecords?
     }
 
-    private func makeRig(usePollerRecords: Bool = false) async -> Rig {
+    private func makeRig(
+        usePollerRecords: Bool = false,
+        journal: WiltedMacPlaybackJournal? = nil
+    ) async -> Rig {
         var rig = Rig()
         await rig.server.setClock(rig.clock.now)
         rig.player.revision = revision
@@ -77,7 +80,7 @@ final class WiltedMacHandoffControllerTests: XCTestCase {
         }
         rig.controller = WiltedMacHandoffController(
             coordinator: coordinator, player: rig.player, deviceID: macID, latestRecords: pollerRecords,
-            now: { clock.now })
+            journal: journal, now: { clock.now })
         return rig
     }
 
@@ -118,6 +121,28 @@ final class WiltedMacHandoffControllerTests: XCTestCase {
         XCTAssertEqual(record.positionSeconds, 42)
         XCTAssertEqual(record.revision, revision)
         XCTAssertEqual(rig.controller.takeoverCount, 1)
+    }
+
+    func testPhoneCheckpointIsCorrelatedInMacJournalWithoutDeviceIdentity() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mac-peer-checkpoint-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let journal = WiltedMacPlaybackJournal(
+            url: folder.appendingPathComponent("logs/playback-v2/playback-journal.log"),
+            now: { Date(timeIntervalSince1970: 1_700_000_000) })
+        let rig = await makeRig(usePollerRecords: true, journal: journal)
+        try await phonePlays(rig, epoch: 4, playing: false)
+
+        await rig.controller.reconcile()
+
+        let content = try String(contentsOf: folder.appendingPathComponent("logs/playback-v2/playback-journal.log"), encoding: .utf8)
+        XCTAssertTrue(content.contains("source=mac event=peer-checkpoint"), content)
+        XCTAssertTrue(content.contains("item=\(PlaybackJournalRecord.itemTag(entry))"), content)
+        XCTAssertTrue(content.contains("position=300.0 epoch=4") || content.contains("epoch=4"), content)
+        XCTAssertTrue(content.contains("playing=false"), content)
+        XCTAssertFalse(content.contains(phoneID), "the journal correlates records without device identifiers")
+        XCTAssertFalse(content.contains(macID), "the journal never writes local device identifiers")
+        XCTAssertFalse(content.contains(entry.rawValue), "the journal never writes the raw item ID")
     }
 
     /// A takeover with poller records reads nothing: its epoch comes from those records (the server

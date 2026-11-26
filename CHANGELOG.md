@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.10.0] - 2026-11-26
+
+### Added
+
+- On iOS 27, Wilted makes downloaded shows and episodes available to Siri’s audio search. Selecting a show plays its latest downloaded episode.
+- Playback journals on Mac and iPhone record pauses, audio-route changes, bulletin playback and handoff decisions with matching item tags so an interruption can be traced across both devices.
+- Mac and iPhone sync diagnostics break down named record reads by record type and whether the record changed. Five-minute estimates and since-launch totals are labelled separately.
+- The weekly ad-feedback report tracks listener reports across runs and shows which still need replay evidence.
+
 ## [0.9.0] - 2026-11-25
 
 ### Added

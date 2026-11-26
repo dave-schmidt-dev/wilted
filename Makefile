@@ -1,4 +1,4 @@
-.PHONY: validate validate-inner native-meta native native-mac-unit native-ios-unit native-ui lint deadcode file-size check-fast install-hooks worktree-setup install install-walkthrough app-icon ad-corpus ad-corpus-adopt ad-feedback-drafts ad-feedback-mark-handled retention-report retention-apply retention-install
+.PHONY: validate validate-inner native-meta native native-mac-unit native-ios-unit native-ios-appintents-27 native-ui lint deadcode file-size check-fast install-hooks worktree-setup install install-walkthrough app-icon ad-corpus ad-corpus-adopt ad-feedback-drafts ad-feedback-weekly ad-feedback-mark-handled retention-report retention-apply retention-install
 
 # The runtime venv every target shares (Producer/Runtime/Makefile pins the same path).
 export UV_PROJECT_ENVIRONMENT := $(CURDIR)/Producer/Runtime/.venv
@@ -72,6 +72,11 @@ native-ios-unit:
 	@test -n "$${TEST-}" || { printf '%s\n' 'usage: make native-ios-unit TEST=<Class[/testMethod],...> [ITERATIONS=<n>]' >&2; exit 2; }
 	@if [ -n "$${ITERATIONS-}" ]; then export WILTED_IOS_UNIT_ITERATIONS="$$ITERATIONS"; fi; WILTED_GATE_LEGS=ios-unit-tests WILTED_IOS_UNIT_SELECTORS="$$TEST" bash scripts/test-gate.sh
 
+# Runs only the five iOS 27 App Intents system-runner selectors. This filtered
+# diagnostic is never a release receipt; the verify-once gate records the full leg.
+native-ios-appintents-27:
+	@WILTED_GATE_LEGS=ios27-appintents-tests bash scripts/test-gate.sh
+
 # The screen-seizing macos-ui-tests leg, run once and recorded as a verify-once
 # receipt for this source (what `make install` and the TestFlight upload check).
 # That leg drives real HID events through WindowServer and will hold the cursor,
@@ -133,9 +138,15 @@ ad-corpus-adopt:
 # Turns the ad feedback accepted in Settings > Ad feedback into draft corpus
 # cases and labels for adcorpus/manifest.json. Drafts name shows, so OUT must
 # be outside the repository; without OUT they print to stdout.
-# Usage: make ad-feedback-drafts [OUT=<file outside the repo>]
+# Usage: make ad-feedback-drafts [FEEDBACK=<snapshot.json>] [OUT=<file outside the repo>]
 ad-feedback-drafts:
-	@python3 Producer/Workers/ad_feedback_export.py $(if $(OUT),--out "$(OUT)")
+	@python3 Producer/Workers/ad_feedback_export.py $(if $(FEEDBACK),--feedback "$(FEEDBACK)") $(if $(LIBRARY),--library "$(LIBRARY)") $(if $(MANIFEST),--manifest "$(MANIFEST)") $(if $(OUT),--out "$(OUT)")
+
+# Capture a private weekly inbox snapshot and identity-aware report. Reads the
+# app-owned inbox but never edits it, marks reports, queues an app action, or runs a model.
+# Usage: make ad-feedback-weekly [FEEDBACK=<inbox.json>] [RUNS_ROOT=<private directory>] [HISTORY_ROOT=<logs directory>] [WEEK_START=<Monday YYYY-MM-DD>]
+ad-feedback-weekly:
+	@python3 Producer/Workers/ad_feedback_weekly.py $(if $(FEEDBACK),--feedback "$(FEEDBACK)") $(if $(RUNS_ROOT),--runs-root "$(RUNS_ROOT)") $(if $(HISTORY_ROOT),--history-root "$(HISTORY_ROOT)") $(if $(WEEK_START),--week-start "$(WEEK_START)")
 
 # Queue validated tuning evidence for the app-owned ad-feedback store to apply.
 # The command reads the inbox and library, writes only Wilted's private queue,

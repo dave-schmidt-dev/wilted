@@ -91,17 +91,80 @@ PY
 selection="$(python3 "$repo_root/scripts/select-ios-simulator.py" <"$tmp/selector.json")"
 [[ "$selection" == $'com.apple.CoreSimulator.SimRuntime.iOS-26-5\tcom.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro' ]]
 
+cat >"$tmp/runtimes.json" <<'JSON'
+{"runtimes":[
+ {"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4","version":"27.2","isAvailable":true,
+  "supportedDeviceTypes":[
+   {"name":"iPhone 18","identifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-18","productFamily":"iPhone"},
+   {"name":"iPad Pro 13-inch","identifier":"com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch","productFamily":"iPad"}
+  ]},
+ {"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-27-2","version":"27.2","isAvailable":true,
+  "supportedDeviceTypes":[
+   {"name":"iPhone 18 Pro","identifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro","productFamily":"iPhone"}
+  ]},
+ {"identifier":"com.apple.CoreSimulator.SimRuntime.iOS-27-3","version":"27.3","isAvailable":false,
+  "supportedDeviceTypes":[
+   {"name":"iPhone 18 Pro","identifier":"com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro","productFamily":"iPhone"}
+  ]}
+]}
+JSON
+selection="$(python3 "$repo_root/scripts/select-ios-simulator.py" --runtime-version 27.2 <"$tmp/runtimes.json")"
+[[ "$selection" == $'com.apple.CoreSimulator.SimRuntime.iOS-27-2\tcom.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro' ]]
+if python3 "$repo_root/scripts/select-ios-simulator.py" --runtime-version 27.3 <"$tmp/runtimes.json" >"$tmp/unavailable-runtime.out" 2>&1; then
+  printf '%s\n' 'assertion failed: unavailable iOS 27.3 runtime was selected' >&2
+  exit 1
+fi
+python3 - "$tmp/runtimes.json" "$tmp/fallback-runtime.json" <<'PY'
+import json, sys
+source, destination = sys.argv[1:]
+payload = json.load(open(source))
+payload["runtimes"] = payload["runtimes"][:1]
+json.dump(payload, open(destination, "w"))
+PY
+selection="$(python3 "$repo_root/scripts/select-ios-simulator.py" --runtime-version 27.2 <"$tmp/fallback-runtime.json")"
+[[ "$selection" == $'com.apple.CoreSimulator.SimRuntime.iOS-27-2-iPhone19-4\tcom.apple.CoreSimulator.SimDeviceType.iPhone-18' ]]
+
+mkdir -p "$tmp/mock-bin"
+cat >"$tmp/mock-bin/xcrun" <<'SH'
+#!/usr/bin/env bash
+[[ "$*" == 'simctl list runtimes -j' ]] || exit 64
+cat "$FAKE_RUNTIME_INVENTORY"
+SH
+chmod +x "$tmp/mock-bin/xcrun"
+selection="$(FAKE_RUNTIME_INVENTORY="$tmp/runtimes.json" PATH="$tmp/mock-bin:$PATH" bash -c '
+  set -u
+  repo_root="$1"
+  xcode_build_timeout_seconds=10
+  require_tool() { command -v "$1" >/dev/null; }
+  source "$repo_root/scripts/lib/native-gate-simulator.sh"
+  select_ios_simulator_spec 27.2
+' _ "$repo_root")"
+[[ "$selection" == $'com.apple.CoreSimulator.SimRuntime.iOS-27-2\tcom.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro' ]]
+
 cat >"$tmp/runner.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-trap 'echo caller-exit >>"$FAKE_EVENTS"' EXIT
+trap 'echo caller-exit >>"$FAKE_EVENTS"; [[ "${FAKE_EXIT_TRAP_FAIL:-0}" != 1 ]]' EXIT
 source "$HELPER"
-gate_sweep wilted >/dev/null
-udid="$(gate_sim_create wilted fake "$FAKE_DEVICE_TYPE" "$FAKE_RUNTIME")"
-xcrun simctl boot "$udid"
-xcrun simctl bootstatus "$udid" -b
+run_leg() {
+  # Match a parallel native-gate leg: its inherited EXIT trap is cleared, but
+  # gate_sim_create still writes its command-substitution UDID to the parent registry.
+  trap - EXIT INT TERM HUP
+  gate_sweep wilted >/dev/null
+  local udid rc
+  udid="$(gate_sim_create wilted fake "$FAKE_DEVICE_TYPE" "$FAKE_RUNTIME")"
+  xcrun simctl boot "$udid"
+  xcrun simctl bootstatus "$udid" -b
+  set +e
+  gate_ui_test_lock --label fake --simulator-udid "$udid" bash -c 'exit "$1"' _ "$FAKE_STATUS"
+  rc=$?
+  set -e
+  return "$rc"
+}
+run_leg &
+worker=$!
 set +e
-gate_ui_test_lock --label fake --simulator-udid "$udid" bash -c 'exit "$1"' _ "$FAKE_STATUS"
+wait "$worker"
 rc=$?
 set -e
 exit "$rc"
@@ -109,12 +172,13 @@ SH
 chmod +x "$tmp/runner.sh"
 
 run_case() {
-  local label="$1" status="$2" udid="$3" state events result
+  local label="$1" status="$2" udid="$3" fail_exit_trap="${4:-0}" state events result
   state="$tmp/$label.json"
   events="$tmp/$label.events"
   cp "$tmp/selector.json" "$state"
   : >"$events"
   if FAKE_STATE="$state" FAKE_EVENTS="$events" FAKE_UDID="$udid" FAKE_STATUS="$status" \
+    FAKE_EXIT_TRAP_FAIL="$fail_exit_trap" \
     FAKE_DEVICE_TYPE=com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro \
     FAKE_RUNTIME=com.apple.CoreSimulator.SimRuntime.iOS-26-5 HELPER="$repo_root/scripts/lib/simctl_gate_lib.sh" \
     APPLE_UI_TEST_LOCK="$bin/apple-ui-test-lock" GATE_XCTEST_DEVICE_SET="$tmp/no-clones" \
@@ -139,10 +203,12 @@ PY
 }
 run_case pass 0 10000000-0000-0000-0000-000000000001
 run_case fail 23 20000000-0000-0000-0000-000000000002
+run_case fail-exit-handler 23 40000000-0000-0000-0000-000000000004 1
 
 # Run the real recorder in a copied fixture project with fake Xcode and simctl.
 recorder_repo="$tmp/recorder-repo"
-mkdir -p "$recorder_repo/scripts/lib" "$recorder_repo/WiltediOSUITests/__Snapshots__/WiltediOSPixelSnapshotTests"
+mkdir -p "$recorder_repo/scripts/lib" "$recorder_repo/WiltediOSUITests/__Snapshots__/WiltediOSPixelSnapshotTests" \
+  "$recorder_repo/WiltediOS27UITests"
 cat >"$recorder_repo/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift" <<'SWIFT'
 final class WiltediOSPixelSnapshotTests {
     func testRecorderProbe() {
@@ -150,7 +216,7 @@ final class WiltediOSPixelSnapshotTests {
     }
 }
 SWIFT
-for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests WiltediOSIntents WiltedWatch WiltedWatchTests; do
+for directory in Shared WiltedMac WiltedMacTests WiltedMacUITests WiltediOS WiltediOSTests WiltediOSIntents WiltediOS27UITests WiltedWatch WiltedWatchTests; do
   mkdir -p "$recorder_repo/$directory"
 done
 for package in WiltedKit Producer CloudSync Playback; do
@@ -192,4 +258,4 @@ grep -Fq 'shutdown 30000000-0000-0000-0000-000000000003' "$recorder_events"
 grep -Fq 'delete 30000000-0000-0000-0000-000000000003' "$recorder_events"
 grep -Fq 'lock device=30000000-0000-0000-0000-000000000003 label=Wilted iOS snapshot recording' "$recorder_events"
 ! grep -Fq 'lock device=host label=XCTest clone cleanup' "$recorder_events"
-printf '%s\n' 'iOS 26.x selection and simulator cleanup tests passed'
+printf '%s\n' 'iOS 26 selection, exact-runtime compatibility, and simulator cleanup tests passed'

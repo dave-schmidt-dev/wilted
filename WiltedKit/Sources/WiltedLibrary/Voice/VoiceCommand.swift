@@ -51,14 +51,43 @@ public struct VoiceEpisode: Sendable, Equatable {
     public let id: ItemID
     public let title: String
     public let showTitle: String
+    /// Source identity lets a resolved show remain unambiguous when feeds share a title.
+    public let showID: ItemID?
     /// When the feed published it; decides "latest". Unknown sorts oldest.
     public let publishedAt: Date
+    /// Publisher page and feed address, when present; voice search never fetches either URL.
+    public let episodeLink: URL?
+    public let showFeedURL: URL?
+    public let duration: TimeInterval?
 
-    public init(id: ItemID, title: String, showTitle: String, publishedAt: Date = .distantPast) {
+    public init(
+        id: ItemID, title: String, showTitle: String, publishedAt: Date = .distantPast,
+        showID: ItemID? = nil, episodeLink: URL? = nil, showFeedURL: URL? = nil,
+        duration: TimeInterval? = nil
+    ) {
         self.id = id
         self.title = title
         self.showTitle = showTitle
         self.publishedAt = publishedAt
+        self.showID = showID
+        self.episodeLink = episodeLink
+        self.showFeedURL = showFeedURL
+        self.duration = duration
+    }
+}
+
+/// A podcast feed known to the phone, including its stable source identity.
+public struct VoiceShow: Sendable, Equatable {
+    public let id: ItemID
+    public let title: String
+    public let publisher: String?
+    public let feedURL: URL?
+
+    public init(id: ItemID, title: String, publisher: String? = nil, feedURL: URL? = nil) {
+        self.id = id
+        self.title = title
+        self.publisher = publisher
+        self.feedURL = feedURL
     }
 }
 
@@ -102,15 +131,18 @@ public struct VoiceSnapshot: Sendable, Equatable {
     /// Every show title in the Larder, downloaded or not, so a show with nothing on the phone
     /// can be told apart from a show that does not exist.
     public let knownShowTitles: [String]
+    /// Stable show identities for schema-based Siri resolution.
+    public let knownShows: [VoiceShow]
     public let nowPlaying: VoiceNowPlaying?
     public let resumeTarget: VoiceResumeTarget
 
     public init(
         downloaded: [VoiceEpisode], knownShowTitles: [String], nowPlaying: VoiceNowPlaying?,
-        resumeTarget: VoiceResumeTarget = .loadedEpisode
+        resumeTarget: VoiceResumeTarget = .loadedEpisode, knownShows: [VoiceShow] = []
     ) {
         self.downloaded = downloaded
         self.knownShowTitles = knownShowTitles
+        self.knownShows = knownShows
         self.nowPlaying = nowPlaying
         self.resumeTarget = resumeTarget
     }

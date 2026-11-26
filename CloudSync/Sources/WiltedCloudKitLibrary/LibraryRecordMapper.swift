@@ -467,6 +467,7 @@ struct LibraryFetchAccumulator {
     var library: [LibraryRecordKey: VersionedLibraryChange] = [:]
     var playback: [String: (channel: PlaybackChannel, observed: ObservedPlayback)] = [:]
     var intents: [String: LibraryIntent] = [:]
+    var cloudKitMetrics = CloudKitEngineFetchMetrics()
     var state: Data?
     var publication: LibraryPublication?
     var error: (any Error)?

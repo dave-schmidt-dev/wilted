@@ -172,13 +172,13 @@ from there. The planner, `SleepTimer` and `LibraryPlayer.stopsAfterCurrentItem` 
   runs, and `autoContinue` never starts the next one. It is cleared when used, by "off", by a minutes timer
   and by `stop()`. The minutes and end-of-episode timers replace each other.
 
-## Siri readiness (iOS 26 APIs only)
+## Siri readiness (iOS 26 path)
 
 Availability checked against Apple's documentation data (developer.apple.com/documentation, `IndexedEntity`
 iOS 18.0, `IntentDonationManager` iOS 16.0, `CSSearchableIndex` iOS 9.0) and the iOS SDK's `AppIntents`
-module interface (`CSSearchableIndex.indexAppEntities` and `deleteAppEntities` iOS 18.0). Nothing here needs
-iOS 27: `IndexedEntityQuery` (iOS 27) is not used, and `IntentDonationManager.deleteDonations` (iOS 26.4, above
-the iOS 26.0 floor) is not used.
+module interface (`CSSearchableIndex.indexAppEntities` and `deleteAppEntities` iOS 18.0). The existing
+`EpisodeEntity`, `ShowEntity`, donations, and shortcuts remain the iOS 26 path; the iOS 27 audio schema below
+is an add-on and does not replace those commands.
 
 - **Spotlight.** `EpisodeEntity` and `ShowEntity` are `IndexedEntity`. `SpotlightIndexer` keeps the index equal to
   the episodes on the phone and their shows, observing the model like `ShortcutParameterRefresher`: the first
@@ -191,6 +191,31 @@ the iOS 26.0 floor) is not used.
   `IntentDonationManager`. It watches `LibraryPlayer` and the model's decisions, so the model is untouched.
   A play or mark Siri itself ran is skipped (the system already counted it), and a decision restored at launch
   is not donated (nothing is loaded then).
+
+## iOS 27 natural-language audio requests
+
+The iOS 27 app target adds Apple's `.audio.podcastShow`, `.audio.podcastEpisode`, and `.audio.playAudio`
+schemas in `WiltediOS/Siri/AudioSchema27.swift`. The two entity types have distinct default queries that
+conform to both `EntityStringQuery` and `IntentValueQuery`; their indexed queries reindex only local Larder
+metadata. Search and URL matching never fetch a feed, episode, or audio file.
+
+- A show search returns every matching feed, including feeds with the same title. Its subtitle uses publisher
+  or feed details so the system can distinguish choices. Selecting a show starts its newest downloaded episode
+  by publication date, using the stable feed ID; an ambiguous query does not start playback before selection.
+- An episode search returns every matching downloaded episode. Same-title episodes retain distinct IDs and show
+  names. Playback uses the selected ID and rechecks that the episode is still downloaded.
+- An unspecified audio search can suggest one item from the phone's normal Larder order. A show search never
+  chooses a feed when the request is ambiguous.
+- Wilted does not implement queue insertion or shuffle/repeat for this schema. Requests containing those options
+  return an explanatory dialog before touching playback. In particular, “Play Next” never starts an item now.
+- Voice-only requests receive a complete spoken dialog. Visible system surfaces also get a supporting line.
+- On iOS 27, Now Playing publishes the selected podcast episode and its feed as App Entity identifiers; the
+  iOS 26 Now Playing payload and Siri shortcuts remain available as before.
+
+The system-runner checks use `AppIntentsTesting` on the dedicated iOS 27.2 simulator scheme. They exercise
+registered entity queries, explicit disambiguation, selected-item playback, queue refusal, and the durable
+Mark completed outbox while the fixture transport refuses delivery. These tests do not establish how Siri
+routes spoken requests on a physical phone or in CarPlay.
 
 ## Voice routing log
 

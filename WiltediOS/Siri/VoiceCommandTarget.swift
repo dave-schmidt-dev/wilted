@@ -45,6 +45,11 @@ enum VoiceCommandRunner {
     static func run(_ command: VoiceCommand, on target: (any VoiceCommandTarget)?) async -> String {
         guard let target else { return unavailableDialog }
         let plan = VoiceCommandPlanner.plan(command, snapshot: await target.voiceSnapshot())
+        return await run(plan, on: target)
+    }
+
+    /// Performs a plan that was resolved against a narrower, already captured snapshot.
+    static func run(_ plan: VoicePlan, on target: any VoiceCommandTarget) async -> String {
         switch await target.perform(plan.action) {
         case .done: return plan.dialog
         case .queued: return queuedDialog

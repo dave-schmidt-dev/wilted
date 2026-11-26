@@ -337,8 +337,12 @@ extension LibraryAppModel {
                 : try await coordinator.paused(at: position, entryID: entryID)
         } catch {
             published = false
-            handoffLog.error("Could not publish the pause: \(String(describing: error), privacy: .public)")
+            handoffLog.error("Could not publish the playback pause")
         }
+        journal?.note(PlaybackJournalRecord(
+            source: .phone, event: published ? .pausePublished : .pauseQueued,
+            itemID: entryID, positionSeconds: position, epoch: await coordinator.epoch,
+            result: published ? .published : .pending))
         if let entryID {
             await rememberOwnPosition(entryID, position: position)
             handoffState.unpublished[entryID] = published ? nil : (position, clock)
@@ -421,7 +425,7 @@ extension LibraryAppModel {
                 state.unpublished[entryID] = nil
             }
         } catch {
-            handoffLog.error("Could not republish positions: \(String(describing: error), privacy: .public)")
+            handoffLog.error("Could not republish saved playback positions")
         }
     }
 
@@ -441,7 +445,7 @@ extension LibraryAppModel {
         let localSaveToken = state.localSaveTokens[item.entryID] ?? 0
         guard let revision = await mediaCache.cachedEntries()[item.entryID]?.revisionID else {
             state.lastTakeoverFailure = clock
-            handoffLog.warning("Playing \(item.entryID.rawValue, privacy: .public) has no cached revision; handoff not published")
+            handoffLog.warning("Playing item has no cached revision; handoff not published")
             return
         }
         do {
@@ -455,11 +459,14 @@ extension LibraryAppModel {
             }
             handoffMessage = nil
             handoffLog.info("Took over playback at epoch \(epoch, privacy: .public)")
+            journal?.note(PlaybackJournalRecord(
+                source: .phone, event: .takeover, itemID: item.entryID,
+                positionSeconds: position, epoch: epoch, result: .playing, isPlaying: true))
             await updateSyncTick()
         } catch {
             state.lastTakeoverFailure = clock
             handoffMessage = "Handoff is unavailable: \(Self.text(for: error))"
-            handoffLog.error("Takeover failed: \(String(describing: error), privacy: .public)")
+            handoffLog.error("Playback handoff failed")
         }
     }
 
@@ -476,7 +483,11 @@ extension LibraryAppModel {
             // The coordinator does not publish a paused record on its own after a loss.
             try? await self.coordinator.paused(at: player.position)
             self.handoffMessage = "Paused because \(winner) started playing."
-            handoffLog.info("Relinquished to \(winner, privacy: .public)")
+            handoffLog.info("Relinquished playback after a peer takeover")
+            self.journal?.note(PlaybackJournalRecord(
+                source: .phone, event: .relinquish, itemID: player.item?.entryID,
+                positionSeconds: player.position, epoch: await self.coordinator.epoch,
+                cause: .higherEpoch, result: .relinquished, isPlaying: false))
             await self.updateSyncTick()
             await self.updateContinuation(from: records)
         }

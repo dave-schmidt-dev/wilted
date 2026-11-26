@@ -150,6 +150,7 @@ expected_test_count_floor() {
   case "$1" in
     macos-unit-tests) printf '30\n' ;;
     macos-ui-tests) mac_ui_declared_test_count ;;
+    ios27-appintents-tests) printf '5\n' ;;
     ios-pixel-snapshot-tests) printf '27\n' ;;
     watchos-build) printf '4\n' ;;
     *) printf '1\n' ;;
@@ -233,6 +234,8 @@ assert_result_bundle_tests() {
       printf '{"totalTestCount":%s,"passedTests":%s,"failedTests":0,"skippedTests":0,"result":"Passed"}\n' "$watch_count" "$watch_count" >"$summary_file"
     elif [[ "$label" == "macos-unit-tests" ]]; then
       printf '%s\n' '{"totalTestCount":30,"passedTests":30,"failedTests":0,"skippedTests":0,"result":"Passed"}' >"$summary_file"
+    elif [[ "$label" == "ios27-appintents-tests" ]]; then
+      printf '%s\n' '{"totalTestCount":5,"passedTests":5,"failedTests":0,"skippedTests":0,"result":"Passed"}' >"$summary_file"
     elif [[ "$label" == "macos-ui-tests" ]]; then
       local ui_count
       ui_count="$(mac_ui_declared_test_count)"

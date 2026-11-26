@@ -262,8 +262,10 @@ extension LibraryAppModel {
             notebookPhoneState.notice = "Audio for this saved version is no longer available on this phone."
             return false
         }
+        let source = decisionContent.entries[entry.sourceItemID]
         let item = LibraryPlayer.Item(
             entryID: entry.sourceItemID, title: entry.sourceTitle, showTitle: entry.sourceName ?? "",
+            showID: source?.kind == .podcastEpisode ? source?.sourceID : nil,
             fileURL: cached.url, feedbackRevisionID: entry.sourceRevision)
         guard player.start(item, at: start, autoplay: true) else {
             notebookPhoneState.notice = "This clip could not start playing."

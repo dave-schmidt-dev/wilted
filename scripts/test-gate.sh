@@ -9,6 +9,7 @@ leg_names=(
   wiltedproducer-tests
   macos-unit-tests
   ios-unit-tests
+  ios27-appintents-tests
   macos-ui-tests
   ios-pixel-snapshot-tests
 )
@@ -143,7 +144,7 @@ source "$repo_root/scripts/lib/simctl_gate_lib.sh"
   printf '%s\n' 'native.error WILTED_XCODE_BUILD_AND_TEST_TIMEOUT_SECONDS must be a positive integer' >&2
   exit 2
 }
-leg_reports=(none xctest xctest xctest xctest count count count count)
+leg_reports=(none xctest xctest xctest xctest count count count count count)
 # shellcheck source=lib/native-gate-staging.sh
 source "$repo_root/scripts/lib/native-gate-staging.sh"
 # shellcheck source=lib/native-gate-legs.sh
@@ -269,7 +270,7 @@ PYRESULTDIR
 
 retain_native_success_bundle() {
   [[ -n "${native_results_dir:-}" ]] || return 0
-  case "$1" in macos-unit-tests|ios-unit-tests|ios-pixel-snapshot-tests) ;; *) return 0 ;; esac
+  case "$1" in macos-unit-tests|ios-unit-tests|ios27-appintents-tests|ios-pixel-snapshot-tests) ;; *) return 0 ;; esac
   local retained="$native_results_dir/$1.xcresult" staging="$native_results_dir/.$1.staging.$$"
   status "native.results.start leg=$1 path=$retained"
   copy_terminal_result_bundle "$2" "$staging" "$retained" 1 || return $?
@@ -377,7 +378,7 @@ run_leg() {
   fi
 
   # Every app leg keeps its failing result bundle; the temp root does not survive.
-  if [[ "$name" == macos-* || "$name" == ios-* || "$name" == watchos-* ]]; then
+  if [[ "$name" == macos-* || "$name" == ios-* || "$name" == ios27-appintents-tests || "$name" == watchos-* ]]; then
     if [[ "$command_status" -ne 0 ]]; then
       retain_ui_failure_bundle "$name" "$result_bundle" || status "native.results.failure-diagnostics-error leg=$name"
     else
@@ -525,6 +526,7 @@ find_project() {
 
 source "$repo_root/scripts/lib/native-gate-simulator.sh"
 source "$repo_root/scripts/lib/native-gate-xcode.sh"
+source "$repo_root/scripts/lib/native-gate-ios27.sh"
 
 leg_macos_unit_tests() {
   xcode_test_leg macos-unit-tests "$integration_root/WiltedMacTests" WiltedMac 'platform=macOS' WiltedMacTests
@@ -770,7 +772,7 @@ if [[ -n "$native_interrupt_test_command" ]]; then
 fi
 
 leg_fns=(leg_xcodegen_reproducible leg_wiltedkit_tests leg_cloudsync_tests leg_playback_tests leg_wiltedproducer_tests
-  leg_macos_unit_tests leg_ios_unit_tests leg_macos_ui_tests leg_ios_ui_tests)
+  leg_macos_unit_tests leg_ios_unit_tests leg_ios27_appintents_tests leg_macos_ui_tests leg_ios_ui_tests)
 if [[ "$native_self_test" != 1 ]]; then cleanup_mac_test_hosts; fi
 wilted_gate_run_legs
 wilted_cleanup_gate_owned_mac_test_hosts "$tmp_root" || true

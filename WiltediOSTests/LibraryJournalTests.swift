@@ -13,6 +13,13 @@ private final class JournalTestClock: @unchecked Sendable {
     func advance(_ seconds: TimeInterval) { lock.withLock { time += seconds } }
 }
 
+private final class JournalLogCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+    var lines: [String] { lock.withLock { stored } }
+    func append(_ line: String) { lock.withLock { stored.append(line) } }
+}
+
 @MainActor
 private final class JournalTestRemote: LibraryRemoteCommands {
     var handler: (@MainActor (LibraryRemoteCommand) -> Bool)?
@@ -55,6 +62,7 @@ final class LibraryJournalTests: XCTestCase {
     }
 
     private func id(_ raw: String) -> ItemID { try! ItemID(rawValue: raw) }
+    private func tag(_ raw: String) -> String { PlaybackJournalRecord.itemTag(id(raw)) }
 
     private func macPush(_ changes: [LibraryChange]) async throws {
         let pending = changes.map { change -> PendingLibraryChange in
@@ -179,19 +187,19 @@ final class LibraryJournalTests: XCTestCase {
 
         try assertInOrder(journalLines(), [
             ("first launch", ["launch build="]),
-            ("the phone's own play of a", ["start-request kind=toggle entry=a"]),
-            ("start of a", ["start entry=a", "position=0.0", "position-source=zero"]),
-            ("remote pause", ["remote-command command=pause", "result=handled", "entry=a"]),
-            ("Siri's mark", ["voice-action", "markCompleted"]),
-            ("decision begun", ["decision-begun", "entry=a"]),
-            ("a stopped", ["stop reason=", "entry=a"]),
-            ("finished here", ["finished-here action=remember entry=a"]),
-            ("request sent", ["decision-sent action=markDone entry=a"]),
+            ("the phone's own play of a", ["start-request kind=toggle item=\(tag("a"))"]),
+            ("start of a", ["source=phone event=start item=\(tag("a"))", "position=0.0", "position-source=zero"]),
+            ("explicit pause checkpoint", ["source=phone event=pause", "cause=explicit", "result=paused", "item=\(tag("a"))"]),
+            ("remote pause", ["remote-command command=pause", "result=handled", "item=\(tag("a"))"]),
+            ("Siri's mark", ["decision-begun action=markDone item=\(tag("a"))"]),
+            ("a stopped", ["stop reason=withdraw trigger=queue-removed item=\(tag("a"))"]),
+            ("finished here", ["finished-here action=remember item=\(tag("a"))"]),
+            ("request sent", ["decision-sent action=markDone item=\(tag("a"))"]),
             ("second launch", ["launch build="]),
             ("remote play with nothing loaded", ["remote-command command=play", "loaded=false", "result=handled"]),
-            ("the request that play made", ["start-request kind=select entry=b"]),
-            ("start of b", ["start entry=b", "position=0.0", "position-source=zero"]),
-            ("why b started", ["remote-resume command=play", "result=resumed", "entry=b"])
+            ("the request that play made", ["start-request kind=select item=\(tag("b"))"]),
+            ("start of b", ["source=phone event=start item=\(tag("b"))", "position=0.0", "position-source=zero"]),
+            ("why b started", ["remote-resume command=play", "result=resumed", "item=\(tag("b"))"])
         ])
     }
 
@@ -225,7 +233,7 @@ final class LibraryJournalTests: XCTestCase {
         try await start(rig, "a")
 
         let lines = try journalLines()
-        let startLine = try XCTUnwrap(lines.last { $0.contains("start entry=a") })
+        let startLine = try XCTUnwrap(lines.last { $0.contains("event=start item=\(tag("a"))") })
         XCTAssertTrue(startLine.contains("position=98.0"), "start position is 98.0: \(startLine)")
         XCTAssertTrue(startLine.contains("position-source=own"), "position-source is own: \(startLine)")
     }
@@ -249,7 +257,7 @@ final class LibraryJournalTests: XCTestCase {
         try await start(rig, "a")
 
         let lines = try journalLines()
-        let startLine = try XCTUnwrap(lines.last { $0.contains("start entry=a") })
+        let startLine = try XCTUnwrap(lines.last { $0.contains("event=start item=\(tag("a"))") })
         XCTAssertTrue(startLine.contains("position=150.0"), "start position is 150.0: \(startLine)")
         XCTAssertTrue(startLine.contains("position-source=other-device"), "the Mac's position won: \(startLine)")
     }
@@ -259,17 +267,17 @@ final class LibraryJournalTests: XCTestCase {
     func testNoteAppendsOneTimestampedLinePerCall() throws {
         let file = scratch.appendingPathComponent("unit-journal.log")
         let journal = LibraryJournal(url: file, now: { Date(timeIntervalSince1970: 1_700_000_000) })
-        journal.note("first-test-line")
-        journal.note("second-test-line")
+        journal.note("launch build=1.0.0")
+        journal.note("stop reason=withdraw")
 
         let content = try String(contentsOf: file, encoding: .utf8)
         let lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
         XCTAssertEqual(lines.count, 2)
-        XCTAssertTrue(lines[0].contains("first-test-line"))
-        XCTAssertTrue(lines[1].contains("second-test-line"))
+        XCTAssertTrue(lines[0].contains("schema=2 launch build=1.0.0"))
+        XCTAssertTrue(lines[1].contains("schema=2 stop reason=withdraw"))
 
         let parts0 = lines[0].components(separatedBy: " ")
-        XCTAssertEqual(parts0.count, 2)
+        XCTAssertEqual(parts0.count, 4)
         let formatter = ISO8601DateFormatter()
         XCTAssertNotNil(formatter.date(from: parts0[0]), "timestamp must be valid ISO8601")
     }
@@ -313,12 +321,12 @@ final class LibraryJournalTests: XCTestCase {
         XCTAssertEqual(rig.player.item?.entryID, id("b"))
         XCTAssertFalse(rig.model.isFinishedHere(id("a")), "moving on marks nothing")
         try assertInOrder(journalLines(), [
-            ("start of a", ["start entry=a"]),
-            ("the voice request", ["voice-action action=play(b)"]),
-            ("the start it asked for", ["start-request kind=select entry=b"]),
-            ("where a was when b replaced it", ["stop reason=replaced entry=a position=0.0"]),
-            ("start of b", ["start entry=b"]),
-            ("its outcome", ["voice-action-outcome action=play(b) outcome=done"])
+            ("start of a", ["event=start item=\(tag("a"))"]),
+            ("the voice request", ["voice-action"]),
+            ("the start it asked for", ["start-request kind=select item=\(tag("b"))"]),
+            ("where a was when b replaced it", ["stop reason=replaced item=\(tag("a")) position=0.0"]),
+            ("start of b", ["event=start item=\(tag("b"))"]),
+            ("its outcome", ["voice-action-outcome outcome=done"])
         ])
         XCTAssertFalse(try journalLines().contains { $0.contains("decision-begun") }, "no mark was made")
     }
@@ -340,7 +348,7 @@ final class LibraryJournalTests: XCTestCase {
         try payload.write(to: file)
         XCTAssertTrue(rig.player.start(LibraryPlayer.Item(entryID: id("b"), title: "Title b", showTitle: "", fileURL: file), at: 12))
 
-        let startLine = try XCTUnwrap(try journalLines().last { $0.contains("start entry=b") })
+        let startLine = try XCTUnwrap(try journalLines().last { $0.contains("event=start item=\(tag("b"))") })
         XCTAssertTrue(startLine.contains("position-source=unknown"), startLine)
     }
 
@@ -354,5 +362,96 @@ final class LibraryJournalTests: XCTestCase {
         let content = try String(contentsOf: journalURL, encoding: .utf8)
         XCTAssertFalse(content.contains("fixture-owner"), "journal must never carry owner tokens")
         XCTAssertFalse(content.contains("token="), "journal must not carry token parameters")
+    }
+
+    func testJournalRedactsTextAndPrivateIdentifiersBeforeFileAndOSLog() throws {
+        let capture = JournalLogCapture()
+        let privateEntry = try ItemID(rawValue: "private-entry-7d63")
+        let privateOwner = "owner-private-58fa"
+        let privateDevice = "Dave's iPhone 16"
+        let journal = LibraryJournal(
+            url: journalURL,
+            now: { Date(timeIntervalSince1970: 1_700_000_000) },
+            logLine: { capture.append($0) })
+
+        journal.note("start entry=\(privateEntry.rawValue) title=\"Secret episode title\" position=14.2 autoplay=true")
+        journal.note("confirmation-asked question=\"Remove Private Show?\" owner=\(privateOwner) device=\"\(privateDevice)\" token=secret-token")
+        journal.note(PlaybackJournalRecord(
+            source: .phone, event: .routeLost, itemID: privateEntry,
+            positionSeconds: 14.2, epoch: 3, cause: .routeLoss,
+            result: .paused, isPlaying: false, speechHeld: true))
+
+        let fileLines = try String(contentsOf: journalURL, encoding: .utf8)
+            .components(separatedBy: .newlines).filter { !$0.isEmpty }
+        XCTAssertEqual(fileLines.count, 3)
+        let fileBodies = fileLines.map { line in
+            guard let separator = line.firstIndex(of: " ") else { return line }
+            return String(line[line.index(after: separator)...])
+        }
+        XCTAssertEqual(capture.lines, fileBodies.map { PlaybackJournalPrivacy.publicLogLine(from: $0) })
+        XCTAssertTrue(fileBodies[0].contains("item=\(PlaybackJournalRecord.itemTag(privateEntry))"))
+        XCTAssertTrue(fileBodies[0].contains("position=14.2 autoplay=true"))
+        XCTAssertTrue(fileBodies[1].contains("confirmation-asked"))
+        XCTAssertFalse(fileBodies[1].contains("question="))
+        XCTAssertTrue(fileBodies[2].contains("source=phone event=route-lost"))
+        XCTAssertFalse(capture.lines.joined().contains(PlaybackJournalRecord.itemTag(privateEntry)), "OSLog must not expose joinable tags")
+        XCTAssertFalse(capture.lines.joined().contains("position=14.2"), "OSLog omits listening position")
+        let allOutput = fileLines.joined(separator: "\n") + capture.lines.joined(separator: "\n")
+        for privateValue in [privateEntry.rawValue, privateOwner, privateDevice, "Secret episode title", "Private Show", "secret-token"] {
+            XCTAssertFalse(allOutput.contains(privateValue), "diagnostics must not contain \(privateValue)")
+        }
+        let fileAttributes = try FileManager.default.attributesOfItem(atPath: journalURL.path)
+        XCTAssertEqual((fileAttributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        let privateDirectory = scratch.appendingPathComponent("private-playback-v2", isDirectory: true)
+        XCTAssertTrue(LibraryJournal.preparePrivateDirectory(at: privateDirectory))
+        let directoryAttributes = try FileManager.default.attributesOfItem(atPath: privateDirectory.path)
+        XCTAssertEqual((directoryAttributes[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+    }
+
+    func testV2ArchiveSecuresExistingFilesWithoutChangingTheSharedLogsDirectory() throws {
+        let sharedLogs = scratch.appendingPathComponent("Logs", isDirectory: true)
+        let privateDirectory = sharedLogs.appendingPathComponent("playback-v2", isDirectory: true)
+        try FileManager.default.createDirectory(at: privateDirectory, withIntermediateDirectories: true)
+        let url = privateDirectory.appendingPathComponent("playback-journal.log")
+        let backup = url.appendingPathExtension("1")
+        try Data("preserved old row\n".utf8).write(to: url)
+        try Data("preserved backup row\n".utf8).write(to: backup)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: sharedLogs.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: privateDirectory.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: url.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: backup.path)
+        let journal = LibraryJournal(url: url, logLine: { _ in })
+
+        journal.note(PlaybackJournalRecord(source: .phone, event: .pause, result: .paused))
+
+        func mode(_ path: URL) throws -> Int? {
+            let attributes = try FileManager.default.attributesOfItem(atPath: path.path)
+            return (attributes[.posixPermissions] as? NSNumber)?.intValue
+        }
+        XCTAssertEqual(try mode(sharedLogs), 0o755, "the shared Logs parent keeps its existing mode")
+        XCTAssertEqual(try mode(privateDirectory), 0o700)
+        XCTAssertEqual(try mode(url), 0o600)
+        XCTAssertEqual(try mode(backup), 0o600)
+        let contents = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(contents.hasPrefix("preserved old row\n"), "tightening permissions must preserve old evidence")
+        XCTAssertTrue(contents.contains("event=pause"))
+    }
+
+    func testV2ArchiveDropsWriteWhenItsPrivateDirectoryCannotBeCreated() throws {
+        let blockedParent = scratch.appendingPathComponent("not-a-directory")
+        try Data("blocking parent".utf8).write(to: blockedParent)
+        let url = blockedParent.appendingPathComponent("playback-v2/playback-journal.log")
+        let capture = JournalLogCapture()
+        let journal = LibraryJournal(url: url, logLine: { capture.append($0) })
+        let itemID = id("private-blocked-phone-item")
+        let record = PlaybackJournalRecord(source: .phone, event: .pause, itemID: itemID, positionSeconds: 42)
+
+        journal.note(record)
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertEqual(capture.lines, [record.publicLogLine])
+        XCTAssertFalse(capture.lines.joined().contains(itemID.rawValue))
+        XCTAssertFalse(capture.lines.joined().contains(PlaybackJournalRecord.itemTag(itemID)))
+        XCTAssertFalse(capture.lines.joined().contains("position=42"))
     }
 }

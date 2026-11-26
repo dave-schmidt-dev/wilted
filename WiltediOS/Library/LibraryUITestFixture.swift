@@ -1,6 +1,8 @@
 #if DEBUG
 import CryptoKit
 import Foundation
+import AppIntents
+import MediaPlayer
 import SwiftUI
 import WiltedDomain
 import WiltedLibrary
@@ -32,6 +34,8 @@ enum LibraryUITestScenario: String, Sendable {
     case spokenHeadlines = "spoken-headlines"
     /// A real held phone mirror and downloads; the fixture Mac now has an empty queue.
     case heldAccount = "held-account"
+    /// Stable catalog fixtures for the iOS 27 App Intents system runner.
+    case siri
 }
 
 extension LibraryUITestScenario {
@@ -62,6 +66,11 @@ enum LibraryUITestFixture {
     static let articleID = "fixture-article-1"
     /// The `pixelInterruptions` scenario's Morning report.
     static let reportID = "fixture-report-1"
+    static let siriCompletionEpisodeID = "siri-completion-episode"
+    static let siriEpisodeIDs = [
+        "siri-twin-a-old", "siri-twin-a-new", "siri-twin-b-episode", "siri-twin-c-episode",
+        "siri-latest-old", "siri-latest-new", siriCompletionEpisodeID,
+    ]
     /// The pixel scenario's clock: 2026-10-03 12:00 UTC.
     nonisolated static let pixelClock = Date(timeIntervalSince1970: 1_791_028_800)
 
@@ -136,6 +145,9 @@ enum LibraryUITestFixture {
         let model: LibraryAppModel
         let player: LibraryPlayer
         let settings: LibrarySettingsStore
+        let nowPlaying: LibraryUITestNowPlaying
+        let outboxURL: URL
+        let finishedHereURL: URL
         private let server = InMemoryLibraryServer(writerDeviceID: "mac")
         private let cache: FileMediaCache
         private let phone: InMemoryLibraryTransport
@@ -168,6 +180,8 @@ enum LibraryUITestFixture {
                 deviceID: "phone", server: server,
                 verifiedOwnerToken: "fixture-owner")
             let storeURL = scratch.appendingPathComponent("library-state.json")
+            outboxURL = scratch.appendingPathComponent("siri-outbox.json")
+            finishedHereURL = scratch.appendingPathComponent("siri-finished-here.json")
             let store = FileLibraryStore(url: storeURL)
             mirror = store
             let savedStore = scenario == .heldAccount ? store : nil
@@ -178,21 +192,30 @@ enum LibraryUITestFixture {
                     return FileLibraryStore(url: storeURL)
                 }
             }
-            let transport: any LibraryTransport = scenario == .throttled ? LibraryUITestPressureTransport(inner: phone) : phone
+            let transport: any LibraryTransport
+            if scenario == .throttled {
+                transport = LibraryUITestPressureTransport(inner: phone)
+            } else if scenario == .siri {
+                transport = LibraryUITestSiriTransport(inner: phone)
+            } else {
+                transport = phone
+            }
             let mediaCache: any LibraryMediaCache = scenario == .delayedStart
                 ? LibraryUITestDelayedCache(inner: cache, delay: LibraryUITestFixture.startDelay) : cache
             model = LibraryAppModel(
                 transport: transport, store: store, deviceID: "phone", recovery: recovery,
                 mediaCache: mediaCache, preferences: defaults,
                 ownPositionsURL: scratch.appendingPathComponent("own-positions.json"),
+                outboxURL: outboxURL, finishedHereURL: finishedHereURL,
                 now: LibraryUITestFixture.clock(for: scenario),
                 timeZone: scenario.isPixel ? LibraryUITestFixture.pixelTimeZone : .current)
+            let nowPlaying = LibraryUITestNowPlaying()
+            self.nowPlaying = nowPlaying
             player = LibraryPlayer(
                 engine: LibraryUITestEngine(
                     refusesPlay: scenario == .startError,
                     automaticallyAdvances: scenario == .spokenHeadlines || scenario == .pixelInterruptions),
-                session: LibraryUITestSession(),
-                nowPlaying: LibraryUITestNowPlaying(), remoteCommands: LibraryUITestRemote(),
+                session: LibraryUITestSession(), nowPlaying: nowPlaying, remoteCommands: LibraryUITestRemote(),
                 sessionEvents: LibraryUITestSessionEvents())
             settings = LibrarySettingsStore(defaults: defaults)
         }
@@ -339,6 +362,7 @@ enum LibraryUITestFixture {
                         publishedAt: Date(timeIntervalSince1970: 1_791_025_200), durationSeconds: LibraryUITestEngine.length)))
                     changes.append(.slot(try QueueSlot(entryID: report, sortKey: 5)))
                 }
+                if scenario == .siri { changes += try Self.siriLibraryChanges() }
                 let pending = changes.enumerated().map {
                     PendingLibraryChange(localSeq: UInt64($0.offset + 1), change: $0.element, baseVersion: 0)
                 }
@@ -350,7 +374,8 @@ enum LibraryUITestFixture {
                 var admittedOffers: [LibraryMediaOffer] = []
                 for raw in LibraryUITestFixture.episodeIDs + (scenario.isPixel ? ["fixture-episode-3"] : [])
                     + (scenario == .pixelBooks ? [LibraryUITestFixture.bookID, LibraryUITestFixture.articleID] : [])
-                    + (scenario == .pixelInterruptions ? [LibraryUITestFixture.reportID] : []) {
+                    + (scenario == .pixelInterruptions ? [LibraryUITestFixture.reportID] : [])
+                    + (scenario == .siri ? LibraryUITestFixture.siriEpisodeIDs : []) {
                     let offer = try LibraryMediaOffer(
                         entryID: try ItemID(rawValue: raw), revisionID: RevisionID(rawValue: "rev-1"), contentHash: hash,
                         byteCount: Int64(audio.count), mediaType: "audio/mp4", durationSeconds: LibraryUITestEngine.length,
@@ -430,6 +455,7 @@ enum LibraryUITestFixture {
                 assertionFailure("Library root fixture could not seed: \(error)")
             }
         }
+
     }
 }
 
@@ -537,7 +563,20 @@ final class LibraryUITestSession: ListenerAudioSession, @unchecked Sendable {
 }
 
 final class LibraryUITestNowPlaying: ListenerNowPlaying, @unchecked Sendable {
+    private let lock = NSLock()
+    private var entityIdentifiers: [EntityIdentifier] = []
+
     func update(title: String, duration: Double, position: Double, rate: Double) {}
+    func update(_ info: ListenerNowPlayingInfo) {
+        lock.lock()
+        entityIdentifiers = info.appEntityIdentifiers
+        lock.unlock()
+    }
+    func appEntityIdentifiers() -> [EntityIdentifier] {
+        lock.lock()
+        defer { lock.unlock() }
+        return entityIdentifiers
+    }
     func clear() {}
 }
 
@@ -641,5 +680,33 @@ final class LibraryUITestPressureTransport: LibraryTransport, @unchecked Sendabl
     func poll(_ options: LibraryPollOptions) async throws -> LibraryPollResult { throw Self.rateLimited }
     func mediaOffers() async throws -> [LibraryMediaOffer] { throw Self.rateLimited }
     func intentOutcomes() async throws -> [IntentOutcome] { throw Self.rateLimited }
+}
+
+/// The Siri fixture keeps library and playback reads available while every decision write fails,
+/// so the system test can inspect the real durable phone outbox before the Mac acknowledges it.
+final class LibraryUITestSiriTransport: LibraryTransport, @unchecked Sendable {
+    let inner: InMemoryLibraryTransport
+
+    init(inner: InMemoryLibraryTransport) { self.inner = inner }
+
+    func operationGeneration() async -> UInt64 { await inner.operationGeneration() }
+    func verifiedOwnerToken() async -> String? { await inner.verifiedOwnerToken() }
+    func verifyOwner() async throws { try await inner.verifyOwner() }
+    func fetchChanges(since token: LibraryChangeToken?) async throws -> LibraryChangeBatch {
+        try await inner.fetchChanges(since: token)
+    }
+    func push(changes: [PendingLibraryChange]) async throws -> LibraryPushResult {
+        try await inner.push(changes: changes)
+    }
+    func send(intent: LibraryIntent) async throws {
+        throw LibraryTransportError.transport("The Siri fixture keeps phone decisions pending.")
+    }
+    func listIntents() async throws -> [LibraryIntent] { try await inner.listIntents() }
+    func publish(_ record: DevicePlaybackPosition, as channel: PlaybackChannel) async throws {
+        try await inner.publish(record, as: channel)
+    }
+    func fetchDeviceRecords() async throws -> LibraryDeviceRecords { try await inner.fetchDeviceRecords() }
+    func commitFetchedState(_ token: LibraryChangeToken?) async throws { try await inner.commitFetchedState(token) }
+    func commitSentState(_ token: LibraryChangeToken?) async throws { try await inner.commitSentState(token) }
 }
 #endif

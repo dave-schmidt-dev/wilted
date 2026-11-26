@@ -69,22 +69,30 @@ extension LibraryPlayer {
         guard speechHold != nil else { return }
         speechHold = nil
         guard resume, status == .playing, item != nil else {
-            journal?.note("bulletin-resume outcome=skipped reason=playback-no-longer-active")
+            journal?.note(PlaybackJournalRecord(
+                source: .phone, event: .bulletinResume, itemID: item?.entryID,
+                positionSeconds: position, result: .skipped, isPlaying: isPlaying))
             publishNowPlaying()
             return
         }
         do { try session.activate() } catch {
-            journal?.note("bulletin-resume outcome=failed reason=audio-session")
+            journal?.note(PlaybackJournalRecord(
+                source: .phone, event: .bulletinResume, itemID: item?.entryID,
+                positionSeconds: position, cause: .audioSession, result: .failed))
             _ = fail(.audioSession)
             return
         }
         engineStoppedAt = nil
         guard engine.play() else {
-            journal?.note("bulletin-resume outcome=failed reason=engine-refused")
+            journal?.note(PlaybackJournalRecord(
+                source: .phone, event: .bulletinResume, itemID: item?.entryID,
+                positionSeconds: position, cause: .engineRefused, result: .failed))
             _ = fail(.engineRefused)
             return
         }
-        journal?.note("bulletin-resume outcome=started")
+        journal?.note(PlaybackJournalRecord(
+            source: .phone, event: .bulletinResume, itemID: item?.entryID,
+            positionSeconds: position, result: .started, isPlaying: true))
         lastAccrual = .now
         publishNowPlaying()
     }

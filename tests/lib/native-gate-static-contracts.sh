@@ -166,7 +166,7 @@ assert_macos_ui_leg_is_executed() {
   legs="$(bash "$gate" --list-legs)"
   local expected
   expected="$(printf '%s\n' xcodegen-reproducible wiltedkit-tests cloudsync-tests playback-tests wiltedproducer-tests \
-    macos-unit-tests ios-unit-tests macos-ui-tests ios-pixel-snapshot-tests)"
+    macos-unit-tests ios-unit-tests ios27-appintents-tests macos-ui-tests ios-pixel-snapshot-tests)"
   [[ "$legs" == "$expected" ]] || { printf 'unexpected default gate legs:\n%s\n' "$legs" >&2; return 1; }
   assert_contains 'leg_macos_ui_tests()' "$gate"
   assert_contains 'wilted_gate_parallel_launch "$name" "${leg_reports[$i]}" "${leg_fns[$i]}"' "$repo_root/scripts/lib/native-gate-legs.sh"
@@ -325,6 +325,7 @@ assert_snapshot_contract() {
   # in the executed target count, rather than merely present in source.
   assert_validation_contains 'expected_test_count_floor'
   assert_validation_contains 'macos-unit-tests) printf'
+  assert_validation_contains 'ios27-appintents-tests) printf'
   assert_validation_contains 'ios-pixel-snapshot-tests) printf'
   assert_validation_contains 'ui_count="$(mac_ui_declared_test_count)"'
   assert_validation_contains 'result":"Passed"'
@@ -379,6 +380,41 @@ assert_private_simulator_contract() {
 }
 
 assert_private_simulator_contract
+
+assert_ios27_appintents_gate_contract() {
+  local ios27="$repo_root/scripts/lib/native-gate-ios27.sh"
+  local test_source="$repo_root/WiltediOS27UITests/WiltedSiriAppIntentsTests.swift"
+  assert_contains 'select_ios_simulator_spec 27.2' "$ios27"
+  assert_contains 'supportedDeviceTypes' "$repo_root/scripts/select-ios-simulator.py"
+  assert_contains 'PREFERRED_EXACT_DEVICE_TYPE = "com.apple.CoreSimulator.SimDeviceType.iPhone-18-Pro"' \
+    "$repo_root/scripts/select-ios-simulator.py"
+  assert_contains '"$repo_root/WiltediOS27UITests" "$integration_root/"' \
+    "$repo_root/scripts/lib/native-gate-staging.sh"
+  assert_absent 'if [[ -d "$repo_root/WiltediOS27UITests" ]]' "$repo_root/scripts/lib/native-gate-staging.sh"
+  assert_contains 'cp -p "$staged_input" "$project_root/$project_file"' \
+    "$repo_root/scripts/lib/native-gate-xcode.sh"
+  assert_contains 'gate_sim_create wilted ios27-appintents' "$ios27"
+  assert_contains 'WiltediOS27UITests/WiltedSiriAppIntentsTests/testAudioSchemaQueryAndPlaybackThroughSystemRunner' "$ios27"
+  assert_contains 'WiltediOS27UITests/WiltedSiriAppIntentsTests/testMarkCompletedIntentPersistsOutboxBeforeTransportAck' "$ios27"
+  assert_contains 'WiltediOS27UITests/WiltedSiriAppIntentsTests/testAmbiguousShowWaitsForChosenEntityAndPlaysLatest' "$ios27"
+  assert_contains 'WiltediOS27UITests/WiltedSiriAppIntentsTests/testDuplicateEpisodeTitlesAreDisambiguatedByShow' "$ios27"
+  assert_contains 'WiltediOS27UITests/WiltedSiriAppIntentsTests/testQueueLocationNextDoesNotStartPlayback' "$ios27"
+  for selector in testAudioSchemaQueryAndPlaybackThroughSystemRunner \
+    testAmbiguousShowWaitsForChosenEntityAndPlaysLatest \
+    testDuplicateEpisodeTitlesAreDisambiguatedByShow \
+    testQueueLocationNextDoesNotStartPlayback \
+    testMarkCompletedIntentPersistsOutboxBeforeTransportAck; do
+    assert_contains "func $selector()" "$test_source"
+  done
+  assert_contains 'gate_ui_test_lock --label' "$repo_root/scripts/lib/native-gate-xcode.sh"
+  assert_contains 'xcrun simctl boot "$udid"' "$repo_root/scripts/lib/native-gate-xcode.sh"
+  assert_contains 'simctl_gate_lib.sh' "$gate"
+  assert_contains 'native-ios-appintents-27:' "$repo_root/Makefile"
+  assert_contains 'select-ios-simulator.py --runtime-version 27.2' "$repo_root/scripts/verify-once-gate.sh"
+  assert_contains 'ios27-appintents-tests) printf' "$repo_root/scripts/lib/native-gate-validation.sh"
+}
+
+assert_ios27_appintents_gate_contract
 
 assert_fail_stops_its_leg_contract() {
   local fail_block

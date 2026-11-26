@@ -37,6 +37,7 @@ headless_legs=(
   wiltedproducer-tests
   macos-unit-tests
   ios-unit-tests
+  ios27-appintents-tests
   ios-pixel-snapshot-tests
 )
 ui_legs=(macos-ui-tests)
@@ -121,6 +122,11 @@ ios_runtime() {
   xcrun simctl list devices available -j | python3 scripts/select-ios-simulator.py | cut -f1
 }
 
+ios27_runtime() {
+  python3 scripts/run-bounded.py --timeout-seconds 30 -- xcrun simctl list runtimes -j |
+    python3 scripts/select-ios-simulator.py --runtime-version 27.2 | cut -f1
+}
+
 failed=()
 headless_leg() {
   local id="$1"
@@ -130,11 +136,13 @@ headless_leg() {
 
 if [[ "$mode" != ui-verify ]]; then
   runtime="$(ios_runtime)" || { say 'error: no usable iOS simulator runtime'; exit 1; }
+  runtime27="$(ios27_runtime)" || { say 'error: iOS 27.2 runtime unavailable'; exit 1; }
   macos_version="$(sw_vers -productVersion)"
   for id in "${headless_legs[@]}"; do
     case "$id" in
       macos-unit-tests) headless_leg "$id" --context "macos=$macos_version" ;;
       ios-unit-tests | ios-pixel-snapshot-tests) headless_leg "$id" --context "runtime=$runtime" ;;
+      ios27-appintents-tests) headless_leg "$id" --context "runtime=$runtime27" ;;
       *) headless_leg "$id" ;;
     esac
   done

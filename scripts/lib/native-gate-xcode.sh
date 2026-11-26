@@ -78,10 +78,25 @@ xcode_test_leg() {
   local products_dir
   products_dir="$(dirname "$WILTED_TEMP_LEG_WORK")/products"
   mkdir -p "$products_dir" || return 1
-  if [[ "$scheme" == WiltedMac || "$label" == ios-unit-tests ]]; then
+  if [[ "$scheme" == WiltedMac || "$label" == ios-unit-tests || "$label" == ios27-appintents-tests ]]; then
     local project_root="$tmp_root/$label-project"
     mkdir -p "$project_root"
     cp -R "$(dirname "$project")/." "$project_root/"
+    # Xcode resolves INFOPLIST_FILE and entitlement paths from the private
+    # project root. Re-stage those declared inputs here so the project copy
+    # remains complete even if XcodeGen's output tree is concurrently inspected.
+    if [[ -n "${integration_root:-}" ]] && declare -p wilted_gate_xcodegen_inputs >/dev/null 2>&1; then
+      local project_file staged_input
+      for project_file in "${wilted_gate_xcodegen_inputs[@]}"; do
+        staged_input="$integration_root/$project_file"
+        [[ -f "$staged_input" ]] || {
+          status "native.xcodegen.input.missing label=$label path=$project_file"
+          return 1
+        }
+        mkdir -p "$project_root/$(dirname "$project_file")" || return 1
+        cp -p "$staged_input" "$project_root/$project_file" || return 1
+      done
+    fi
     project="$project_root/$(basename "$project")"
     local -a mac_test_env=()
     if [[ "$label" == macos-unit-tests ]]; then
@@ -89,13 +104,16 @@ xcode_test_leg() {
       mac_test_env+=("DYLD_FRAMEWORK_PATH=$products_dir/Debug/WiltedMac.app/Contents/Frameworks")
     elif [[ "$label" == ios-unit-tests ]]; then
       mac_test_env=("DYLD_FRAMEWORK_PATH=$products_dir/Debug-iphonesimulator/WiltediOS.app/Frameworks")
+    elif [[ "$label" == ios27-appintents-tests ]]; then
+      mac_test_env=("WILTED_TEST_TMPDIR=$WILTED_TEMP_LEG_WORK")
+      mac_test_env+=("DYLD_FRAMEWORK_PATH=$products_dir/Debug-iphonesimulator/WiltediOS.app/Frameworks")
     fi
     wilted_mac_test_scheme_configure "$project/xcshareddata/xcschemes/$scheme.xcscheme" "$WILTED_TEMP_LEG_WORK" \
       ${mac_test_env[@]+"${mac_test_env[@]}"} || return 1
   fi
   local common=(-project "$project" -scheme "$scheme" "${only_testing_args[@]}"
     -destination "$destination" -parallel-testing-enabled NO -quiet "CONFIGURATION_BUILD_DIR=$products_dir/\$(CONFIGURATION)\$(EFFECTIVE_PLATFORM_NAME)")
-  if [[ "$label" == ios-unit-tests ]]; then
+  if [[ "$label" == ios-unit-tests || "$label" == ios27-appintents-tests ]]; then
     common+=(CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=-)
   fi
   local saved_int="" saved_term="" saved_hup="" xcode_signal_status=0 signal_pid=""
@@ -115,7 +133,14 @@ xcode_test_leg() {
       WILTED_WORK_PHASE=test \
       python3 "$build_with_cache" run xcode "$cache_key" -- xcodebuild test-without-building \
       "${common[@]}" ${iteration_args[@]+"${iteration_args[@]}"} -collect-test-diagnostics never -resultBundlePath "$tmp_root/$label.xcresult")
-    wilted_gate_simulator_session "$udid" "${test_command[@]}" &
+    if [[ "$label" == ios27-appintents-tests ]]; then
+      run_bounded_native_command xcrun simctl boot "$udid" || return $?
+      run_bounded_native_command xcrun simctl bootstatus "$udid" -b || return $?
+      gate_ui_test_lock --label 'Wilted iOS 27 App Intents tests' --simulator-udid "$udid" \
+        "${test_command[@]}" &
+    else
+      wilted_gate_simulator_session "$udid" "${test_command[@]}" &
+    fi
     WILTED_ACTIVE_SUPERVISOR_PID=$!
   else
     local test_command=(env WILTED_TEST_TIMEOUT_SECONDS="${xcode_build_and_test_timeout_seconds:-$xcode_test_timeout_seconds}" \

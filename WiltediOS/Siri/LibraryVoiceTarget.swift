@@ -23,7 +23,7 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
         let resumeTarget: VoiceResumeTarget
         if player.item == nil || player.status == .ended {
             let endedID = player.status == .ended ? player.item?.entryID : nil
-            resumeTarget = .library(model.remoteResumeRow(excludingEndedEpisode: endedID).map(Self.episode))
+            resumeTarget = .library(model.remoteResumeRow(excludingEndedEpisode: endedID).map { episode($0) })
         } else {
             resumeTarget = .loadedEpisode
         }
@@ -47,8 +47,8 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
             shows = collected
         }
         return VoiceSnapshot(
-            downloaded: rows.map(Self.episode), knownShowTitles: shows, nowPlaying: nowPlaying(),
-            resumeTarget: resumeTarget)
+            downloaded: rows.map(episode), knownShowTitles: shows, nowPlaying: nowPlaying(),
+            resumeTarget: resumeTarget, knownShows: knownShows())
     }
 
     @discardableResult
@@ -196,7 +196,8 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
 
     private func nowPlaying() -> VoiceNowPlaying? {
         guard let item = player.item else { return nil }
-        let episode = VoiceEpisode(id: item.entryID, title: item.title, showTitle: item.showTitle)
+        let episode = model.queued.first(where: { $0.id == item.entryID }).map(episode)
+            ?? VoiceEpisode(id: item.entryID, title: item.title, showTitle: item.showTitle)
         let canMark = model.queued.first { $0.id == item.entryID }
             .map { model.decisionActions(for: $0).contains(.markDone) } ?? false
         return VoiceNowPlaying(
@@ -204,7 +205,21 @@ final class LibraryVoiceTarget: VoiceCommandTarget {
             position: player.position, duration: player.duration, rate: player.rate)
     }
 
-    private static func episode(_ row: LibraryRow) -> VoiceEpisode {
-        VoiceEpisode(id: row.id, title: row.title, showTitle: row.showTitle, publishedAt: row.publishedAt)
+    private func knownShows() -> [VoiceShow] {
+        model.decisionContent.sources.values
+            .filter { $0.kind == .podcastFeed }
+            .sorted { $0.id.rawValue < $1.id.rawValue }
+            .map { source in
+                VoiceShow(id: source.id, title: source.title, publisher: source.publisher,
+                    feedURL: source.locator.flatMap(URL.init(string:)))
+            }
+    }
+
+    private func episode(_ row: LibraryRow) -> VoiceEpisode {
+        let source = row.showID.flatMap { model.decisionContent.sources[$0] }
+        return VoiceEpisode(
+            id: row.id, title: row.title, showTitle: row.showTitle, publishedAt: row.publishedAt,
+            showID: row.showID, episodeLink: row.episodeLink,
+            showFeedURL: source?.locator.flatMap(URL.init(string:)), duration: row.durationSeconds)
     }
 }

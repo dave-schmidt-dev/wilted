@@ -161,7 +161,8 @@ done
 success_log="$tmp_dir/success.log"
 success_status="$(run_case success "$success_log" bash "$gate")"
 [[ "$success_status" -eq 0 ]] || { cat "$success_log" >&2; exit 1; }
-assert_contains 'native.passed count=9' "$success_log"
+assert_contains 'native.passed count=10' "$success_log"
+assert_contains 'native.tests label=ios27-appintents-tests reported=5' "$success_log"
 for package_leg in wiltedkit-tests cloudsync-tests playback-tests wiltedproducer-tests; do
   assert_contains "native.tests label=$package_leg reported=3 evidence=xctest" "$success_log"
 done
@@ -178,6 +179,13 @@ zero_status="$(run_case zero "$zero_log" env NATIVE_FORCE_ZERO_TEST_LEG=ios-unit
 assert_contains 'native.zero-tests label=ios-unit-tests' "$zero_log"
 assert_contains 'result_bundle=' "$zero_log"
 assert_contains 'native.failed count=1' "$zero_log"
+
+appintents_zero_log="$tmp_dir/appintents-zero.log"
+appintents_zero_status="$(run_case appintents-zero "$appintents_zero_log" \
+  env NATIVE_FORCE_ZERO_TEST_LEG=ios27-appintents-tests bash "$gate")"
+[[ "$appintents_zero_status" -ne 0 ]] || { cat "$appintents_zero_log" >&2; exit 1; }
+assert_contains 'native.zero-tests label=ios27-appintents-tests' "$appintents_zero_log"
+assert_contains 'native.failed count=1' "$appintents_zero_log"
 
 pixel_zero_log="$tmp_dir/pixel-zero.log"
 pixel_zero_status="$(run_case pixel-zero "$pixel_zero_log" \
@@ -269,7 +277,7 @@ assert_contains 'native.leg.deferred name=macos-ui-tests' "$mac_ui_deferred_log"
 assert_contains 'native.deferred count=1 legs=macos-ui-tests' "$mac_ui_deferred_log"
 # A deferred run must never emit the unqualified pass line, because that is the
 # line a human or a script reads as "every leg ran".
-assert_contains 'native.passed count=8 deferred=1' "$mac_ui_deferred_log"
+assert_contains 'native.passed count=9 deferred=1' "$mac_ui_deferred_log"
 if grep -Eq 'native\.passed count=[0-9]+$' "$mac_ui_deferred_log"; then
   printf '%s\n' 'assertion failed: deferred run emitted an unqualified native.passed line' >&2
   cat "$mac_ui_deferred_log" >&2
@@ -296,7 +304,7 @@ mac_ui_optin_status="$(run_case mac-ui-optin "$mac_ui_optin_log" \
 [[ "$mac_ui_optin_status" -eq 0 ]] || { cat "$mac_ui_optin_log" >&2; exit 1; }
 assert_contains 'native.leg.start name=macos-ui-tests' "$mac_ui_optin_log"
 assert_contains 'native.leg.complete name=macos-ui-tests status=0' "$mac_ui_optin_log"
-assert_contains 'native.passed count=9' "$mac_ui_optin_log"
+assert_contains 'native.passed count=10' "$mac_ui_optin_log"
 if grep -Fq 'native.leg.deferred' "$mac_ui_optin_log"; then
   printf '%s\n' 'assertion failed: opted-in run still deferred the macOS UI leg' >&2
   cat "$mac_ui_optin_log" >&2
@@ -419,4 +427,4 @@ assert_contains 'assertPaintedLine("Nov 14, 2023", frame: date.frame, in: image)
 assert_contains 'assertPaintedLine(value.label, frame: value.frame, in: scrolledScreenshot)' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
 assert_contains 'XCTAssertGreaterThanOrEqual(date.frame.minY, metadata.frame.maxY - 1,' "$repo_root/WiltediOSUITests/WiltediOSPixelSnapshotTests.swift"
 
-printf '%s\n' 'native gate aggregate meta-test passed (nine native Xcode legs; the macOS UI leg defers unless WILTED_MAC_UI=1 and its deferral is fail-loud; forced and zero-test failures are fail-closed; the retained failure bundle is untouched)'
+printf '%s\n' 'native gate aggregate meta-test passed (ten gate legs; the macOS UI leg defers unless WILTED_MAC_UI=1 and its deferral is fail-loud; forced and zero-test failures are fail-closed; the retained failure bundle is untouched)'

@@ -1,4 +1,98 @@
 import Foundation
+import OSLog
+import WiltedDomain
+import WiltedLibrary
+
+private let playbackJournalLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "PlaybackJournalV2")
+
+/// Durable, rotating playback boundaries for joining Mac handoff with the phone journal.
+/// Private files retain a pseudonymous item tag; public OSLog contains only event fields.
+final class WiltedMacPlaybackJournal {
+    private let file: WiltedMacRotatingLogFile
+    private let now: @Sendable () -> Date
+    private let logLine: @Sendable (String) -> Void
+    private let lock = NSLock()
+
+    init(
+        file: WiltedMacRotatingLogFile,
+        now: @escaping @Sendable () -> Date = { Date() },
+        logLine: @escaping @Sendable (String) -> Void = { playbackJournalLog.notice("\($0, privacy: .public)") }
+    ) {
+        self.file = file
+        self.now = now
+        self.logLine = logLine
+    }
+
+    convenience init(
+        url: URL,
+        now: @escaping @Sendable () -> Date = { Date() },
+        logLine: @escaping @Sendable (String) -> Void = { playbackJournalLog.notice("\($0, privacy: .public)") }
+    ) {
+        self.init(file: WiltedMacRotatingLogFile(url: url), now: now, logLine: logLine)
+    }
+
+    func note(_ record: PlaybackJournalRecord) {
+        let body = record.line
+        lock.withLock {
+            let stamp = now().formatted(Date.ISO8601FormatStyle(includingFractionalSeconds: true))
+            if preparePrivateStorage() {
+                try? file.append(["\(stamp) \(body)"])
+            }
+            logLine(record.publicLogLine)
+        }
+    }
+
+    /// Refuses to write if the dedicated v2 directory or journal cannot be owner-only.
+    private func preparePrivateStorage() -> Bool {
+        let fileManager = FileManager.default
+        let directory = file.url.deletingLastPathComponent()
+        do {
+            try fileManager.createDirectory(
+                at: directory, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+            try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            guard permissions(at: directory) == 0o700 else { return false }
+            if !fileManager.fileExists(atPath: file.url.path) {
+                guard fileManager.createFile(
+                    atPath: file.url.path, contents: nil,
+                    attributes: [.posixPermissions: 0o600]) else { return false }
+            }
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.url.path)
+            guard permissions(at: file.url) == 0o600 else { return false }
+            for index in 1...3 {
+                let backup = file.backupURL(index)
+                guard fileManager.fileExists(atPath: backup.path) else { continue }
+                try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
+                guard permissions(at: backup) == 0o600 else { return false }
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func permissions(at url: URL) -> Int? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let permissions = attributes[.posixPermissions] as? NSNumber else { return nil }
+        return permissions.intValue
+    }
+
+    @MainActor
+    static var launch: WiltedMacPlaybackJournal?
+
+    /// Starts the app-owned journal under the Mac's existing state directory.
+    @MainActor
+    static func startForLaunch(stateDirectory: URL) {
+        guard launch == nil else { return }
+        let directory = stateDirectory.appendingPathComponent("logs", isDirectory: true)
+            .appendingPathComponent("playback-v2", isDirectory: true)
+        let url = directory
+            .appendingPathComponent("playback-journal.log")
+        let journal = WiltedMacPlaybackJournal(url: url)
+        guard journal.preparePrivateStorage() else { return }
+        launch = journal
+    }
+}
 
 /// One locally observed boundary in a playback command's life.
 ///

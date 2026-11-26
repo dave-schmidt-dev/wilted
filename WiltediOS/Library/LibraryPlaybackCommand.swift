@@ -380,7 +380,8 @@ extension LibraryAppModel {
         guard let cached else { return failStart(row, .missingMedia, kind: kind) }
         let isManual = kind != .automatic
         let item = LibraryPlayer.Item(
-            entryID: rawID, title: row.title, showTitle: row.showTitle, fileURL: cached.url, artworkURL: row.artworkURL,
+            entryID: rawID, title: row.title, showTitle: row.showTitle, showID: row.showID,
+            fileURL: cached.url, artworkURL: row.artworkURL,
             chapters: row.chapters,
             podcastChapters: decisionContent.entries[rawID].map {
                 LibraryRowBuilder.podcastChapters($0, revisionID: cached.revisionID)

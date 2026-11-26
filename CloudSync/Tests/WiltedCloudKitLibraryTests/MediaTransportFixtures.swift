@@ -157,7 +157,8 @@ final class MediaFixture {
         let log: FactoryLog
     }
 
-    func endpoint(_ deviceID: String, writer: Bool, watchdog: TimeInterval = 300) throws -> Endpoint {
+    func endpoint(_ deviceID: String, writer: Bool, watchdog: TimeInterval = 300,
+                  counters: CloudKitOperationCounters? = nil) throws -> Endpoint {
         let outbox = CloudKitLibraryOutbox()
         let driver = FakeMediaDriver(server: server, outbox: outbox)
         let log = FactoryLog()
@@ -165,7 +166,7 @@ final class MediaFixture {
         let transport = try CloudKitLibraryTransport(
             deviceID: deviceID, isLibraryWriter: writer, driver: driver,
             driverFactory: { state in _ = log.record(state); return FakeMediaDriver(server: server, outbox: outbox) },
-            outbox: outbox, mediaWatchdogInterval: watchdog)
+            outbox: outbox, mediaWatchdogInterval: watchdog, counters: counters)
         return Endpoint(transport: transport, driver: driver, log: log)
     }
 

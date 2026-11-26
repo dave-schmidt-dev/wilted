@@ -151,7 +151,9 @@ _gate_lib_append_exit_trap() {
         # function returns, so the literal text must be captured into the trap
         # string at registration time or it would be gone by the time EXIT fires.
         # shellcheck disable=SC2064
-        trap "eval ${previous}; ${new_cmd}" EXIT
+        # A prior handler may return the failing command's nonzero status.
+        # Protect that invocation from errexit so appended cleanup still runs.
+        trap "eval ${previous} || true; ${new_cmd}" EXIT
     else
         # shellcheck disable=SC2064
         trap "${new_cmd}" EXIT

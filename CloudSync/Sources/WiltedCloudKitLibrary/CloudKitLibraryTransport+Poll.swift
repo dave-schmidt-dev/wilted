@@ -211,6 +211,40 @@ extension CloudKitLibraryTransport {
                     .sorted { ($0.record.deviceID, $0.record.entryID.rawValue) < ($1.record.deviceID, $1.record.entryID.rawValue) }
             }
             let records = LibraryDeviceRecords(nowPlaying: ordered(.nowPlaying), progress: ordered(.progress))
+            let activePairs = Set(records.nowPlaying.filter { $0.record.isPlaying }.map {
+                LibraryPlaybackPair(deviceID: $0.record.deviceID, entryID: $0.record.entryID)
+            })
+            let hotEntries = Set(records.nowPlaying.map { $0.record.entryID })
+            let progressMetrics = progressAsked.map { name, ask -> CloudKitProgressReadMetrics in
+                let activity: CloudKitProgressReadActivity
+                if activePairs.contains(ask.pair) {
+                    activity = .active
+                } else if hotEntries.contains(ask.pair.entryID) {
+                    activity = .hot
+                } else {
+                    activity = .inactive
+                }
+
+                guard fetched.contains(name), let record = serverRecords[name] else {
+                    return CloudKitProgressReadMetrics(activity: activity, outcome: .missing, records: 1, bytes: 0)
+                }
+                let outcome: CloudKitProgressReadOutcome
+                guard let previous = ask.cached else {
+                    outcome = .firstSeen
+                    return CloudKitProgressReadMetrics(activity: activity, outcome: outcome, records: 1,
+                                                       bytes: estimatedCloudKitRecordBytes(record))
+                }
+                if let oldTag = previous.recordChangeTag, let newTag = record.recordChangeTag {
+                    outcome = oldTag == newTag ? .unchanged : .changed
+                } else if let oldDate = previous.modificationDate, let newDate = record.modificationDate {
+                    outcome = oldDate == newDate ? .unchanged : .changed
+                } else {
+                    outcome = .unknown
+                }
+                return CloudKitProgressReadMetrics(activity: activity, outcome: outcome, records: 1,
+                                                   bytes: estimatedCloudKitRecordBytes(record))
+            }
+            counters.recordProgressReads(caller: .poll, metrics: progressMetrics)
             progressReads.hotEntries = Set(records.nowPlaying.map(\.record.entryID))
             result.records = records
         }

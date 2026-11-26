@@ -218,6 +218,40 @@ extension CloudKitLibraryTransport {
                 found += try await driver.fetchRecordsIfPresent(Array(unique[start..<min(start + 100, unique.count)]), desiredKeys: nil)
             }
         } catch { throw failure(error) }
+        struct ReadKey: Hashable {
+            let recordType: LibraryRecordType?
+            let freshness: CloudKitRecordFreshness
+        }
+        struct ReadValue {
+            var records = 0
+            var bytes: Int64 = 0
+        }
+        var readMetrics: [ReadKey: ReadValue] = [:]
+        for record in found {
+            let previous = before[record.recordID.recordName] ?? nil
+            let freshness: CloudKitRecordFreshness
+            if let previous {
+                if let oldTag = previous.recordChangeTag, let newTag = record.recordChangeTag {
+                    freshness = oldTag == newTag ? .unchanged : .changed
+                } else if let oldDate = previous.modificationDate, let newDate = record.modificationDate {
+                    freshness = oldDate == newDate ? .unchanged : .changed
+                } else {
+                    freshness = .unknown
+                }
+            } else {
+                freshness = .firstSeen
+            }
+            let key = ReadKey(recordType: LibraryRecordType(rawValue: record.recordType), freshness: freshness)
+            var value = readMetrics[key, default: ReadValue()]
+            value.records += 1
+            value.bytes += estimatedCloudKitRecordBytes(record)
+            readMetrics[key] = value
+        }
+        let caller = CloudKitOperationContext.caller ?? .poll
+        counters.recordNamedReads(caller: caller, metrics: readMetrics.map { key, value in
+            CloudKitNamedReadMetrics(recordType: key.recordType, freshness: key.freshness,
+                                     records: value.records, bytes: value.bytes)
+        })
         // A save that landed while this read was in flight is newer than the fetched copy. Keep it,
         // because own pairs are served from this cache rather than read again.
         for record in found where serverRecords[record.recordID.recordName] === before[record.recordID.recordName] ?? nil {

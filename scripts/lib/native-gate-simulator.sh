@@ -16,10 +16,19 @@ create_gate_simulator() {
 select_ios_simulator_spec() {
   require_tool xcrun || return 1
   require_tool python3 || return 1
-  local inventory
+  local inventory exact_version="${1:-}"
+  local -a selector_args=()
+  [[ -z "$exact_version" ]] || selector_args+=(--runtime-version "$exact_version")
+  local -a inventory_command=(xcrun simctl list devices available -j)
+  if [[ -n "$exact_version" ]]; then
+    # Exact-version legs create a fresh simulator after selection; consult the
+    # runtime inventory so selection does not depend on an existing device.
+    inventory_command=(xcrun simctl list runtimes -j)
+  fi
   inventory="$(env WILTED_WORK_PHASE=simulator-selection python3 "$repo_root/scripts/run-bounded.py" \
-    --timeout-seconds "${xcode_build_timeout_seconds:-1800}" -- xcrun simctl list devices available -j)" || return $?
-  printf '%s\n' "$inventory" | python3 "$repo_root/scripts/select-ios-simulator.py"
+    --timeout-seconds "${xcode_build_timeout_seconds:-1800}" -- "${inventory_command[@]}")" || return $?
+  printf '%s\n' "$inventory" | python3 "$repo_root/scripts/select-ios-simulator.py" \
+    ${selector_args[@]+"${selector_args[@]}"}
 }
 
 create_watch_gate_simulator() {

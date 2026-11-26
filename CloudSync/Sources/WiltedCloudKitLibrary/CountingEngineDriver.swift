@@ -69,16 +69,16 @@ final class CountingEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
         if let outbox {
             for change in pending {
                 if case let .saveRecord(id) = change, let record = outbox.record(for: id) {
-                    bytes += recordBytes(record)
+                    bytes += estimatedCloudKitRecordBytes(record)
                 }
             }
         }
         do {
             try await inner.sendChanges()
-            note("sendChanges", pendingNames(pending), caller: caller, recordCount: pending.count, bytes: bytes, result: .ok)
+            note(.sendChanges, caller: caller, recordCount: pending.count, bytes: bytes, result: .ok)
         } catch {
             let result = CloudKitOperationCounters.classifyResult(error: error)
-            note("sendChanges", pendingNames(pending), caller: caller, recordCount: pending.count, bytes: bytes, result: result)
+            note(.sendChanges, caller: caller, recordCount: pending.count, bytes: bytes, result: result)
             throw error
         }
     }
@@ -87,12 +87,12 @@ final class CountingEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
         let caller = CloudKitOperationContext.caller ?? resolveCaller(for: ids)
         do {
             let records = try await inner.fetchRecordsIfPresent(ids, desiredKeys: desiredKeys)
-            let bytes = records.reduce(0) { $0 + recordBytes($1) }
-            note("fetchRecordsIfPresent", ids.map(\.recordName), caller: caller, recordCount: records.count, bytes: bytes, result: .ok)
+            let bytes = records.reduce(0) { $0 + estimatedCloudKitRecordBytes($1) }
+            note(.fetchRecordsIfPresent, caller: caller, recordCount: records.count, bytes: bytes, result: .ok)
             return records
         } catch {
             let result = CloudKitOperationCounters.classifyResult(error: error)
-            note("fetchRecordsIfPresent", ids.map(\.recordName), caller: caller, recordCount: 0, bytes: 0, result: result)
+            note(.fetchRecordsIfPresent, caller: caller, recordCount: 0, bytes: 0, result: result)
             throw error
         }
     }
@@ -101,25 +101,25 @@ final class CountingEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
         let caller = CloudKitOperationContext.caller ?? resolveCaller(for: ids)
         do {
             let records = try await inner.fetchRecords(ids)
-            let bytes = records.reduce(0) { $0 + recordBytes($1) }
-            note("fetchRecords", ids.map(\.recordName), caller: caller, recordCount: records.count, bytes: bytes, result: .ok)
+            let bytes = records.reduce(0) { $0 + estimatedCloudKitRecordBytes($1) }
+            note(.fetchRecords, caller: caller, recordCount: records.count, bytes: bytes, result: .ok)
             return records
         } catch {
             let result = CloudKitOperationCounters.classifyResult(error: error)
-            note("fetchRecords", ids.map(\.recordName), caller: caller, recordCount: 0, bytes: 0, result: result)
+            note(.fetchRecords, caller: caller, recordCount: 0, bytes: 0, result: result)
             throw error
         }
     }
 
     func saveRecordRaw(_ record: CKRecord, progress: @escaping @Sendable (Double) -> Void) async throws {
         let caller = CloudKitOperationContext.caller ?? resolveCaller(for: [record.recordID])
-        let bytes = recordBytes(record)
+        let bytes = estimatedCloudKitRecordBytes(record)
         do {
             try await inner.saveRecordRaw(record, progress: progress)
-            note("saveRecordRaw", [record.recordID.recordName], caller: caller, recordCount: 1, bytes: bytes, result: .ok)
+            note(.saveRecordRaw, caller: caller, recordCount: 1, bytes: bytes, result: .ok)
         } catch {
             let result = CloudKitOperationCounters.classifyResult(error: error)
-            note("saveRecordRaw", [record.recordID.recordName], caller: caller, recordCount: 1, bytes: bytes, result: result)
+            note(.saveRecordRaw, caller: caller, recordCount: 1, bytes: bytes, result: result)
             throw error
         }
     }
@@ -130,12 +130,12 @@ final class CountingEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
         do {
             let record = try await inner.fetchAssetRecordRaw(id, assetField: assetField, to: destination, progress: progress)
             let fileSize = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.int64Value ?? 0
-            let bytes = max(fileSize, recordBytes(record))
-            note("fetchAssetRecordRaw", [id.recordName], caller: caller, recordCount: 1, bytes: bytes, result: .ok)
+            let bytes = max(fileSize, estimatedCloudKitRecordBytes(record))
+            note(.fetchAssetRecordRaw, caller: caller, recordCount: 1, bytes: bytes, result: .ok)
             return record
         } catch {
             let result = CloudKitOperationCounters.classifyResult(error: error)
-            note("fetchAssetRecordRaw", [id.recordName], caller: caller, recordCount: 1, bytes: 0, result: result)
+            note(.fetchAssetRecordRaw, caller: caller, recordCount: 1, bytes: 0, result: result)
             throw error
         }
     }
@@ -144,10 +144,10 @@ final class CountingEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
         let caller = CloudKitOperationContext.caller ?? resolveCaller(for: ids)
         do {
             try await inner.deleteRecordsRaw(ids)
-            note("deleteRecordsRaw", ids.map(\.recordName), caller: caller, recordCount: ids.count, bytes: 0, result: .ok)
+            note(.deleteRecordsRaw, caller: caller, recordCount: ids.count, bytes: 0, result: .ok)
         } catch {
             let result = CloudKitOperationCounters.classifyResult(error: error)
-            note("deleteRecordsRaw", ids.map(\.recordName), caller: caller, recordCount: ids.count, bytes: 0, result: result)
+            note(.deleteRecordsRaw, caller: caller, recordCount: ids.count, bytes: 0, result: result)
             throw error
         }
     }
@@ -156,10 +156,10 @@ final class CountingEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
         let caller = CloudKitOperationContext.caller ?? .poll
         do {
             try await inner.fetchChanges(zoneIDs: zoneIDs)
-            note("fetchChanges", [], caller: caller, recordCount: 0, bytes: 0, result: .ok)
+            note(.fetchChanges, caller: caller, recordCount: 0, bytes: 0, result: .ok)
         } catch {
             let result = CloudKitOperationCounters.classifyResult(error: error)
-            note("fetchChanges", [], caller: caller, recordCount: 0, bytes: 0, result: result)
+            note(.fetchChanges, caller: caller, recordCount: 0, bytes: 0, result: result)
             throw error
         }
     }
@@ -168,32 +168,20 @@ final class CountingEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
         let caller = CloudKitOperationContext.caller ?? .poll
         do {
             try await inner.fetchChanges()
-            note("fetchChanges", [], caller: caller, recordCount: 0, bytes: 0, result: .ok)
+            note(.fetchChanges, caller: caller, recordCount: 0, bytes: 0, result: .ok)
         } catch {
             let result = CloudKitOperationCounters.classifyResult(error: error)
-            note("fetchChanges", [], caller: caller, recordCount: 0, bytes: 0, result: result)
+            note(.fetchChanges, caller: caller, recordCount: 0, bytes: 0, result: result)
             throw error
         }
     }
 
-    /// Counts one operation and, at debug level, says what it was and which records it touched,
-    /// so a request rate can be traced to its call sites (`log stream --level debug`).
-    private func note(_ operation: String, _ names: [String], caller: CloudKitOperationCaller,
+    /// Counts one operation and keeps debug traces to bounded operation names and byte totals.
+    private func note(_ operation: CloudKitOperationKind, caller: CloudKitOperationCaller,
                       recordCount: Int, bytes: Int64, result: CloudKitOperationResult) {
-        counters.record(caller: caller, recordCount: recordCount, bytes: bytes, result: result)
-        let shown = names.prefix(4).joined(separator: ",") + (names.count > 4 ? ",+\(names.count - 4)" : "")
+        counters.record(caller: caller, operation: operation, recordCount: recordCount, bytes: bytes, result: result)
         operationTraceLog.debug(
-            "op \(operation, privacy: .public) caller=\(caller.rawValue, privacy: .public) records=\(recordCount) result=\(String(describing: result), privacy: .public) names=\(shown, privacy: .public)")
-    }
-
-    private func pendingNames(_ changes: [CKSyncEngine.PendingRecordZoneChange]) -> [String] {
-        changes.compactMap { change in
-            switch change {
-            case let .saveRecord(id): "save:" + id.recordName
-            case let .deleteRecord(id): "delete:" + id.recordName
-            @unknown default: nil
-            }
-        }
+            "op \(operation.rawValue, privacy: .public) caller=\(caller.rawValue, privacy: .public) records=\(recordCount) bytes=\(bytes) result=\(String(describing: result), privacy: .public)")
     }
 
     private func resolveCaller(forPending changes: [CKSyncEngine.PendingRecordZoneChange]) -> CloudKitOperationCaller {
@@ -246,23 +234,25 @@ final class CountingEngineDriver: CloudKitEngineDriver, @unchecked Sendable {
         return .poll
     }
 
-    private func recordBytes(_ record: CKRecord) -> Int64 {
-        var bytes: Int64 = 0
-        if let data = record[LibraryRecordMapper.payloadField] as? Data {
-            bytes += Int64(data.count)
-        }
-        var assetBytes: Int64 = 0
-        for key in record.allKeys() {
-            if let asset = record[key] as? CKAsset, let url = asset.fileURL {
-                let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
-                assetBytes += size
-            }
-        }
-        if assetBytes > 0 {
-            bytes += assetBytes
-        } else if let count = record["byteCount"] as? NSNumber {
-            bytes += count.int64Value
-        }
-        return bytes
+}
+
+/// Estimates application payload bytes; it does not measure CloudKit wire overhead.
+func estimatedCloudKitRecordBytes(_ record: CKRecord) -> Int64 {
+    var bytes: Int64 = 0
+    if let data = record[LibraryRecordMapper.payloadField] as? Data {
+        bytes += Int64(data.count)
     }
+    var assetBytes: Int64 = 0
+    for key in record.allKeys() {
+        if let asset = record[key] as? CKAsset, let url = asset.fileURL {
+            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
+            assetBytes += size
+        }
+    }
+    if assetBytes > 0 {
+        bytes += assetBytes
+    } else if let count = record["byteCount"] as? NSNumber {
+        bytes += count.int64Value
+    }
+    return bytes
 }

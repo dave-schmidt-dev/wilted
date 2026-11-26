@@ -299,9 +299,11 @@ final class CloudKitLibraryTransportTests: XCTestCase {
     }
 
     private func makeTransport(writer: Bool = true, first: ScriptedDriver, later: @escaping @Sendable (Int) -> ScriptedDriver = { _ in ScriptedDriver() },
-                               log: FactoryLog = FactoryLog(), state: LibraryChangeToken? = nil) throws -> CloudKitLibraryTransport {
+                               log: FactoryLog = FactoryLog(), state: LibraryChangeToken? = nil,
+                               counters: CloudKitOperationCounters? = nil) throws -> CloudKitLibraryTransport {
         try CloudKitLibraryTransport(deviceID: writer ? "mac" : "phone", isLibraryWriter: writer, driver: first,
-                                     driverFactory: { state in later(log.record(state)) }, outbox: CloudKitLibraryOutbox(), state: state)
+                                     driverFactory: { state in later(log.record(state)) }, outbox: CloudKitLibraryOutbox(),
+                                     state: state, counters: counters)
     }
 
     func testFetchMapsRecordsSkipsForeignTypesAndReturnsTheEngineStateAsToken() async throws {
@@ -319,7 +321,8 @@ final class CloudKitLibraryTransportTests: XCTestCase {
                                   CloudKitRecordDeletion(recordID: CKRecord.ID(recordName: "revision:x", zoneID: removedID.zoneID), recordType: "Revision")]),
              .stateUpdated(stateA), .fetchCompleted]
         })
-        let transport = try makeTransport(first: driver)
+        let counters = CloudKitOperationCounters(startLoggingTask: false)
+        let transport = try makeTransport(first: driver, counters: counters)
         let batch = try await transport.fetchChanges(since: nil)
         XCTAssertEqual(batch.changes.map(\.change.key.description), ["entry:ep-1", "slot:ep-1", "slot:ep-2"])
         XCTAssertEqual(batch.changes[0].version, 1_700_000_000_000_000)
@@ -327,6 +330,10 @@ final class CloudKitLibraryTransportTests: XCTestCase {
         XCTAssertGreaterThan(batch.changes[2].version, batch.changes[1].version)
         XCTAssertEqual(batch.token, LibraryChangeToken(rawValue: stateA.base64EncodedString()))
         try await transport.commitFetchedState(batch.token)
+        let metrics = await transport.operationSummary().summaryString()
+        XCTAssertTrue(metrics.contains("received 4 records/"), metrics)
+        XCTAssertTrue(metrics.contains("mapped 3/"), metrics)
+        XCTAssertTrue(metrics.contains("deletions 1/2"), metrics)
     }
 
     func testMissingZoneDiscardsEngineStateAndRefetchesFromNothing() async throws {
@@ -343,15 +350,22 @@ final class CloudKitLibraryTransportTests: XCTestCase {
         XCTAssertEqual(batch.changes.count, 1)
         XCTAssertTrue(batch.generationID.hasSuffix(":1"), batch.generationID)
         XCTAssertEqual(batch.token, LibraryChangeToken(rawValue: stateB.base64EncodedString()))
+        let summary = await transport.operationSummary().summaryString()
+        XCTAssertTrue(summary.contains("serverReset: 1"), summary)
     }
 
     func testDifferentSinceTokenRebuildsTheEngineFromThatToken() async throws {
         let log = FactoryLog()
-        let transport = try makeTransport(first: ScriptedDriver(), log: log, state: LibraryChangeToken(rawValue: stateA.base64EncodedString()))
+        let counters = CloudKitOperationCounters(startLoggingTask: false)
+        let transport = try makeTransport(first: ScriptedDriver(), log: log,
+                                          state: LibraryChangeToken(rawValue: stateA.base64EncodedString()), counters: counters)
         _ = try await transport.fetchChanges(since: LibraryChangeToken(rawValue: stateA.base64EncodedString()))
         XCTAssertTrue(log.states.isEmpty, "matching token keeps the engine")
         _ = try await transport.fetchChanges(since: LibraryChangeToken(rawValue: stateB.base64EncodedString()))
         XCTAssertEqual(log.states, [stateB])
+        let summary = await transport.operationSummary().summaryString()
+        XCTAssertTrue(summary.contains("tokenMismatch: 1"), summary)
+        XCTAssertFalse(summary.contains(stateB.base64EncodedString()), "diagnostics must not expose serialized sync state")
     }
 
     func testPushAcknowledgesWithServerVersionsAndReportsConflicts() async throws {

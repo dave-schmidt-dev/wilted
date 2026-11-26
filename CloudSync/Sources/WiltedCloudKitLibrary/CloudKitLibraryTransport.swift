@@ -446,6 +446,7 @@ public actor CloudKitLibraryTransport: LibraryTransport {
 
     func resetAfterServerReset() async throws {
         resetCount += 1
+        counters.recordEngineRebuild(.serverReset)
         try await replaceDriver(state: nil)
         await driver.resetZoneBootstrap()
         committedFetchToken = nil

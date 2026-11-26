@@ -366,7 +366,8 @@ extension WiltedMacModel {
             latestRecords: {
                 guard let poller = await MainActor.run(body: { inbound.poller }) else { return nil }
                 return await poller.latestDeviceRecords
-            }
+            },
+            journal: WiltedMacPlaybackJournal.launch
         )
         controller.handoff = handoff
         handoff.start()

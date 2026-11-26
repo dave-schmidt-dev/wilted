@@ -14,7 +14,18 @@ extension CloudKitLibraryTransport {
             let generation = operationGenerationValue
             let admittedOwner = observedOwnerToken
             do {
-                if needsFetchRebuild || wanted != enginePosition || (wanted == nil && !freshNilDriver) {
+                let rebuildReason: CloudKitEngineRebuildReason?
+                if needsFetchRebuild {
+                    rebuildReason = .recovery
+                } else if wanted != enginePosition {
+                    rebuildReason = .tokenMismatch
+                } else if wanted == nil && !freshNilDriver {
+                    rebuildReason = .nilState
+                } else {
+                    rebuildReason = nil
+                }
+                if let rebuildReason {
+                    counters.recordEngineRebuild(rebuildReason)
                     try await replaceDriver(state: wanted)
                     try verifyFetchContext(generation: generation, owner: admittedOwner)
                 }
@@ -58,7 +69,12 @@ extension CloudKitLibraryTransport {
         fetchAcc = LibraryFetchAccumulator()
         operation = .fetch
         activeEpoch = epoch
-        defer { operation = nil; activeEpoch = -1 }
+        let caller = CloudKitOperationContext.caller ?? .poll
+        defer {
+            counters.recordEngineFetch(caller: caller, metrics: fetchAcc.cloudKitMetrics)
+            operation = nil
+            activeEpoch = -1
+        }
         let zones: Set<CKRecordZone.ID> = [mapper.zoneID]
         try await wait { try await target.fetchChanges(zoneIDs: zones) }
         try verifyFetchContext(generation: generation, owner: owner)
@@ -67,6 +83,9 @@ extension CloudKitLibraryTransport {
     }
 
     func ingest(_ records: [CKRecord], _ deletions: [CloudKitRecordDeletion]) {
+        fetchAcc.cloudKitMetrics.receivedRecords += records.count
+        fetchAcc.cloudKitMetrics.receivedBytes += records.reduce(0) { $0 + estimatedCloudKitRecordBytes($1) }
+        fetchAcc.cloudKitMetrics.receivedDeletions += deletions.count
         guard fetchAcc.error == nil else { return }
         for record in records {
             let name = record.recordID.recordName
@@ -74,6 +93,7 @@ extension CloudKitLibraryTransport {
                 switch try decodeTolerant(record) {
                 case let .skipped(type):
                     log.notice("Skipping fetched record of unknown type \(type, privacy: .public)")
+                    continue
                 case let .library(change):
                     guard let version = LibraryRecordMapper.version(of: record) else {
                         throw LibraryRecordMapperError.missingVersion
@@ -117,6 +137,8 @@ extension CloudKitLibraryTransport {
                         fetchAcc.publication = value
                     }
                 }
+                fetchAcc.cloudKitMetrics.decodedRecords += 1
+                fetchAcc.cloudKitMetrics.decodedBytes += estimatedCloudKitRecordBytes(record)
             } catch {
                 let libraryTypes: Set<LibraryRecordType> = [.entry, .source, .slot, .listening, .notebookEntry]
                 if let type = LibraryRecordType(rawValue: record.recordType), libraryTypes.contains(type) {
@@ -129,6 +151,7 @@ extension CloudKitLibraryTransport {
         for deletion in deletions {
             serverRecords[deletion.recordID.recordName] = nil
             if let change = mapper.deletion(recordID: deletion.recordID, recordType: deletion.recordType) {
+                fetchAcc.cloudKitMetrics.mappedDeletions += 1
                 fetchAcc.library[change.key] = VersionedLibraryChange(version: deletionVersion(change.key, floor: 0), change: change)
             } else {
                 log.notice("Ignoring deletion of \(deletion.recordType, privacy: .public) \(deletion.recordID.recordName, privacy: .public)")

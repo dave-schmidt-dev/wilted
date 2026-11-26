@@ -42,7 +42,7 @@ wilted_gate_leg_selected() {
   # selecting one brings that leg along (a deferred Mac UI leg needs none).
   [[ "$1" == xcodegen-reproducible ]] || return 1
   local leg
-  for leg in macos-unit-tests ios-unit-tests ios-pixel-snapshot-tests macos-ui-tests ${optin_leg_names[@]+"${optin_leg_names[@]}"}; do
+  for leg in macos-unit-tests ios-unit-tests ios27-appintents-tests ios-pixel-snapshot-tests macos-ui-tests ${optin_leg_names[@]+"${optin_leg_names[@]}"}; do
     [[ ",$WILTED_GATE_LEGS," == *",$leg,"* ]] || continue
     if [[ "$leg" == macos-ui-tests ]] && declare -F is_deferred_leg >/dev/null &&
       is_deferred_leg macos-ui-tests; then

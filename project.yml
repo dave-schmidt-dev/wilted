@@ -26,8 +26,8 @@ configs:
 settings:
   base:
     SWIFT_VERSION: "6.0"
-    MARKETING_VERSION: "0.9.0"
-    CURRENT_PROJECT_VERSION: "22"
+    MARKETING_VERSION: "0.10.0"
+    CURRENT_PROJECT_VERSION: "23"
     WILTED_SOURCE_COMMIT: ""
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
@@ -193,6 +193,13 @@ targets:
       configs:
         Debug:
           CODE_SIGN_ENTITLEMENTS: ""
+          # The iOS 27 App Intents UI-test host uses a signed simulator build.
+          # Keep this Debug configuration free of Development CloudKit flags and entitlements.
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "-"
+          CODE_SIGNING_ALLOWED: YES
+          CODE_SIGNING_REQUIRED: YES
+          DEVELOPMENT_TEAM: 4CJ49V6QHW
           SWIFT_ACTIVE_COMPILATION_CONDITIONS: "$(inherited)"
         Development:
           CODE_SIGN_ENTITLEMENTS: WiltediOS/WiltediOS.entitlements
@@ -468,6 +475,26 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.ios.uitests
         GENERATE_INFOPLIST_FILE: YES
 
+  WiltediOS27UITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "27.0"
+    sources:
+      - path: WiltediOS27UITests
+    dependencies:
+      - target: WiltediOS
+      - sdk: AppIntentsTesting.framework
+      - sdk: MediaIntents.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.zerodelta.wilted.ios27.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        DEVELOPMENT_TEAM: 4CJ49V6QHW
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGNING_REQUIRED: YES
+
 schemes:
   WiltedMac:
     build:
@@ -489,6 +516,15 @@ schemes:
       targets:
         - WiltediOSTests
         - WiltediOSUITests
+
+  WiltediOS27:
+    build:
+      targets:
+        WiltediOS: all
+    test:
+      config: Debug
+      targets:
+        - WiltediOS27UITests
 
   WiltedWatch:
     build:

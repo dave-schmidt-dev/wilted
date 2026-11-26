@@ -51,6 +51,7 @@ final class WiltedMacHandoffController {
     private let player: any WiltedMacHandoffPlayer
     private let deviceID: String
     private let latestRecords: (@Sendable () async -> LibraryDeviceRecords?)?
+    private let journal: WiltedMacPlaybackJournal?
     private let now: @Sendable () -> Date
     private let tickInterval: Duration
     private let sleep: @Sendable (Duration) async throws -> Void
@@ -74,6 +75,7 @@ final class WiltedMacHandoffController {
     private var roundDue = false
     /// When the tick last fetched the other devices itself (only without a poller to read from).
     private var lastOwnObserveAt: Date?
+    private var lastPeerCheckpointSignature: String?
     /// The last failure that was logged, so a repeat of it (every tick while offline or throttled)
     /// is not.
     private var lastLoggedFailure: String?
@@ -85,11 +87,14 @@ final class WiltedMacHandoffController {
     /// - Parameters:
     ///   - latestRecords: the inbound poller's newest device records. The tick decides from them
     ///     and sends nothing; without them it fetches, at most once per `SyncCadence.pollInterval`.
+    ///   - journal: an optional test or host-owned playback journal. App launches resolve the
+    ///     process journal lazily so store bootstrap can start before app diagnostics are wired.
     init(
         coordinator: HandoffCoordinator,
         player: any WiltedMacHandoffPlayer,
         deviceID: String,
         latestRecords: (@Sendable () async -> LibraryDeviceRecords?)? = nil,
+        journal: WiltedMacPlaybackJournal? = nil,
         now: @escaping @Sendable () -> Date = { Date() },
         tickInterval: Duration = WiltedMacHandoffController.defaultTickInterval,
         sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
@@ -98,6 +103,7 @@ final class WiltedMacHandoffController {
         self.player = player
         self.deviceID = deviceID
         self.latestRecords = latestRecords
+        self.journal = journal
         self.now = now
         self.tickInterval = tickInterval
         self.sleep = sleep
@@ -162,13 +168,15 @@ final class WiltedMacHandoffController {
         let isRound = roundDue
         roundDue = false
         do {
+            let records = await latestRecords?()
+            recordPeerCheckpoint(in: records)
             let sample = player.handoffSample()
             if let sample, sample.isPlaying {
                 let jumped = hasJumped(to: sample)
                 lastPosition = sample.positionSeconds
                 lastSampleAt = now()
                 if !sessionPlaying || sessionEntry != sample.episodeID {
-                    try await takeOver(sample)
+                    try await takeOver(sample, records: records)
                 } else if pendingRelinquish {
                     try await relinquish()
                 } else {
@@ -178,11 +186,15 @@ final class WiltedMacHandoffController {
                     } else if isRound {
                         try await coordinator.checkpoint(sample.positionSeconds, rate: sample.rate)
                     }
-                    try await applyDecision(await observeDecision())
+                    try await applyDecision(await observeDecision(records: records))
                 }
             } else if sessionPlaying {
                 let position = sample?.positionSeconds ?? lastPosition
                 try await coordinator.paused(at: position)
+                journalRecord(.init(
+                    source: .mac, event: .pausePublished, itemID: sessionEntry,
+                    positionSeconds: position, epoch: await coordinator.epoch,
+                    result: .published, isPlaying: false))
                 sessionPlaying = false
                 pendingRelinquish = false
                 storedPositionsDue = true
@@ -195,7 +207,7 @@ final class WiltedMacHandoffController {
             // A gate that is closed says so through its own status; a step that fails the same way
             // on every tick is logged once.
             if !(error is TransportThrottled), lastLoggedFailure != lastFailure {
-                handoffLog.error("Handoff step failed: \(String(describing: error), privacy: .public)")
+                handoffLog.error("Playback handoff step failed")
             }
             lastLoggedFailure = lastFailure
         }
@@ -212,15 +224,14 @@ final class WiltedMacHandoffController {
     /// Seconds a position may differ from the elapsed-time prediction before it counts as a seek.
     static let seekThreshold: Double = 2
 
-    private func takeOver(_ sample: WiltedMacPlaybackSample) async throws {
+    private func takeOver(_ sample: WiltedMacPlaybackSample, records: LibraryDeviceRecords?) async throws {
         guard let revision = await player.handoffRevision(for: sample.episodeID) else {
-            handoffLog.warning("Playing \(sample.episodeID.rawValue, privacy: .public) has no known revision; not published")
+            handoffLog.warning("Playing item has no known revision; not published")
             return
         }
         // With poller records the takeover costs one write: the epoch comes from the round's records,
         // and a takeover that raced this one (equal epoch, later server date) is caught by the next
         // tick's `observeDecision`. Without them, read first and confirm once, as before.
-        let records = await latestRecords?()
         let epoch = try await coordinator.takeover(
             entryID: sample.episodeID, revision: revision, positionSeconds: sample.positionSeconds, rate: sample.rate,
             records: records)
@@ -229,13 +240,17 @@ final class WiltedMacHandoffController {
         pendingRelinquish = false
         takeoverCount += 1
         handoffLog.notice("Took over playback at epoch \(epoch)")
+        journalRecord(.init(
+            source: .mac, event: .takeover, itemID: sample.episodeID,
+            positionSeconds: sample.positionSeconds, epoch: epoch,
+            result: .playing, isPlaying: true))
         if records == nil { try await applyDecision(await coordinator.settleCheck()) }
     }
 
     /// Whether another device outranks this one, judged from the poller's last records so a tick
     /// costs no request. With no poller records to read, one fetch per `SyncCadence.pollInterval`.
-    private func observeDecision() async throws -> HandoffDecision {
-        if let latestRecords, let records = await latestRecords() {
+    private func observeDecision(records: LibraryDeviceRecords?) async throws -> HandoffDecision {
+        if latestRecords != nil, let records {
             return await coordinator.decision(from: records)
         }
         let current = now()
@@ -245,8 +260,8 @@ final class WiltedMacHandoffController {
     }
 
     private func applyDecision(_ decision: HandoffDecision) async throws {
-        guard case let .relinquish(winner) = decision else { return }
-        handoffLog.notice("Relinquishing playback to \(winner, privacy: .public)")
+        guard case .relinquish = decision else { return }
+        handoffLog.notice("Relinquishing playback after a peer takeover")
         pendingRelinquish = true
         try await relinquish()
     }
@@ -258,6 +273,11 @@ final class WiltedMacHandoffController {
         let after = player.handoffSample()
         if after?.isPlaying == true { return }
         try await coordinator.paused(at: after?.positionSeconds ?? lastPosition)
+        journalRecord(.init(
+            source: .mac, event: .relinquish, itemID: sessionEntry,
+            positionSeconds: after?.positionSeconds ?? lastPosition,
+            epoch: await coordinator.epoch, cause: .higherEpoch,
+            result: .relinquished, isPlaying: false))
         pendingRelinquish = false
         sessionPlaying = false
         storedPositionsDue = true
@@ -280,6 +300,29 @@ final class WiltedMacHandoffController {
         lastStoredPositions = await coordinator.deferredStoredPositions ? [] : positions
         storedPositionsDue = false
         if !written.isEmpty { handoffLog.notice("Published \(written.count) stored playback position(s)") }
+    }
+
+    private func recordPeerCheckpoint(in records: LibraryDeviceRecords?) {
+        guard let records else { return }
+        let peer = (records.nowPlaying + records.progress)
+            .filter { $0.record.deviceID != deviceID }
+            .max { $0.serverModifiedAt < $1.serverModifiedAt }
+        guard let peer else { return }
+        let record = peer.record
+        let signature = [
+            PlaybackJournalRecord.itemTag(record.entryID), String(record.epoch),
+            String(format: "%.1f", record.positionSeconds), String(record.isPlaying)
+        ].joined(separator: "|")
+        guard signature != lastPeerCheckpointSignature else { return }
+        lastPeerCheckpointSignature = signature
+        journalRecord(.init(
+            source: .mac, event: .peerCheckpoint, itemID: record.entryID,
+            positionSeconds: record.positionSeconds, epoch: record.epoch,
+            result: .observed, isPlaying: record.isPlaying))
+    }
+
+    private func journalRecord(_ record: PlaybackJournalRecord) {
+        (journal ?? WiltedMacPlaybackJournal.launch)?.note(record)
     }
 }
 

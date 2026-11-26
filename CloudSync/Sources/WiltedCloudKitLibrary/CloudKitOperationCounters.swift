@@ -56,13 +56,16 @@ public enum CloudKitOperationResult: Sendable, Hashable, CustomStringConvertible
 /// One recorded CloudKit transport operation.
 public struct CloudKitOperationRecord: Sendable, Equatable {
     public let caller: CloudKitOperationCaller
+    public let operation: CloudKitOperationKind
     public let recordCount: Int
     public let bytes: Int64
     public let result: CloudKitOperationResult
     public let timestamp: Date
 
-    public init(caller: CloudKitOperationCaller, recordCount: Int, bytes: Int64, result: CloudKitOperationResult, timestamp: Date = Date()) {
+    public init(caller: CloudKitOperationCaller, operation: CloudKitOperationKind = .unspecified,
+                recordCount: Int, bytes: Int64, result: CloudKitOperationResult, timestamp: Date = Date()) {
         self.caller = caller
+        self.operation = operation
         self.recordCount = recordCount
         self.bytes = bytes
         self.result = result
@@ -112,12 +115,32 @@ public struct CloudKitOperationSummary: Sendable, Equatable, CustomStringConvert
     public let lastThrottleRetryAfter: TimeInterval?
     public let callerCounts: [CloudKitOperationCaller: Int]
     public let recentCallerCounts: [CloudKitOperationCaller: Int]
-    private let totals: CloudKitOperationTotals
+    public let recentThrottleCounts: [CloudKitOperationCaller: Int]
+    let totals: CloudKitOperationTotals
+    let recentOperations: [CloudKitRecentOperationKey: CloudKitRecentOperationValues]
+    let recentEngineFetches: [CloudKitEngineFetchSample]
+    let totalEngineFetches: [CloudKitOperationCaller: CloudKitEngineFetchMetrics]
+    let recentEngineRebuilds: [CloudKitEngineRebuildSample]
+    let totalEngineRebuilds: [CloudKitEngineRebuildReason: Int]
+    let recentRecordReads: [CloudKitRecordReadSample]
+    let recentProgressReads: [CloudKitProgressReadSample]
 
-    init(timestamp: Date, recent: [CloudKitOperationRecord], totals: CloudKitOperationTotals) {
+    init(timestamp: Date, recent: [CloudKitOperationRecord], totals: CloudKitOperationTotals,
+         recentEngineFetches: [CloudKitEngineFetchSample],
+         totalEngineFetches: [CloudKitOperationCaller: CloudKitEngineFetchMetrics],
+         recentEngineRebuilds: [CloudKitEngineRebuildSample],
+         totalEngineRebuilds: [CloudKitEngineRebuildReason: Int],
+         recentRecordReads: [CloudKitRecordReadSample],
+         recentProgressReads: [CloudKitProgressReadSample]) {
         self.timestamp = timestamp
         self.recent = recent
         self.totals = totals
+        self.recentEngineFetches = recentEngineFetches
+        self.totalEngineFetches = totalEngineFetches
+        self.recentEngineRebuilds = recentEngineRebuilds
+        self.totalEngineRebuilds = totalEngineRebuilds
+        self.recentRecordReads = recentRecordReads
+        self.recentProgressReads = recentProgressReads
         recentRequests = recent.count
         recentRecordCount = recent.reduce(0) { $0 + $1.recordCount }
         recentBytes = recent.reduce(0) { $0 + $1.bytes }
@@ -128,6 +151,13 @@ public struct CloudKitOperationSummary: Sendable, Equatable, CustomStringConvert
         lastThrottleRetryAfter = totals.lastThrottle?.result.retryAfter
         callerCounts = totals.byCallerAndResult.reduce(into: [:]) { $0[$1.key.caller, default: 0] += $1.value }
         recentCallerCounts = recent.reduce(into: [:]) { $0[$1.caller, default: 0] += 1 }
+        recentThrottleCounts = recent.reduce(into: [:]) { result, record in
+            if record.result.isThrottled { result[record.caller, default: 0] += 1 }
+        }
+        recentOperations = recent.reduce(into: [:]) { result, record in
+            let key = CloudKitRecentOperationKey(caller: record.caller, operation: record.operation)
+            result[key, default: CloudKitRecentOperationValues()].add(record)
+        }
     }
 
     /// Operations by `caller` since launch.
@@ -179,6 +209,12 @@ public struct CloudKitOperationSummary: Sendable, Equatable, CustomStringConvert
         if !callers.isEmpty {
             parts.append("callers: [\(callers)]")
         }
+        let recentThrottles = CloudKitOperationCaller.allCases.compactMap { caller -> String? in
+            guard let count = recentThrottleCounts[caller], count > 0 else { return nil }
+            return "\(caller.rawValue): \(count)"
+        }.joined(separator: ", ")
+        if !recentThrottles.isEmpty { parts.append("last 5m throttles: [\(recentThrottles)]") }
+        parts.append(contentsOf: diagnosticSummaryLines())
         if let lastThrottleDate {
             let timeStr = lastThrottleDate.formatted(date: .omitted, time: .shortened)
             let retryStr = lastThrottleRetryAfter.map { " (retry-after: \(Int($0))s)" } ?? ""
@@ -188,6 +224,7 @@ public struct CloudKitOperationSummary: Sendable, Equatable, CustomStringConvert
         }
         return parts.joined(separator: " · ")
     }
+
 }
 
 /// Accumulates per-operation CloudKit transport metrics and logs a summary every `logInterval`.
@@ -195,6 +232,12 @@ public struct CloudKitOperationSummary: Sendable, Equatable, CustomStringConvert
 public final class CloudKitOperationCounters: @unchecked Sendable {
     private let lock = NSLock()
     private var recent: [CloudKitOperationRecord] = []
+    private var recentEngineFetches: [CloudKitEngineFetchSample] = []
+    private var totalEngineFetches: [CloudKitOperationCaller: CloudKitEngineFetchMetrics] = [:]
+    private var recentEngineRebuilds: [CloudKitEngineRebuildSample] = []
+    private var totalEngineRebuilds: [CloudKitEngineRebuildReason: Int] = [:]
+    private var recentRecordReads: [CloudKitRecordReadSample] = []
+    private var recentProgressReads: [CloudKitProgressReadSample] = []
     private var totals = CloudKitOperationTotals()
     private let clock: @Sendable () -> Date
     private let logInterval: TimeInterval
@@ -231,10 +274,12 @@ public final class CloudKitOperationCounters: @unchecked Sendable {
         loggingTask?.cancel()
     }
 
-    public func record(caller: CloudKitOperationCaller, recordCount: Int, bytes: Int64,
+    public func record(caller: CloudKitOperationCaller, operation: CloudKitOperationKind = .unspecified,
+                       recordCount: Int, bytes: Int64,
                        result: CloudKitOperationResult, timestamp: Date? = nil) {
         let now = timestamp ?? clock()
-        let entry = CloudKitOperationRecord(caller: caller, recordCount: recordCount, bytes: bytes, result: result, timestamp: now)
+        let entry = CloudKitOperationRecord(caller: caller, operation: operation, recordCount: recordCount,
+                                            bytes: bytes, result: result, timestamp: now)
         let logDue = lock.withLock { () -> Bool in
             totals.add(entry)
             recent.append(entry)
@@ -247,12 +292,61 @@ public final class CloudKitOperationCounters: @unchecked Sendable {
         if logDue { logNoticeSummary(now: now) }
     }
 
+    func recordEngineFetch(caller: CloudKitOperationCaller, metrics: CloudKitEngineFetchMetrics,
+                           timestamp: Date? = nil) {
+        let now = timestamp ?? clock()
+        lock.withLock {
+            recentEngineFetches.append(CloudKitEngineFetchSample(caller: caller, metrics: metrics, timestamp: now))
+            var total = totalEngineFetches[caller, default: CloudKitEngineFetchMetrics()]
+            total.add(metrics)
+            totalEngineFetches[caller] = total
+            prune(now: now)
+        }
+    }
+
+    func recordEngineRebuild(_ reason: CloudKitEngineRebuildReason, timestamp: Date? = nil) {
+        let now = timestamp ?? clock()
+        lock.withLock {
+            recentEngineRebuilds.append(CloudKitEngineRebuildSample(reason: reason, timestamp: now))
+            totalEngineRebuilds[reason, default: 0] += 1
+            prune(now: now)
+        }
+    }
+
+    func recordNamedReads(caller: CloudKitOperationCaller, metrics: [CloudKitNamedReadMetrics], timestamp: Date? = nil) {
+        let now = timestamp ?? clock()
+        lock.withLock {
+            recentRecordReads.append(contentsOf: metrics.filter { $0.records > 0 }.map {
+                CloudKitRecordReadSample(caller: caller, recordType: $0.recordType, freshness: $0.freshness,
+                                         records: $0.records, bytes: $0.bytes, timestamp: now)
+            })
+            prune(now: now)
+        }
+    }
+
+    func recordProgressReads(caller: CloudKitOperationCaller, metrics: [CloudKitProgressReadMetrics], timestamp: Date? = nil) {
+        let now = timestamp ?? clock()
+        lock.withLock {
+            recentProgressReads.append(contentsOf: metrics.filter { $0.records > 0 }.map {
+                CloudKitProgressReadSample(caller: caller, activity: $0.activity, outcome: $0.outcome,
+                                           records: $0.records, bytes: $0.bytes, timestamp: now)
+            })
+            prune(now: now)
+        }
+    }
+
     public func summary(now: Date? = nil) -> CloudKitOperationSummary {
         let current = now ?? clock()
         return lock.withLock {
             let cutoff = current.addingTimeInterval(-logInterval)
             return CloudKitOperationSummary(
-                timestamp: current, recent: recent.filter { $0.timestamp >= cutoff }, totals: totals)
+                timestamp: current, recent: recent.filter { $0.timestamp >= cutoff }, totals: totals,
+                recentEngineFetches: recentEngineFetches.filter { $0.timestamp >= cutoff },
+                totalEngineFetches: totalEngineFetches,
+                recentEngineRebuilds: recentEngineRebuilds.filter { $0.timestamp >= cutoff },
+                totalEngineRebuilds: totalEngineRebuilds,
+                recentRecordReads: recentRecordReads.filter { $0.timestamp >= cutoff },
+                recentProgressReads: recentProgressReads.filter { $0.timestamp >= cutoff })
         }
     }
 
@@ -265,6 +359,12 @@ public final class CloudKitOperationCounters: @unchecked Sendable {
     public func reset() {
         lock.withLock {
             recent.removeAll()
+            recentEngineFetches.removeAll()
+            totalEngineFetches.removeAll()
+            recentEngineRebuilds.removeAll()
+            recentRecordReads.removeAll()
+            recentProgressReads.removeAll()
+            totalEngineRebuilds.removeAll()
             totals = CloudKitOperationTotals()
             lastLogTime = clock()
         }
@@ -278,6 +378,10 @@ public final class CloudKitOperationCounters: @unchecked Sendable {
         } else {
             recent.removeAll()
         }
+        recentEngineFetches.removeAll { $0.timestamp < cutoff }
+        recentEngineRebuilds.removeAll { $0.timestamp < cutoff }
+        recentRecordReads.removeAll { $0.timestamp < cutoff }
+        recentProgressReads.removeAll { $0.timestamp < cutoff }
     }
 
     /// Throttled when `TransportPressureClassifier` sees server pressure (with its Retry-After), else other.

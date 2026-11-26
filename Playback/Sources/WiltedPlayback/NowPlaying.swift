@@ -1,3 +1,4 @@
+import AppIntents
 import Foundation
 import MediaPlayer
 #if canImport(UIKit)
@@ -19,10 +20,13 @@ public struct ListenerNowPlayingInfo: Equatable, Sendable {
     public var defaultRate: Double
     /// Encoded image bytes from a local cache. Never fetched here.
     public var artworkData: Data?
+    /// App entities related to this item, such as its episode and podcast show.
+    /// The MediaPlayer adapter publishes them only on systems that support this key.
+    public var appEntityIdentifiers: [EntityIdentifier]
 
     public init(
         title: String, artist: String? = nil, duration: Double, position: Double, rate: Double,
-        defaultRate: Double, artworkData: Data? = nil
+        defaultRate: Double, artworkData: Data? = nil, appEntityIdentifiers: [EntityIdentifier] = []
     ) {
         self.title = title
         self.artist = artist
@@ -31,6 +35,7 @@ public struct ListenerNowPlayingInfo: Equatable, Sendable {
         self.rate = rate
         self.defaultRate = defaultRate
         self.artworkData = artworkData
+        self.appEntityIdentifiers = appEntityIdentifiers
     }
 }
 
@@ -73,6 +78,12 @@ public struct MediaPlayerNowPlaying: ListenerNowPlaying {
             MPNowPlayingInfoPropertyPlaybackRate: info.rate,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: info.defaultRate,
         ]
+#if os(iOS)
+        if #available(iOS 27.0, *) {
+            let identifiers = info.appEntityIdentifiers.compactMap(MPAppEntityIdentifier.init(entityIdentifier:))
+            if !identifiers.isEmpty { payload[MPNowPlayingInfoPropertyAppEntityIdentifiers] = identifiers }
+        }
+#endif
         if let artist = info.artist, !artist.isEmpty { payload[MPMediaItemPropertyArtist] = artist }
         if let data = info.artworkData, let artwork = artwork(from: data) { payload[MPMediaItemPropertyArtwork] = artwork }
         return payload
