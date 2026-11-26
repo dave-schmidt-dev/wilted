@@ -80,8 +80,21 @@ extension WiltedMacAdFeedbackActionTests {
         ]))
         XCTAssertEqual(recovered.first(where: { $0.id == original.id })?.handledAt, now)
         XCTAssertTrue(recovered.filter { $0.id != original.id }.allSatisfy { $0.handledAt == nil })
+
+        // A normal v2 write commits the in-memory fusion; reopening verifies the receipt and
+        // feedback survive after another prior-version round trip.
+        try await upgraded.add(try feedback(
+            id: "written-after-upgrade", kind: .adHere, played: 29, timeline: timeline()))
+        let reopened = WiltedMacAdFeedbackInbox(fileURL: store, actionDirectory: actions)
+        let reopenedEntries = await reopened.all()
+        XCTAssertEqual(Set(reopenedEntries.map(\.id)), Set([
+            "handled-before-rollback", "written-by-prior-version-1", "written-by-prior-version-2",
+            "written-after-upgrade"
+        ]))
+        XCTAssertEqual(reopenedEntries.first(where: { $0.id == original.id })?.handledAt, now)
         let fused = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: store)) as? [String: Any])
         XCTAssertEqual(fused["version"] as? Int, 2)
+        XCTAssertEqual((fused["entries"] as? [[String: Any]])?.count, 4)
         XCTAssertEqual((fused["handledActions"] as? [[String: Any]])?.count, 1)
         XCTAssertEqual(try Data(contentsOf: archive), v2Bytes)
     }
@@ -112,7 +125,8 @@ extension WiltedMacAdFeedbackActionTests {
             arguments: [], preferences: WiltedMacTestPreferences.ephemeral())
         let stateDirectory = model.libraryURL.deletingLastPathComponent().standardizedFileURL
         XCTAssertFalse(model.fixtureMode)
-        XCTAssertEqual(stateDirectory, WiltedMacModel.testHostStateDirectory.standardizedFileURL)
+        let expectedLibrary = WiltedMacModel.testHostStateDirectory.appendingPathComponent("library.sqlite")
+        XCTAssertEqual(model.libraryURL.path, expectedLibrary.path)
         let testRoot = ProcessInfo.processInfo.environment["WILTED_TEST_TMPDIR"]
             .map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? FileManager.default.temporaryDirectory
