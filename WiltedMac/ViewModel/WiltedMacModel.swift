@@ -157,6 +157,7 @@ final class WiltedMacModel {
     var episodes: [WiltedMacEpisode] = []
 #if canImport(WiltedProducer)
     var providerEpisodeReplies: [AdLabellerProvider: WiltedMacProviderEpisodeReply] = [:]
+    @ObservationIgnored lazy var shareComposerRegistry = WiltedMacShareComposerRegistry()
 #endif
     /// Episodes the current engine has not prepared, by id, read from the store
     /// with each library load. The only episodes the Larder offers to prepare
@@ -289,8 +290,7 @@ final class WiltedMacModel {
                 WiltedMacAdFindingSettings.Show(feedID: $0.id, title: $0.title, feedURL: $0.feedURL)
             } ?? []
         })
-    @ObservationIgnored lazy var adFeedback = WiltedMacAdFeedbackController(inbox: WiltedMacAdFeedbackInbox(
-        fileURL: libraryURL.deletingLastPathComponent().appendingPathComponent(WiltedMacAdFeedbackInbox.fileName)))
+    @ObservationIgnored lazy var adFeedback = WiltedMacAdFeedbackController(inbox: .init(libraryURL: libraryURL), allowsExternalActions: !fixtureMode && !Self.hostsTests)
     var seamMarkerTask: Task<Void, Never>?
     var lastMarkedSeam: (episodeID: String, seconds: TimeInterval)?
     var adBreakTracker = WiltedMacAdBreakTracker()
@@ -349,6 +349,9 @@ final class WiltedMacModel {
     var manualCompletionRecoveryTask: Task<Void, Never>?
     var store: LocalLibraryStore? {
         didSet {
+#if canImport(WiltedProducer)
+            if oldValue !== store { invalidateShareComposerStates() }
+#endif
             bulletinLifecycleChanged()
             manualCompletionRecoveryTask?.cancel()
             guard store != nil, !isClosingTemporaryState else { return }

@@ -27,6 +27,7 @@ from wilted_worker import transcript_sources as _worker_transcript_sources
 from worker_test_support import *
 from worker_test_fake_llm import *
 from worker_test_fake_ads import *
+from phase2_replay_score import score_fixture as _score_phase2_fixture
 from wilted_worker import cue_timing as _worker_cue_timing
 from wilted_worker import glossary as _worker_glossary
 from wilted_worker import gpu_admission as _worker_gpu_admission
@@ -89,7 +90,81 @@ class AdCorpusScoringTests(unittest.TestCase):
         # seconds the file does not contain as advertising left playing would
         # measure the transcript rather than the cut.
         case = self.case(self.expect("must-cut", 90.0, 105.0), duration=100.0)
-        self.assertTrue(self.score(case, [(90.0, 100.0)]).passed)
+        verdict = self.score(case, [(90.0, 100.0)])
+        self.assertTrue(verdict.passed)
+        self.assertEqual(verdict.spans[0].span, self.corpus.Span(90.0, 105.0))
+        self.assertEqual(verdict.spans[0].scored_span, self.corpus.Span(90.0, 100.0))
+        self.assertEqual(verdict.outside_ad_label_cut_seconds, 0.0)
+
+    def test_a_giant_bombcast_label_overhang_is_reported_but_not_scored(self):
+        # The retained GB963 reference ends 37.089524s after its exact source.
+        # Preserve that reviewed label for inspection, but don't count audio
+        # that doesn't exist as an ad remnant in the replay.
+        duration = 11073.350476
+        case = self.case(
+            self.expect("must-cut", 11012.0, 11110.44), duration=duration
+        )
+        verdict = self.score(case, [(11012.0, duration)])
+        measured = verdict.spans[0]
+
+        self.assertTrue(verdict.passed)
+        self.assertEqual(measured.span, self.corpus.Span(11012.0, 11110.44))
+        self.assertEqual(measured.scored_span, self.corpus.Span(11012.0, duration))
+        self.assertAlmostEqual(measured.span.seconds - measured.scored_span.seconds, 37.089524)
+        self.assertAlmostEqual(measured.scored_span.seconds - measured.overlap_seconds, 0.0)
+        self.assertEqual(verdict.outside_ad_label_cut_seconds, 0.0)
+        self.assertIn("source overhang: 37.09s", self.corpus.report([verdict]))
+
+    def test_a_cut_inside_a_must_keep_label_is_outside_ad_labels(self):
+        case = self.case(
+            self.expect("must-cut", 0.0, 10.0),
+            self.expect("must-keep", 20.0, 30.0),
+            duration=100.0,
+        )
+        verdict = self.score(case, [(0.0, 10.0), (20.0, 23.0)])
+
+        self.assertEqual(verdict.unknown_cut_seconds, 0.0)
+        self.assertEqual(verdict.outside_ad_label_cut_seconds, 3.0)
+
+    def test_supported_phase2_replay_reports_clipped_labels_and_identity(self):
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Path(temporary) / "fixture"
+            case_dir = fixture / "cases" / "overhanging-ad"
+            case_dir.mkdir(parents=True)
+            (case_dir / "case.json").write_text(json.dumps({
+                "id": "overhanging-ad", "show": "Show", "sourceHash": "sha256:test-source",
+                "itemID": "item-test", "revisionID": "rev-test", "feedbackIDs": ["feedback-test"],
+                "durationSeconds": 100.0,
+                "expected": [{"label": "must-cut", "start": 90.0, "end": 105.0}],
+            }))
+            (case_dir / "breaks.json").write_text(json.dumps({
+                "labelledBreaks": [{
+                    "start": 90.0, "end": 100.0, "kind": "sponsor",
+                    "label": "must-cut", "advertisers": ["Example"],
+                }],
+            }))
+            output = Path(temporary) / "score.json"
+            report = _score_phase2_fixture(fixture, output=output, repo=root)
+
+            row = report["rows"][0]
+            self.assertEqual(row["caseID"], "overhanging-ad")
+            self.assertEqual(row["itemID"], "item-test")
+            self.assertEqual(row["revisionID"], "rev-test")
+            self.assertEqual(row["feedbackIDs"], ["feedback-test"])
+            self.assertTrue(row["clean"])
+            self.assertTrue(row["coverageComplete"])
+            self.assertEqual(row["originalLabelledAdSeconds"], 15.0)
+            self.assertEqual(row["labelledAdSeconds"], 10.0)
+            self.assertEqual(row["adLabelOverhangSeconds"], 5.0)
+            self.assertEqual(row["labelOverhangs"][0]["scoredEnd"], 100.0)
+            self.assertEqual(row["spanVerdicts"][0]["label"], "must-cut")
+            self.assertEqual(row["spanVerdicts"][0]["passed"], True)
+            self.assertEqual(row["producedCuts"], [[90.0, 100.0]])
+            self.assertEqual(report["candidateCommit"], subprocess.check_output(
+                ["git", "-C", str(root), "rev-parse", "HEAD"], text=True,
+            ).strip())
+            self.assertEqual(json.loads(output.read_text()), report)
 
     def test_an_advertisement_barely_clipped_does_not_count_as_removed(self):
         verdict = self.score(self.case(self.expect("must-cut", 0.0, 32.0)), [(0.0, 8.0)])

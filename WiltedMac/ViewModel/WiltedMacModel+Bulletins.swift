@@ -40,6 +40,8 @@ final class WiltedMacBulletinHub {
     /// The last headline actually started by this Mac's speaker. The player keeps its matching
     /// story card selected after speech ends, even when a newer feed item arrives.
     private(set) var featuredHeadlineStoryID: String?
+    /// The last weather alert that actually started speaking, retained after Now Playing clears it.
+    private(set) var lastSpokenWeatherAlert: Bulletin?
     @ObservationIgnored private var newsReadinessRequest = 0
     @ObservationIgnored private weak var newsReadinessStore: LocalLibraryStore?
     @ObservationIgnored private var knownNewsFeedIDs: Set<String> = []
@@ -441,17 +443,24 @@ final class WiltedMacBulletinHub {
     }
 
     func makeInterruptionSpeaker() -> any BulletinSpeaking {
-        if let makeSpeaker { return makeSpeaker() }
-        return WiltedMacHeadlineBulletinSpeaker(
-            audioURL: { [weak self] bulletin in
-                guard let self else { return nil }
-                if bulletin.kind == .headline {
-                    return self.narration.audioURL(for: bulletin, accountIdentity: self.approvedPublicationOwner)
-                }
-                return self.weatherAlertNarration?.audioURL(for: bulletin)
-            }, audioPlayer: makeHeadlineAudioPlayer(),
-            selectedVoice: { [weak self] in self?.model?.readingVoiceSelection.selectedVoice },
-            renderShortText: renderShortTextNarration)
+        let speaker: any BulletinSpeaking
+        if let makeSpeaker {
+            speaker = makeSpeaker()
+        } else {
+            speaker = WiltedMacHeadlineBulletinSpeaker(
+                audioURL: { [weak self] bulletin in
+                    guard let self else { return nil }
+                    if bulletin.kind == .headline {
+                        return self.narration.audioURL(for: bulletin, accountIdentity: self.approvedPublicationOwner)
+                    }
+                    return self.weatherAlertNarration?.audioURL(for: bulletin)
+                }, audioPlayer: makeHeadlineAudioPlayer(),
+                selectedVoice: { [weak self] in self?.model?.readingVoiceSelection.selectedVoice },
+                renderShortText: renderShortTextNarration)
+        }
+        return WiltedMacRememberingWeatherAlertSpeaker(base: speaker) { [weak self] alert in
+            self?.lastSpokenWeatherAlert = alert
+        }
     }
 
     private func refreshWeatherAlertNarration() {

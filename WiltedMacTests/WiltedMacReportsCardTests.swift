@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 import WiltedDomain
+import WiltedLibrary
 import WiltedProducer
 @testable import WiltedMac
 
@@ -80,6 +81,7 @@ final class WiltedMacReportsCardTests: XCTestCase {
         let rendered = try WiltedMacHeadless.recognizedText(
             card, size: CGSize(width: 1_000, height: 1_200)).joined(separator: " ")
 
+        XCTAssertFalse(model.headlineTickerEnabled, "the ticker starts off until enabled")
         XCTAssertTrue(WiltedMacReportsCard.dailyReportSummary.contains("Larder > All"))
         for detail in [
             "local National Weather Service forecast",
@@ -94,7 +96,10 @@ final class WiltedMacReportsCardTests: XCTestCase {
             "Weather alerts use the selected story voice",
             "Headline alert",
             "15 seconds",
-            "Point to one to keep it open"
+            "Point to one to keep it open",
+            "Scrolling news ticker",
+            "spoken bulletins are off",
+            "queue its audio after the current episode"
         ] {
             XCTAssertTrue(rendered.localizedCaseInsensitiveContains(detail), "Missing \(detail) in: \(rendered)")
         }
@@ -104,6 +109,41 @@ final class WiltedMacReportsCardTests: XCTestCase {
         XCTAssertEqual(WiltedMacReportsCard.interruptionsOffNote(interruptionsEnabled: false),
                        "Turn on Read bulletins while playing to use weather alerts and spoken headlines.")
         XCTAssertNil(WiltedMacReportsCard.interruptionsOffNote(interruptionsEnabled: true))
+    }
+
+    func testLastWeatherAlertDetailCanReopenTheCompleteOriginalOffline() throws {
+        let original = """
+        Event: Special Marine Warning
+
+        Severity: Severe
+
+        Affected areas: Hawk Channel
+
+        Hazard starts (CAP): 2026-11-25T21:25:00-05:00
+
+        Official instructions:
+        Stay low or go below, and make sure everyone is wearing life jackets.
+        """
+        let alert = try Bulletin(
+            id: "last-weather-alert", kind: .alert, text: "Severe Special Marine Warning for Hawk Channel.",
+            severity: .severe, issuedAt: Date(timeIntervalSince1970: 1_000),
+            expiresAt: Date(timeIntervalSince1970: 2_000),
+            link: URL(string: "https://api.weather.gov/alerts/last-weather-alert"), originalText: original)
+
+        let button = try WiltedMacHeadless.recognizedText(
+            WiltedMacLastWeatherAlertDisclosure(bulletin: alert), size: CGSize(width: 460, height: 80))
+            .joined(separator: " ")
+        XCTAssertTrue(button.contains("Last weather alert"), button)
+
+        let detail = try WiltedMacHeadless.recognizedText(
+            WiltedMacLastWeatherAlertDetails(bulletin: alert), size: CGSize(width: 620, height: 560))
+            .joined(separator: " ")
+        for phrase in [
+            "Last weather alert", "Affected areas: Hawk Channel",
+            "2026-11-25T21:25:00-05:00", "wearing life jackets", "Open full NWS alert", "Done"
+        ] {
+            XCTAssertTrue(detail.localizedCaseInsensitiveContains(phrase), "Missing \(phrase): \(detail)")
+        }
     }
 
     func testAddHeadlineFeedSavesItsChoiceBeforePostsReachTheInbox() async throws {

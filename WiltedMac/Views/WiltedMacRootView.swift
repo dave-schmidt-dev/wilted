@@ -89,6 +89,15 @@ struct WiltedMacRootView: View {
             guard !WiltedMacModel.hostsTests else { return }
             await feedPolicyBoard.reload()
         }
+#if canImport(WiltedProducer)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if model.headlineTickerEnabled {
+                WiltedMacHeadlineTicker(
+                    model: model,
+                    stories: model.headlineCatalogState.projection?.recent ?? [])
+            }
+        }
+#endif
         .overlay(alignment: .top) { headlineToast }
         .onAppear { considerHeadlineToast(headlineToastCandidate) }
         .onChange(of: headlineToastEventID) { _, _ in

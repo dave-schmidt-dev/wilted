@@ -30,6 +30,11 @@ public enum MediaHash {
         String(try sha256(fileAt: url, chunkSize: chunkSize).dropFirst(prefix.count))
     }
 
+    /// `sha256:<lowercase hex>` of UTF-8 text, for binding private spoken copy across devices.
+    public static func sha256(text: String) -> String {
+        prefix + SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
     /// True for `sha256:` followed by exactly 64 lowercase hex digits.
     public static func isWellFormed(_ value: String) -> Bool {
         guard value.hasPrefix(prefix) else { return false }

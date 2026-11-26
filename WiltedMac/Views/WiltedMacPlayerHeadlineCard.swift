@@ -140,3 +140,152 @@ struct WiltedMacPlayerHeadlineCard: View {
         await refreshListenNextRequests()
     }
 }
+
+enum WiltedMacHeadlineTickerMotion {
+    static func shouldAutoScroll(
+        reduceMotion: Bool,
+        isHovering: Bool,
+        hasKeyboardFocus: Bool,
+        isPresentingStory: Bool,
+        storyCount: Int
+    ) -> Bool {
+        storyCount > 1 && !reduceMotion && !isHovering && !hasKeyboardFocus && !isPresentingStory
+    }
+}
+
+enum WiltedMacHeadlineTickerSelection {
+    static func currentStory(
+        matching snapshot: LibraryHeadlineStory,
+        in projection: LibraryHeadlineProjection?
+    ) -> LibraryHeadlineStory {
+        projection?.saved.first(where: { $0.id == snapshot.id })
+            ?? projection?.recent.first(where: { $0.id == snapshot.id })
+            ?? snapshot
+    }
+}
+
+/// A compact, optional strip for opening recent headlines without interrupting playback.
+struct WiltedMacHeadlineTicker: View {
+    @Bindable private var model: WiltedMacModel
+    private let stories: [LibraryHeadlineStory]
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var selectedStorySnapshot: LibraryHeadlineStory?
+    @State private var isHovering = false
+    @State private var nextScrollIndex = 1
+    @FocusState private var focusedStoryID: String?
+
+    init(model: WiltedMacModel, stories: [LibraryHeadlineStory]) {
+        _model = Bindable(model)
+        self.stories = Array(stories.prefix(20))
+    }
+
+    private var autoScrollEnabled: Bool {
+        WiltedMacHeadlineTickerMotion.shouldAutoScroll(
+            reduceMotion: reduceMotion,
+            isHovering: isHovering,
+            hasKeyboardFocus: focusedStoryID != nil,
+            isPresentingStory: selectedStorySnapshot != nil,
+            storyCount: stories.count)
+    }
+
+    private var scrollTaskIdentity: [String] {
+        [autoScrollEnabled ? "moving" : "still"] + stories.map(\.id)
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            HStack(spacing: WiltedTheme.Spacing.medium) {
+                Label("Headlines", systemImage: "newspaper")
+                    .wiltedFont(.utility)
+                    .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                    .fixedSize()
+
+                if stories.isEmpty {
+                    Text("No recent stories yet")
+                        .wiltedFont(.utility)
+                        .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                } else {
+                    ScrollView(.horizontal) {
+                        HStack(spacing: WiltedTheme.Spacing.medium) {
+                            ForEach(stories) { story in
+                                Button {
+                                    selectedStorySnapshot = story
+                                } label: {
+                                    HStack(spacing: WiltedTheme.Spacing.xSmall) {
+                                        Text(story.publisherName)
+                                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                                        Text(story.title)
+                                            .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                                            .lineLimit(1)
+                                            .frame(maxWidth: 360, alignment: .leading)
+                                    }
+                                    .wiltedFont(.utility)
+                                    .padding(.horizontal, WiltedTheme.Spacing.small)
+                                    .padding(.vertical, WiltedTheme.Spacing.xSmall)
+                                    .background(
+                                        WiltedTheme.color(.page, scheme: colorScheme),
+                                        in: Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .focused($focusedStoryID, equals: story.id)
+                                .help("Open story actions")
+                                .accessibilityLabel("\(story.publisherName): \(story.title)")
+                                .accessibilityHint(
+                                    "Show story actions. Read the article, queue audio after the current episode, or save it to Notebook.")
+                                .accessibilityIdentifier("wilted-headline-ticker-story-\(story.id)")
+                                .id(story.id)
+                            }
+                        }
+                        .padding(.vertical, WiltedTheme.Spacing.xSmall)
+                    }
+                    .scrollIndicators(.hidden)
+                    .accessibilityIdentifier("wilted-headline-ticker-stories")
+                }
+            }
+            .padding(.horizontal, WiltedTheme.Spacing.medium)
+            .padding(.vertical, WiltedTheme.Spacing.xSmall)
+            .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+            .background(WiltedTheme.color(.card, scheme: colorScheme))
+            .overlay(alignment: .top) {
+                WiltedTheme.color(.steel, scheme: colorScheme).frame(height: 1)
+            }
+            .onHover { isHovering = $0 }
+            .popover(item: $selectedStorySnapshot, arrowEdge: .bottom) { snapshot in
+                storyActions(for: snapshot)
+            }
+            .task(id: scrollTaskIdentity) {
+                guard autoScrollEnabled else { return }
+                nextScrollIndex %= stories.count
+                while !Task.isCancelled {
+                    do { try await Task.sleep(for: .seconds(3)) }
+                    catch { return }
+                    guard autoScrollEnabled, !Task.isCancelled else { return }
+                    let targetIndex = nextScrollIndex
+                    let animation: Animation? = targetIndex == 0 ? nil : .linear(duration: 1.4)
+                    withAnimation(animation) {
+                        proxy.scrollTo(stories[targetIndex].id, anchor: .leading)
+                    }
+                    nextScrollIndex = (targetIndex + 1) % stories.count
+                }
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("wilted-headline-ticker")
+        }
+    }
+
+    @ViewBuilder
+    private func storyActions(for snapshot: LibraryHeadlineStory) -> some View {
+        let story = WiltedMacHeadlineTickerSelection.currentStory(
+            matching: snapshot, in: model.headlineCatalogState.projection)
+        WiltedMacPlayerHeadlineCard(
+            model: model,
+            story: story,
+            isSpeakingHeadline: model.speakingBulletin?.kind == .headline
+                && model.speakingBulletin?.headlineStoryID == story.id,
+            stopReading: model.skipSpokenBulletin)
+            .id(story.id)
+            .frame(width: 440)
+            .padding(WiltedTheme.Spacing.small)
+    }
+}

@@ -11,6 +11,32 @@ private enum LibraryApprovedBulletinVoiceID: String, CaseIterable {
     case rodSerling = "rod-serling"
 }
 
+enum LibraryBulletinAudioIssue: String, Codable {
+    case macNeedsUpdate
+    case missingAudio
+    case uncheckedCopy
+    case changedCopy
+    case wrongBulletin
+    case unapprovedVoice
+
+    var message: String {
+        switch self {
+        case .macNeedsUpdate:
+            "Update Wilted on both devices to use verified bulletin audio, then retry."
+        case .missingAudio:
+            "The Mac did not attach audio to this bulletin. Update Wilted on both devices, then retry."
+        case .uncheckedCopy:
+            "The Mac audio has no text check. Update Wilted on both devices, then retry."
+        case .changedCopy:
+            "The bulletin text changed between devices. Update Wilted on both devices, then retry."
+        case .wrongBulletin:
+            "The Mac returned audio for a different bulletin. Update Wilted on both devices, then retry."
+        case .unapprovedVoice:
+            "The Mac used an unapproved voice for this bulletin. Update Wilted on both devices, then retry."
+        }
+    }
+}
+
 private struct LibraryBulletinAudioEntry: Codable, Equatable, Identifiable {
     let ownerToken: String
     let bulletinID: String
@@ -29,6 +55,7 @@ private struct LibraryBulletinAudioEntry: Codable, Equatable, Identifiable {
     var nextDownloadAt: Date?
     var offer: LibraryStoryAudioOffer?
     var failure: LibraryListenNextStatus.Failure?
+    var issue: LibraryBulletinAudioIssue?
 
     var id: String { requestID }
 
@@ -37,7 +64,7 @@ private struct LibraryBulletinAudioEntry: Codable, Equatable, Identifiable {
         textHash: String, intent: LibraryIntent, requestSent: Bool, requestAttempts: Int,
         statusAttempts: Int, audioCached: Bool, downloadAttempts: Int, nextRequestAt: Date?,
         nextStatusAt: Date?, nextDownloadAt: Date?, offer: LibraryStoryAudioOffer?,
-        failure: LibraryListenNextStatus.Failure?
+        failure: LibraryListenNextStatus.Failure?, issue: LibraryBulletinAudioIssue? = nil
     ) {
         self.ownerToken = ownerToken
         self.bulletinID = bulletinID
@@ -56,12 +83,13 @@ private struct LibraryBulletinAudioEntry: Codable, Equatable, Identifiable {
         self.nextDownloadAt = nextDownloadAt
         self.offer = offer
         self.failure = failure
+        self.issue = issue
     }
 
     private enum CodingKeys: String, CodingKey {
         case ownerToken, bulletinID, requestID, issuedAt, expiresAt, textHash, intent
         case requestSent, requestAttempts, statusAttempts, audioCached, downloadAttempts
-        case nextRequestAt, nextStatusAt, nextDownloadAt, offer, failure
+        case nextRequestAt, nextStatusAt, nextDownloadAt, offer, failure, issue
     }
 
     init(from decoder: Decoder) throws {
@@ -78,6 +106,7 @@ private struct LibraryBulletinAudioEntry: Codable, Equatable, Identifiable {
         statusAttempts = try values.decode(Int.self, forKey: .statusAttempts)
         offer = try values.decodeIfPresent(LibraryStoryAudioOffer.self, forKey: .offer)
         failure = try values.decodeIfPresent(LibraryListenNextStatus.Failure.self, forKey: .failure)
+        issue = try values.decodeIfPresent(LibraryBulletinAudioIssue.self, forKey: .issue)
         audioCached = try values.decodeIfPresent(Bool.self, forKey: .audioCached) ?? (offer != nil)
         downloadAttempts = try values.decodeIfPresent(Int.self, forKey: .downloadAttempts) ?? 0
         nextRequestAt = try values.decodeIfPresent(Date.self, forKey: .nextRequestAt)
@@ -103,7 +132,7 @@ private struct VerifiedBulletinAudio: Sendable {
 /// Keeps only Mac-rendered bulletin clips for the current local library owner.
 @MainActor
 final class LibraryBulletinAudioManager {
-    private static let version = 2
+    private static let version = 3
     private static let maxEntries = 100
     private static let retryDelays: [TimeInterval] = [10, 60, 300]
     private static let statusPollDelays: [TimeInterval] = [10, 30, 120, 300]
@@ -130,10 +159,59 @@ final class LibraryBulletinAudioManager {
 
     func prepare(_ bulletin: Bulletin) {
         guard bulletin.kind == .headline || bulletin.kind == .alert,
-              bulletin.expiresAt > now(), let requestID = Self.requestID(for: bulletin, deviceID: model?.deviceID ?? "") else {
+              bulletin.expiresAt > now() else {
             return
         }
+        if let owner = localOwner, let entry = matchingEntry(for: bulletin, owner: owner) {
+            pendingBulletins[entry.requestID] = bulletin
+            return
+        }
+        guard !pendingBulletins.values.contains(where: { Self.matches($0, bulletin: bulletin) }),
+              let requestID = Self.requestID(for: bulletin, deviceID: model?.deviceID ?? "") else { return }
         pendingBulletins[requestID] = bulletin
+    }
+
+    func issue(for bulletin: Bulletin) -> String? {
+        guard let model, let owner = localOwner, load(owner: owner), bulletin.expiresAt > now() else { return nil }
+        if model.macAddActions?.contains("requestBulletinAudio") != true {
+            return LibraryBulletinAudioIssue.macNeedsUpdate.message
+        }
+        guard let entry = matchingEntry(for: bulletin, owner: owner) else { return nil }
+        if let issue = entry.issue { return issue.message }
+        if entry.failure != nil { return "The bulletin audio could not be loaded. Tap Retry to ask your Mac again." }
+        return nil
+    }
+
+    /// Starts a fresh, user-requested render so an older Mac response cannot be reused.
+    func retry(_ bulletin: Bulletin) {
+        let requestID = Self.retryRequestID()
+        guard let model, let owner = localOwner, load(owner: owner),
+              (bulletin.kind == .headline || bulletin.kind == .alert), bulletin.expiresAt > now(),
+              let intent = try? LibraryIntent.requestBulletinAudio(
+                  bulletinID: bulletin.id, deviceID: model.deviceID,
+                  spokenTextSHA256: Self.textDigest(bulletin.text), createdAt: now(), id: requestID) else { return }
+
+        let previousIDs = entries.values
+            .filter { $0.ownerToken == owner && Self.matches($0, bulletin: bulletin) }
+            .map(\.requestID)
+        let queuedIDs = pendingBulletins
+            .filter { Self.matches($0.value, bulletin: bulletin) }
+            .map(\.key)
+        for id in Set(previousIDs).union(queuedIDs) {
+            try? cache.removeAudio(for: id, ownerToken: owner)
+            entries.removeValue(forKey: id)
+            verifiedAudio.removeValue(forKey: id)
+            pendingBulletins.removeValue(forKey: id)
+        }
+        guard entries.count < Self.maxEntries else { return }
+        entries[requestID] = LibraryBulletinAudioEntry(
+            ownerToken: owner, bulletinID: bulletin.id, requestID: requestID,
+            issuedAt: bulletin.issuedAt, expiresAt: bulletin.expiresAt, textHash: Self.textDigest(bulletin.text),
+            intent: intent, requestSent: false, requestAttempts: 0, statusAttempts: 0,
+            audioCached: false, downloadAttempts: 0, nextRequestAt: nil,
+            nextStatusAt: nil, nextDownloadAt: nil, offer: nil, failure: nil)
+        pendingBulletins[requestID] = bulletin
+        try? persist()
     }
 
     var canRequestAudio: Bool {
@@ -145,8 +223,7 @@ final class LibraryBulletinAudioManager {
 
     func failure(for bulletin: Bulletin) -> LibraryListenNextStatus.Failure? {
         guard let model, let owner = localOwner, load(owner: owner),
-              let requestID = Self.requestID(for: bulletin, deviceID: model.deviceID),
-              let entry = entries[requestID], entry.ownerToken == owner else { return nil }
+              let entry = matchingEntry(for: bulletin, owner: owner) else { return nil }
         return entry.failure
     }
 
@@ -156,9 +233,7 @@ final class LibraryBulletinAudioManager {
         inFlight = true
         defer { inFlight = false }
         removeExpiredEntries()
-        let requestedIDs = Set(pendingBulletins.values.compactMap {
-            Self.requestID(for: $0, deviceID: model.deviceID)
-        })
+        let requestedIDs = Set(pendingBulletins.keys)
         await verifyCachedAudio(owner: owner, requestIDs: requestedIDs)
         guard localOwner == owner, !model.accountQuarantined else { return }
         guard let storyAudioTransport = model.storyAudioTransport,
@@ -185,6 +260,7 @@ final class LibraryBulletinAudioManager {
                         guard status.requestID == entry.requestID, status.requesterDeviceID == model.deviceID,
                               status.storyID == entry.bulletinID else {
                             entry.failure = .transferFailed
+                            entry.issue = .wrongBulletin
                             entry.nextStatusAt = nil
                             entries[id] = entry
                             continue
@@ -196,12 +272,60 @@ final class LibraryBulletinAudioManager {
                             entry.failure = status.failure ?? .narrationFailed
                             entry.nextStatusAt = nil
                         case .ready:
-                            guard let offer = status.audioOffer,
-                                  offer.requestID == entry.requestID, offer.storyID == entry.bulletinID,
-                                  offer.requesterDeviceID == model.deviceID,
-                                  LibraryApprovedBulletinVoiceID(rawValue: offer.voiceID) != nil else {
+                            guard let offer = status.audioOffer else {
                                 entry.failure = .transferFailed
+                                entry.issue = .missingAudio
                                 entry.nextStatusAt = nil
+                                entry.offer = nil
+                                entry.audioCached = false
+                                verifiedAudio.removeValue(forKey: id)
+                                try? cache.removeAudio(for: entry.requestID, ownerToken: owner)
+                                entries[id] = entry
+                                continue
+                            }
+                            guard offer.requestID == entry.requestID, offer.storyID == entry.bulletinID,
+                                  offer.requesterDeviceID == model.deviceID,
+                                  entry.intent.spokenTextSHA256 == entry.textHash else {
+                                entry.failure = .transferFailed
+                                entry.issue = .wrongBulletin
+                                entry.nextStatusAt = nil
+                                entry.offer = nil
+                                entry.audioCached = false
+                                verifiedAudio.removeValue(forKey: id)
+                                try? cache.removeAudio(for: entry.requestID, ownerToken: owner)
+                                entries[id] = entry
+                                continue
+                            }
+                            guard offer.spokenTextSHA256 != nil else {
+                                entry.failure = .transferFailed
+                                entry.issue = .uncheckedCopy
+                                entry.nextStatusAt = nil
+                                entry.offer = nil
+                                entry.audioCached = false
+                                verifiedAudio.removeValue(forKey: id)
+                                try? cache.removeAudio(for: entry.requestID, ownerToken: owner)
+                                entries[id] = entry
+                                continue
+                            }
+                            guard offer.spokenTextSHA256 == entry.textHash else {
+                                entry.failure = .transferFailed
+                                entry.issue = .changedCopy
+                                entry.nextStatusAt = nil
+                                entry.offer = nil
+                                entry.audioCached = false
+                                verifiedAudio.removeValue(forKey: id)
+                                try? cache.removeAudio(for: entry.requestID, ownerToken: owner)
+                                entries[id] = entry
+                                continue
+                            }
+                            guard LibraryApprovedBulletinVoiceID(rawValue: offer.voiceID) != nil else {
+                                entry.failure = .transferFailed
+                                entry.issue = .unapprovedVoice
+                                entry.nextStatusAt = nil
+                                entry.offer = nil
+                                entry.audioCached = false
+                                verifiedAudio.removeValue(forKey: id)
+                                try? cache.removeAudio(for: entry.requestID, ownerToken: owner)
                                 entries[id] = entry
                                 continue
                             }
@@ -230,14 +354,15 @@ final class LibraryBulletinAudioManager {
         guard let model, let owner = localOwner, !model.accountQuarantined,
               !model.listenNextState.heldForAccountReview,
               load(owner: owner), bulletin.expiresAt > now(),
-              let requestID = Self.requestID(for: bulletin, deviceID: model.deviceID),
-              let entry = entries[requestID], entry.ownerToken == owner,
+              let entry = matchingEntry(for: bulletin, owner: owner),
               entry.bulletinID == bulletin.id, entry.issuedAt == bulletin.issuedAt,
-              entry.expiresAt == bulletin.expiresAt, entry.textHash == Self.textHash(bulletin.text),
+              entry.expiresAt == bulletin.expiresAt, entry.textHash == Self.textDigest(bulletin.text),
+              entry.intent.spokenTextSHA256 == entry.textHash,
               let offer = entry.offer, entry.audioCached, offer.storyID == bulletin.id,
+              offer.spokenTextSHA256 == entry.textHash,
               LibraryApprovedBulletinVoiceID(rawValue: offer.voiceID) != nil,
               let url = cache.url(for: offer, ownerToken: owner),
-              let verified = verifiedAudio[requestID], verified.ownerToken == owner,
+              let verified = verifiedAudio[entry.requestID], verified.ownerToken == owner,
               verified.offer == offer, verified.url.standardizedFileURL == url.standardizedFileURL,
               Self.fileIdentityMatches(url, verified: verified) else { return nil }
         return url
@@ -263,23 +388,35 @@ final class LibraryBulletinAudioManager {
               (1...Self.version).contains(saved.version), !saved.ownerToken.isEmpty,
               Set(saved.entries.map(\.requestID)).count == saved.entries.count,
               saved.entries.count <= Self.maxEntries,
-              saved.entries.allSatisfy({
-                  $0.ownerToken == saved.ownerToken && $0.requestAttempts >= 0
-                      && $0.requestAttempts <= Self.retryDelays.count && $0.statusAttempts >= 0
-                      && $0.statusAttempts <= Self.statusPollDelays.count && $0.downloadAttempts >= 0
-                      && $0.downloadAttempts <= Self.downloadRetryDelays.count
-                      && (!$0.audioCached || $0.offer != nil) && $0.intent.id == $0.requestID
+              saved.entries.allSatisfy({ entry in
+                  entry.ownerToken == saved.ownerToken && entry.requestAttempts >= 0
+                      && entry.requestAttempts <= Self.retryDelays.count && entry.statusAttempts >= 0
+                      && entry.statusAttempts <= Self.statusPollDelays.count && entry.downloadAttempts >= 0
+                      && entry.downloadAttempts <= Self.downloadRetryDelays.count
+                      && (!entry.audioCached || entry.offer != nil) && entry.intent.id == entry.requestID
+                      && (saved.version < Self.version || (
+                          entry.intent.spokenTextSHA256 == entry.textHash
+                              && (entry.offer.map { $0.spokenTextSHA256 == entry.textHash } ?? true)
+                      ))
               }) else {
             isWritable = false
             bulletinAudioLog.error("The cached bulletin audio list is unreadable; automatic speech stays off.")
             return false
         }
+        isWritable = true
         if saved.ownerToken != owner {
             for entry in saved.entries { try? cache.removeAudio(for: entry.requestID, ownerToken: saved.ownerToken) }
             loadedOwner = owner
             entries = [:]
             verifiedAudio = [:]
             pendingBulletins = [:]
+            try? persist()
+        } else if saved.version < Self.version {
+            // Legacy offers did not attest the spoken copy; force fresh requests and audio.
+            for entry in saved.entries { try? cache.removeAudio(for: entry.requestID, ownerToken: owner) }
+            loadedOwner = owner
+            entries = [:]
+            verifiedAudio = [:]
             try? persist()
         } else {
             loadedOwner = owner
@@ -291,23 +428,24 @@ final class LibraryBulletinAudioManager {
     }
 
     private func admitPendingBulletins(owner: String, deviceID: String, limit: Int) {
-        let candidates = pendingBulletins.values
-            .filter { $0.expiresAt > now() }
+        let candidates = pendingBulletins
+            .filter { $0.value.expiresAt > now() }
             .sorted {
-                if $0.kind != $1.kind { return $0.kind == .alert }
-                if $0.severity != $1.severity { return $0.severity > $1.severity }
-                if $0.issuedAt != $1.issuedAt { return $0.issuedAt < $1.issuedAt }
-                return $0.id < $1.id
+                let lhs = $0.value, rhs = $1.value
+                if lhs.kind != rhs.kind { return lhs.kind == .alert }
+                if lhs.severity != rhs.severity { return lhs.severity > rhs.severity }
+                if lhs.issuedAt != rhs.issuedAt { return lhs.issuedAt < rhs.issuedAt }
+                return lhs.id < rhs.id
             }
         var admitted = 0
-        for bulletin in candidates {
-            guard entries.count < Self.maxEntries,
-                  let requestID = Self.requestID(for: bulletin, deviceID: deviceID), entries[requestID] == nil,
+        for (requestID, bulletin) in candidates {
+            guard entries.count < Self.maxEntries, entries[requestID] == nil,
                   let intent = try? LibraryIntent.requestBulletinAudio(
-                    bulletinID: bulletin.id, deviceID: deviceID, createdAt: now(), id: requestID) else { continue }
+                    bulletinID: bulletin.id, deviceID: deviceID,
+                    spokenTextSHA256: Self.textDigest(bulletin.text), createdAt: now(), id: requestID) else { continue }
             entries[requestID] = LibraryBulletinAudioEntry(
                 ownerToken: owner, bulletinID: bulletin.id, requestID: requestID,
-                issuedAt: bulletin.issuedAt, expiresAt: bulletin.expiresAt, textHash: Self.textHash(bulletin.text),
+                issuedAt: bulletin.issuedAt, expiresAt: bulletin.expiresAt, textHash: Self.textDigest(bulletin.text),
                 intent: intent, requestSent: false, requestAttempts: 0, statusAttempts: 0,
                 audioCached: false, downloadAttempts: 0, nextRequestAt: nil,
                 nextStatusAt: nil, nextDownloadAt: nil, offer: nil, failure: nil)
@@ -353,12 +491,19 @@ final class LibraryBulletinAudioManager {
               let pending = entries[entryID], pending.ownerToken == context.ownerToken,
               pending.offer == offer, !pending.audioCached, pending.failure == nil,
               pending.expiresAt > now() else { return }
+        guard pending.intent.spokenTextSHA256 == pending.textHash,
+              offer.spokenTextSHA256 == pending.textHash else {
+            rejectOffer(offer, entryID: entryID, owner: context.ownerToken)
+            return
+        }
         do {
             let sourceURL = try await storyAudioTransport.fetchStoryAudio(offer, expectedOwner: context.ownerToken) { _ in }
             defer { try? FileManager.default.removeItem(at: sourceURL) }
             guard await model.mediaContextIsCurrent(context, live: true),
                   let current = entries[entryID], current.ownerToken == context.ownerToken,
                   current.requestID == offer.requestID, current.bulletinID == offer.storyID,
+                  current.intent.spokenTextSHA256 == current.textHash,
+                  offer.spokenTextSHA256 == current.textHash,
                   current.expiresAt > now() else { return }
             let cache = self.cache
             let cachedURL = try await Task.detached(priority: .utility) {
@@ -366,7 +511,8 @@ final class LibraryBulletinAudioManager {
             }.value
             guard await model.mediaContextIsCurrent(context, live: true),
                   var saved = entries[entryID], saved.ownerToken == context.ownerToken,
-                  saved.offer == offer, !saved.audioCached else {
+                  saved.offer == offer, saved.intent.spokenTextSHA256 == saved.textHash,
+                  offer.spokenTextSHA256 == saved.textHash, !saved.audioCached else {
                 try? cache.removeAudio(for: offer.requestID, ownerToken: context.ownerToken)
                 return
             }
@@ -457,17 +603,29 @@ final class LibraryBulletinAudioManager {
     private static func requestID(for bulletin: Bulletin, deviceID: String) -> String? {
         guard !deviceID.isEmpty else { return nil }
         let identity = [
+            "bulletin-audio-v3",
             deviceID, bulletin.id,
             String(bulletin.issuedAt.timeIntervalSinceReferenceDate.bitPattern),
             String(bulletin.expiresAt.timeIntervalSinceReferenceDate.bitPattern),
-            textHash(bulletin.text),
+            textDigest(bulletin.text),
         ].joined(separator: "\0")
         let digest = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
         return "bulletin-audio-\(digest)"
     }
 
-    private static func textHash(_ text: String) -> String {
-        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    private static func retryRequestID() -> String { "bulletin-audio-retry-\(UUID().uuidString.lowercased())" }
+
+    private func matchingEntry(for bulletin: Bulletin, owner: String) -> LibraryBulletinAudioEntry? {
+        entries.values.first { $0.ownerToken == owner && Self.matches($0, bulletin: bulletin) }
+    }
+
+    private static func matches(_ entry: LibraryBulletinAudioEntry, bulletin: Bulletin) -> Bool {
+        entry.bulletinID == bulletin.id && entry.issuedAt == bulletin.issuedAt
+            && entry.expiresAt == bulletin.expiresAt && entry.textHash == textDigest(bulletin.text)
+    }
+
+    private static func textDigest(_ text: String) -> String {
+        MediaHash.sha256(text: text)
     }
 
     private static func retryDate(attempt: Int, now: Date) -> Date {
@@ -490,7 +648,20 @@ final class LibraryBulletinAudioManager {
         for requestID in requestIDs {
             guard localOwner == owner, var entry = entries[requestID], entry.ownerToken == owner,
                   entry.expiresAt > now(), let offer = entry.offer, entry.audioCached,
-                  let url = cache.url(for: offer, ownerToken: owner) else { continue }
+                  entry.bulletinID == offer.storyID else { continue }
+            guard entry.intent.spokenTextSHA256 == entry.textHash,
+                  offer.spokenTextSHA256 == entry.textHash else {
+                entry.offer = nil
+                entry.audioCached = false
+                entry.failure = .transferFailed
+                entry.nextDownloadAt = nil
+                entries[requestID] = entry
+                verifiedAudio.removeValue(forKey: requestID)
+                try? cache.removeAudio(for: requestID, ownerToken: owner)
+                try? persist()
+                continue
+            }
+            guard let url = cache.url(for: offer, ownerToken: owner) else { continue }
             if let verified = verifiedAudio[requestID], verified.ownerToken == owner,
                verified.offer == offer, verified.url.standardizedFileURL == url.standardizedFileURL,
                Self.fileIdentityMatches(url, verified: verified) { continue }
@@ -517,6 +688,19 @@ final class LibraryBulletinAudioManager {
     }
 
     private var modelIsQuarantined: Bool { model?.accountQuarantined ?? true }
+
+    private func rejectOffer(_ offer: LibraryStoryAudioOffer, entryID: String, owner: String) {
+        guard var entry = entries[entryID], entry.ownerToken == owner else { return }
+        entry.offer = nil
+        entry.audioCached = false
+        entry.failure = .transferFailed
+        entry.nextDownloadAt = nil
+        entry.nextStatusAt = nil
+        entries[entryID] = entry
+        verifiedAudio.removeValue(forKey: entryID)
+        try? cache.removeAudio(for: offer.requestID, ownerToken: owner)
+        try? persist()
+    }
 
     nonisolated private static func verifiedIdentity(
         _ url: URL, offer: LibraryStoryAudioOffer, ownerToken: String

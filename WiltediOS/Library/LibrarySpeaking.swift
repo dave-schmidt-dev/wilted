@@ -8,7 +8,11 @@ import WiltedLibrary
 protocol LibrarySpeaking: AnyObject {
     func prepare(_ bulletin: Bulletin)
     func refreshPreparedAudio() async
+    func bulletinAudioIssue(for bulletin: Bulletin) -> String?
+    func retryBulletinAudio(_ bulletin: Bulletin)
     func canSpeak(_ bulletin: Bulletin) -> Bool
+    /// Duration of the verified cached clip after it has started, when available.
+    var expectedPlaybackDuration: TimeInterval? { get }
     func speak(_ bulletin: Bulletin, onFinish: @escaping @MainActor () -> Void) -> Bool
     /// Kept for the generic settings preview; production returns false because it has no approved clip.
     func speak(_ text: String, onFinish: @escaping @MainActor () -> Void) -> Bool
@@ -18,7 +22,10 @@ protocol LibrarySpeaking: AnyObject {
 extension LibrarySpeaking {
     func prepare(_ bulletin: Bulletin) {}
     func refreshPreparedAudio() async {}
+    func bulletinAudioIssue(for bulletin: Bulletin) -> String? { nil }
+    func retryBulletinAudio(_ bulletin: Bulletin) {}
     func canSpeak(_ bulletin: Bulletin) -> Bool { true }
+    var expectedPlaybackDuration: TimeInterval? { nil }
     func speak(_ bulletin: Bulletin, onFinish: @escaping @MainActor () -> Void) -> Bool {
         speak(bulletin.text, onFinish: onFinish)
     }
@@ -31,6 +38,7 @@ final class LibraryBulletinAudioSpeaker: NSObject, LibrarySpeaking, AVAudioPlaye
     private var player: AVAudioPlayer?
     private var completion: (@MainActor () -> Void)?
     private var playingID: ObjectIdentifier?
+    private(set) var expectedPlaybackDuration: TimeInterval?
 
     init(model: LibraryAppModel) {
         audio = model.bulletinAudioManager
@@ -40,6 +48,10 @@ final class LibraryBulletinAudioSpeaker: NSObject, LibrarySpeaking, AVAudioPlaye
     func prepare(_ bulletin: Bulletin) { audio.prepare(bulletin) }
 
     func refreshPreparedAudio() async { await audio.refreshPreparedAudio() }
+
+    func bulletinAudioIssue(for bulletin: Bulletin) -> String? { audio.issue(for: bulletin) }
+
+    func retryBulletinAudio(_ bulletin: Bulletin) { audio.retry(bulletin) }
 
     func canSpeak(_ bulletin: Bulletin) -> Bool { audio.canSpeak(bulletin) }
 
@@ -51,9 +63,16 @@ final class LibraryBulletinAudioSpeaker: NSObject, LibrarySpeaking, AVAudioPlaye
         completion = onFinish
         player.volume = 1
         player.delegate = self
-        guard player.prepareToPlay(), player.play() else {
+        guard player.prepareToPlay(), player.duration.isFinite, player.duration > 0 else {
             self.player = nil
             completion = nil
+            return false
+        }
+        expectedPlaybackDuration = player.duration
+        guard player.play() else {
+            self.player = nil
+            completion = nil
+            expectedPlaybackDuration = nil
             return false
         }
         playingID = ObjectIdentifier(player)
@@ -70,6 +89,7 @@ final class LibraryBulletinAudioSpeaker: NSObject, LibrarySpeaking, AVAudioPlaye
         player = nil
         completion = nil
         playingID = nil
+        expectedPlaybackDuration = nil
     }
 
     nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {

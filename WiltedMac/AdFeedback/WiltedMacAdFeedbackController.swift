@@ -25,12 +25,16 @@ final class WiltedMacAdFeedbackController {
     private(set) var saveFailure: String?
 
     @ObservationIgnored let inbox: WiltedMacAdFeedbackInbox
+    @ObservationIgnored private let allowsExternalActions: Bool
     @ObservationIgnored var acknowledgementDuration: Duration = .seconds(8)
     @ObservationIgnored var now: @MainActor () -> Date = { Date() }
     @ObservationIgnored private var clearTask: Task<Void, Never>?
     @ObservationIgnored private var loaded = false
 
-    init(inbox: WiltedMacAdFeedbackInbox) { self.inbox = inbox }
+    init(inbox: WiltedMacAdFeedbackInbox, allowsExternalActions: Bool = true) {
+        self.inbox = inbox
+        self.allowsExternalActions = allowsExternalActions
+    }
 
     /// Presses that count for the ad corpus, newest first.
     var counted: [WiltedMacAdFeedbackEntry] { entries.filter(\.counts) }
@@ -41,6 +45,7 @@ final class WiltedMacAdFeedbackController {
         guard !loaded else { return }
         loaded = true
         entries = await inbox.all()
+        saveFailure = await inbox.recoveryFailureMessage()
     }
 
     /// Shows the acknowledgement at once, before anything is read or saved. The caller ends the
@@ -103,6 +108,21 @@ final class WiltedMacAdFeedbackController {
     func markHandled(_ id: String) async {
         let at = now()
         await perform { try await $0.markHandled(id: id, at: at) }
+    }
+
+    /// Drains only Wilted's owner-private external action queue through the same inbox writer.
+    func processPendingHandledActions() async {
+        await loadIfNeeded()
+        guard allowsExternalActions else { return }
+        let result = await inbox.processPendingHandledActions(at: now())
+        entries = await inbox.all()
+        if let failure = result.failure {
+            saveFailure = failure
+        } else if result.receipts.contains(where: { $0.outcome == .rejectedStale }) {
+            saveFailure = "A handled action was left unchanged because a report no longer matched its replay."
+        } else {
+            saveFailure = nil
+        }
     }
 
     private func perform(_ change: (WiltedMacAdFeedbackInbox) async throws -> Void) async {

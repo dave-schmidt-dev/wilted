@@ -17,7 +17,10 @@ struct LibraryNowPlayingHeadlineCard: View {
     var body: some View {
         if let bulletin {
             let isReading = controller.activeSpokenHeadline?.id == bulletin.id
-            let stateLabel = isReading ? "Reading this story" : "Last story read"
+                && controller.activeSpokenHeadline?.text == bulletin.text
+            let wasRead = controller.lastSpokenHeadline?.id == bulletin.id
+                && controller.lastSpokenHeadline?.text == bulletin.text
+            let stateLabel = isReading ? "Reading this story" : wasRead ? "Last story read" : "Story available"
             VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                 Label(
                     stateLabel,
@@ -49,6 +52,18 @@ struct LibraryNowPlayingHeadlineCard: View {
                         .wiltedFont(.utility)
                         .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                         .accessibilityIdentifier("wilted-player-headline-link-unavailable")
+                }
+                if let issue = controller.bulletinAudioIssue(for: bulletin) {
+                    VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+                        Text(issue)
+                            .wiltedFont(.utility)
+                            .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("wilted-player-headline-audio-issue")
+                        Button("Retry") { controller.retryBulletinAudio(bulletin) }
+                            .frame(minHeight: WiltedTheme.Spacing.minimumTouchTarget)
+                            .accessibilityIdentifier("wilted-player-headline-audio-retry")
+                    }
                 }
                 if let story = canonicalStory {
                     let request = model.listenNextRequest(forStoryID: story.id)

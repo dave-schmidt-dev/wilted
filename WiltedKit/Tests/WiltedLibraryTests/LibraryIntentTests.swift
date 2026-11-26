@@ -129,26 +129,48 @@ final class LibraryIntentTests: XCTestCase {
             story: story, isSaved: true, basedOnRevision: -1, deviceID: "phone"))
     }
 
-    func testBulletinAudioIntentCarriesOnlyTheBulletinIdentity() throws {
+    func testBulletinAudioIntentBindsExpectedCopyWithoutSendingIt() throws {
+        let spokenCopy = "This alert names a local area."
+        let digest = MediaHash.sha256(text: spokenCopy)
         let intent = try LibraryIntent.requestBulletinAudio(
-            bulletinID: "headline:fixture-42", deviceID: "phone", createdAt: created, id: "bulletin-audio-42")
+            bulletinID: "headline:fixture-42", deviceID: "phone", spokenTextSHA256: digest,
+            createdAt: created, id: "bulletin-audio-42")
         let data = try JSONEncoder().encode(intent)
         let encoded = String(decoding: data, as: UTF8.self)
 
         XCTAssertEqual(try JSONDecoder().decode(LibraryIntent.self, from: data), intent)
+        XCTAssertEqual(intent.spokenTextSHA256, digest)
         XCTAssertTrue(intent.action.isDecision)
         XCTAssertEqual(intent.action.entryID, try ItemID(rawValue: "item-invalid-url"))
         XCTAssertTrue(encoded.contains("headline:fixture-42"))
-        XCTAssertFalse(encoded.contains("weather"))
+        XCTAssertTrue(encoded.contains(digest))
+        XCTAssertFalse(encoded.contains(spokenCopy))
         XCTAssertFalse(encoded.contains("latitude"))
         XCTAssertFalse(encoded.contains("longitude"))
+
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        legacy.removeValue(forKey: "spokenTextSHA256")
+        let legacyData = try JSONSerialization.data(withJSONObject: legacy)
+        XCTAssertNil(try JSONDecoder().decode(LibraryIntent.self, from: legacyData).spokenTextSHA256,
+                     "a new build can still read an old phone request and reject it safely")
+
         let actionEncoder = JSONEncoder()
         actionEncoder.outputFormatting = [.sortedKeys]
         XCTAssertEqual(
             String(decoding: try actionEncoder.encode(intent.action), as: UTF8.self),
             #"{"requestBulletinAudio":{"bulletinID":"headline:fixture-42"}}"#)
+        XCTAssertThrowsError(try LibraryIntent.requestBulletinAudio(
+            bulletinID: "headline:fixture-42", deviceID: "phone", spokenTextSHA256: "not-a-digest"))
+        XCTAssertThrowsError(try LibraryIntent(
+            id: "bad-digest", deviceID: "phone", createdAt: created,
+            action: .keep(entryID: try item("a")), spokenTextSHA256: digest))
         XCTAssertThrowsError(try LibraryIntent.requestBulletinAudio(bulletinID: "", deviceID: "phone"))
         XCTAssertThrowsError(try LibraryIntent.requestBulletinAudio(bulletinID: String(repeating: "x", count: 1_025), deviceID: "phone"))
+    }
+
+    func testTextDigestUsesSharedCanonicalSHA256Encoding() {
+        XCTAssertEqual(MediaHash.sha256(text: "abc"),
+                       "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
     }
 
     func testShowStartOffsetIntentCarriesItsMacFieldRevision() throws {

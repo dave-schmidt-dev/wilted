@@ -326,7 +326,7 @@ final class WiltedMacNowPlayingTests: XCTestCase {
         XCTAssertFalse(pane.contains("currentPlaybackShareURL"), "the pane must not build its own share")
         let player = try WiltedMacHeadless.viewSource("WiltedMacPlayerContent.swift")
         let composer = try WiltedMacHeadless.viewSource("WiltedMacShareComposer.swift")
-        XCTAssertEqual(WiltedMacHeadless.occurrences(of: #".accessibilityLabel("Share")"#, in: composer), 1)
+        XCTAssertEqual(WiltedMacHeadless.occurrences(of: #".accessibilityLabel("Share with summary")"#, in: composer), 1)
         XCTAssertEqual(WiltedMacHeadless.occurrences(of: #".accessibilityIdentifier("wilted-player-share")"#, in: composer), 1)
         XCTAssertEqual(WiltedMacHeadless.occurrences(of: "currentPlaybackShareURL", in: player), 1,
                        "only the shared control reads it")

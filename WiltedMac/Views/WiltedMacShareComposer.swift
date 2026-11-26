@@ -4,19 +4,27 @@ import SwiftUI
 #if canImport(WiltedProducer)
 import WiltedProducer
 
-/// Owns a summary request and eight verified in-memory summaries.
+/// Stable selection identity: playback sessions can change without changing the source transcript.
+struct WiltedMacShareComposerKey: Hashable {
+    let store: ObjectIdentifier
+    let account: ObjectIdentifier?
+    let owner: String?
+    let generation: UInt64?
+    let item: String
+    let revision: String
+}
+
+/// Owns one item/revision summary request and a bounded verified cache.
 @MainActor @Observable
 final class WiltedMacShareComposerState {
     struct Preview { let text: String; let title: String; let url: URL? }
     private struct CacheKey: Hashable {
         let store: ObjectIdentifier
-        let controller: ObjectIdentifier
         let account: ObjectIdentifier?
         let owner: String?
         let generation: UInt64?
         let item: String
         let revision: String
-        let session: String
         let transcriptDigest: String
         let modelDigest: String
         let semanticFingerprint: String
@@ -27,9 +35,10 @@ final class WiltedMacShareComposerState {
         let semantic: String
         let modelDigest: String
     }
-    let model: WiltedMacModel
+    @ObservationIgnored weak var model: WiltedMacModel?
     let service: TranscriptSummaryService
     let configuration: TranscriptSummaryService.Configuration
+    let selectionKey: WiltedMacShareComposerKey?
     private let fingerprint: @Sendable () async -> String?
     var presented = false
     private(set) var includeSummary = false
@@ -43,12 +52,14 @@ final class WiltedMacShareComposerState {
     private var order: [CacheKey] = []
     var cachedCount: Int { cache.count }
 
-    init(model: WiltedMacModel, service: TranscriptSummaryService = TranscriptSummaryService(),
+    init(model: WiltedMacModel, selectionKey: WiltedMacShareComposerKey? = nil,
+         service: TranscriptSummaryService = TranscriptSummaryService(),
          configuration: TranscriptSummaryService.Configuration = .resolved(),
          fingerprint: @escaping @Sendable () async -> String? = {
              await Task.detached(priority: .utility) { PodcastPreparationPipeline.resolvedSemanticFingerprint() }.value
          }) {
-        self.model = model; self.service = service; self.configuration = configuration; self.fingerprint = fingerprint
+        self.model = model; self.selectionKey = selectionKey
+        self.service = service; self.configuration = configuration; self.fingerprint = fingerprint
     }
 
     func setIncludeSummary(_ value: Bool) {
@@ -59,9 +70,10 @@ final class WiltedMacShareComposerState {
         activeID = nil; request?.cancel()
         includeSummary = false; progress = nil; preview = nil; failure = nil; completed = nil
     }
+    func cancelAndDismiss() { cancel(); presented = false }
     func present() {
         presented = true
-        guard let completed, preview != nil else { return }
+        guard let model, !model.isClosingTemporaryState, let completed else { return }
         // Do not expose a retained preview until its account, transcript and model
         // have been checked again after the panel was closed.
         preview = nil
@@ -73,7 +85,12 @@ final class WiltedMacShareComposerState {
                     onProgress: progressHandler(id))
                 guard eligible(id) else { return }
                 guard digest == completed.modelDigest else { invalidateContext(); return }
-                guard await current(id, completed.candidate.context, completed.semantic) else { return }
+                guard await owned(id, completed.candidate.context, completed.semantic) else { return }
+                guard eligible(id) else { return }
+                guard model.matchesShareContext(completed.candidate.context) else {
+                    activeID = nil; request = nil; progress = nil
+                    return
+                }
                 activeID = nil; request = nil; progress = nil; preview = completed.candidate.preview
             } catch {
                 if activeID == id { invalidateContext() }
@@ -82,13 +99,31 @@ final class WiltedMacShareComposerState {
     }
     func dismiss() { presented = false }
     func teardown() { presented = false; cancel() }
-    func invalidateContext() { cancel(); cache.removeAll(); order.removeAll() }
+    func invalidateContext() { cancel(); cache.removeAll(); order.removeAll(); presented = false }
     func waitForCompletion() async { await request?.value }
+    func startOrAttach() {
+        guard let model, !model.isClosingTemporaryState,
+              selectionKey == nil || model.shareComposerSelectionIdentity == selectionKey else { return }
+        presented = true
+        if activeID != nil, request != nil { return }
+        if activeID == nil { request = nil }
+        if completed != nil { present(); return }
+        if failure != nil { return }
+        setIncludeSummary(true)
+    }
     func payload(_ preview: Preview) -> String {
         preview.url.map { "\(preview.text)\n\n\($0.absoluteString)" } ?? preview.text
     }
 
     func summarize() {
+        guard let model, !model.isClosingTemporaryState,
+              selectionKey == nil || model.shareComposerSelectionIdentity == selectionKey else { return }
+        let selection: WiltedMacShareSelection
+        do { selection = try model.captureShareSelection() }
+        catch {
+            cancel(); includeSummary = true; failure = WiltedMacShareComposer.message(for: error)
+            return
+        }
         cancel(); includeSummary = true
         let id = UUID(); activeID = id; progress = "Loading local transcript…"
         request = Task { @MainActor [weak self] in
@@ -97,14 +132,14 @@ final class WiltedMacShareComposerState {
                 guard let semantic = await fingerprint(), eligible(id) else {
                     throw WiltedMacShareContextError.unavailable
                 }
-                let context = try await model.captureShareContext()
-                guard await current(id, context, semantic) else { return }
+                let context = try await model.captureShareContext(for: selection)
+                guard await owned(id, context, semantic) else { return }
                 let digest = try await TranscriptSummaryService.modelIdentity(at: configuration.modelURL, requestID: id,
                     onProgress: progressHandler(id))
-                guard await current(id, context, semantic) else { return }
-                let key = CacheKey(store: context.storeID, controller: context.controllerID, account: context.accountID,
+                guard await owned(id, context, semantic) else { return }
+                let key = CacheKey(store: context.storeID, account: context.accountID,
                     owner: context.binding?.ownerToken, generation: context.accountGateGeneration,
-                    item: context.itemID.rawValue, revision: context.revisionID.rawValue, session: context.sessionID,
+                    item: context.itemID.rawValue, revision: context.revisionID.rawValue,
                     transcriptDigest: context.transcriptDigest, modelDigest: digest, semanticFingerprint: semantic)
                 let candidate: Cached
                 if let retained = cache[key] { candidate = retained }
@@ -113,7 +148,7 @@ final class WiltedMacShareComposerState {
                     let result = try await service.summarize(transcript: context.transcript, modelURL: configuration.modelURL,
                         requestID: id, expectedModelIdentity: digest, onProgress: progressHandler(id))
                     guard result.requestID == id, result.transcriptDigest == context.transcriptDigest,
-                          result.modelIdentity == digest, await current(id, context, semantic) else { return }
+                          result.modelIdentity == digest, await owned(id, context, semantic) else { return }
                     candidate = Cached(context: context, preview: Preview(text: result.summary, title: context.title,
                                                                         url: context.shareURL), promptIdentity: result.promptIdentity)
                 }
@@ -121,14 +156,15 @@ final class WiltedMacShareComposerState {
                 // after the asynchronous context/worker boundary as well.
                 let currentDigest = try await TranscriptSummaryService.modelIdentity(at: configuration.modelURL, requestID: id,
                     onProgress: progressHandler(id))
-                guard currentDigest == digest, await current(id, context, semantic) else { return }
+                guard currentDigest == digest, await owned(id, context, semantic) else { return }
                 if cache[key] == nil {
                     cache[key] = candidate; order.append(key)
                     if order.count > 8 { cache.removeValue(forKey: order.removeFirst()) }
                 }
                 completed = Completed(candidate: candidate, semantic: semantic, modelDigest: digest)
                 activeID = nil; request = nil
-                progress = nil; failure = nil; preview = candidate.preview
+                progress = nil; failure = nil
+                preview = model.matchesShareContext(context) ? candidate.preview : nil
             } catch is CancellationError { } catch {
                 guard eligible(id) else { return }
                 activeID = nil; request = nil
@@ -137,13 +173,14 @@ final class WiltedMacShareComposerState {
         }
     }
     private func eligible(_ id: UUID) -> Bool {
-        activeID == id && includeSummary && !Task.isCancelled && !model.isClosingTemporaryState
+        activeID == id && includeSummary && !Task.isCancelled && model?.isClosingTemporaryState == false
     }
-    private func current(_ id: UUID, _ context: WiltedMacShareContext, _ semantic: String) async -> Bool {
+    private func owned(_ id: UUID, _ context: WiltedMacShareContext, _ semantic: String) async -> Bool {
         guard eligible(id) else { return false }
+        guard let model else { return false }
         let owned = await model.stillOwnsShareContext(context)
         guard eligible(id) else { return false }
-        guard owned, await fingerprint() == semantic, eligible(id), model.matchesShareContext(context) else {
+        guard owned, await fingerprint() == semantic, eligible(id) else {
             if activeID == id { invalidateContext() }
             return false
         }
@@ -165,34 +202,33 @@ struct WiltedMacShareComposer: View {
     init(model: WiltedMacModel, service: TranscriptSummaryService = TranscriptSummaryService(),
          configuration: TranscriptSummaryService.Configuration = .resolved()) {
         self.model = model
-        _state = State(initialValue: WiltedMacShareComposerState(model: model, service: service, configuration: configuration))
+        _state = State(initialValue: model.shareComposerState(service: service, configuration: configuration))
     }
     var body: some View {
         @Bindable var state = state
         Menu {
             WiltedMacPlaybackShareItems(model: model)
-            Button("Transcript summary…") { state.present() }
         } label: {
-            Label("Share", systemImage: "square.and.arrow.up")
+            ViewThatFits(in: .horizontal) {
+                Label("Share with summary", systemImage: "square.and.arrow.up")
+                Label("Share with summary", systemImage: "square.and.arrow.up").labelStyle(.iconOnly)
+            }
+        } primaryAction: {
+            state.startOrAttach()
         }
-            .help("Share")
-            .accessibilityLabel("Share")
+            .help("Share with summary; use the menu for other share choices")
+            .accessibilityLabel("Share with summary")
+            .accessibilityHint("Create and review a local summary. Open the menu for a page or title share.")
             .accessibilityIdentifier("wilted-player-share")
             .popover(isPresented: $state.presented) {
-                WiltedMacShareComposerPanel(includeSummary: Binding(get: { state.includeSummary }, set: state.setIncludeSummary),
-                    progress: state.progress, failure: state.failure,
+                WiltedMacShareComposerPanel(progress: state.progress, failure: state.failure,
                     preview: state.preview.map { (text: $0.text, title: $0.title, url: $0.url) },
-                    onRetry: state.summarize, onCancel: state.cancel,
+                    onRetry: state.summarize, onCancel: state.cancelAndDismiss,
                     payload: { value in state.payload(.init(text: value.text, title: value.title, url: value.url)) }).padding()
             }
             .onChange(of: state.presented) { _, visible in if !visible { state.dismiss() } }
-            .onChange(of: model.playback?.itemID) { state.invalidateContext() }
-            .onChange(of: model.playback?.revisionID) { state.invalidateContext() }
-            .onChange(of: model.playback?.sessionID) { state.invalidateContext() }
-            .onChange(of: model.libraryAccountStatus) { state.invalidateContext() }
-            .onChange(of: model.libraryAccount?.binding) { state.invalidateContext() }
             .onChange(of: model.isClosingTemporaryState) { state.invalidateContext() }
-            .onDisappear { state.teardown() }
+            .onDisappear { state.dismiss() }
     }
     static func message(for error: Error) -> String {
         switch error {
@@ -211,7 +247,6 @@ struct WiltedMacShareComposer: View {
 #endif
 
 struct WiltedMacShareComposerPanel: View {
-    @Binding var includeSummary: Bool
     let progress: String?
     let failure: String?
     let preview: (text: String, title: String, url: URL?)?
@@ -220,7 +255,6 @@ struct WiltedMacShareComposerPanel: View {
     let payload: ((text: String, title: String, url: URL?)) -> String
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Toggle("Include transcript summary", isOn: $includeSummary)
             if let progress {
                 ProgressView(progress).controlSize(.small).accessibilityIdentifier("wilted-share-summary-progress")
                 Text("You can close this panel while this runs.")

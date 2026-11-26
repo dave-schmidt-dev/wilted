@@ -28,6 +28,36 @@ final class WiltedMacHeadlineToastTests: XCTestCase {
         XCTAssertEqual(preferences.integer(forKey: WiltedMacHeadlineToastPreference.key), 35)
     }
 
+    @MainActor
+    func testTickerPreferenceDefaultsOffAndPersistsItsSelection() {
+        let preferences = WiltedMacTestPreferences.ephemeral()
+        let state = WiltedMacHeadlineToastPreferenceState(preferences: preferences)
+
+        XCTAssertFalse(state.tickerEnabled)
+        state.setTickerEnabled(true)
+
+        XCTAssertTrue(state.tickerEnabled)
+        XCTAssertTrue(preferences.bool(forKey: WiltedMacHeadlineToastPreference.tickerEnabledKey))
+        XCTAssertTrue(WiltedMacHeadlineToastPreferenceState(preferences: preferences).tickerEnabled)
+    }
+
+    func testTickerMotionStopsForReducedMotionHoverKeyboardFocusAndStoryActions() {
+        XCTAssertTrue(WiltedMacHeadlineTickerMotion.shouldAutoScroll(
+            reduceMotion: false, isHovering: false, hasKeyboardFocus: false,
+            isPresentingStory: false, storyCount: 2))
+        for condition in [
+            (true, false, false, false, 2),
+            (false, true, false, false, 2),
+            (false, false, true, false, 2),
+            (false, false, false, true, 2),
+            (false, false, false, false, 1)
+        ] {
+            XCTAssertFalse(WiltedMacHeadlineTickerMotion.shouldAutoScroll(
+                reduceMotion: condition.0, isHovering: condition.1, hasKeyboardFocus: condition.2,
+                isPresentingStory: condition.3, storyCount: condition.4))
+        }
+    }
+
     func testSpeakingEventShowsOnceAndAccountResetAllowsNewStories() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let story = try LibraryHeadlineStory(

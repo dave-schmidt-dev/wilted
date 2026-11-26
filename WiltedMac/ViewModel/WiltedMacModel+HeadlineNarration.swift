@@ -382,7 +382,7 @@ final class WiltedMacHeadlineBulletinSpeaker: BulletinSpeaking {
     func speak(_ text: String, playbackVolume: Float, finished: @escaping @MainActor () -> Void) -> Bool {
         stop()
         guard let voiceID = selectedVoice(), !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              text.utf8.count <= 4_096 else { return false }
+              text.utf8.count <= ArticleNarrationCoordinator.maximumShortTextUTF8Bytes else { return false }
         return speakShortText(text, voiceID: voiceID, playbackVolume: playbackVolume, finished: finished)
     }
 

@@ -80,26 +80,52 @@ public struct NWSAlert: Equatable, Sendable {
     public let event: String
     public let areaDesc: String
     public let severity: String
+    public let urgency: String?
+    public let certainty: String?
     public let messageType: String
     public let headline: String?
+    public let description: String?
+    public let instruction: String?
     public let sent: Date?
+    public let rawSent: String?
+    public let effective: Date?
+    public let rawEffective: String?
+    public let onset: Date?
+    public let rawOnset: String?
     public let expires: Date?
+    public let rawExpires: String?
     public let ends: Date?
+    public let rawEnds: String?
     /// Identifiers of earlier alerts this one replaces (`references[].identifier`).
     public let references: [String]
 
     public init(id: String, event: String, areaDesc: String, severity: String, messageType: String = "Alert",
-                headline: String? = nil, sent: Date? = nil, expires: Date? = nil, ends: Date? = nil,
-                references: [String] = []) {
+                headline: String? = nil, urgency: String? = nil, certainty: String? = nil,
+                description: String? = nil, instruction: String? = nil,
+                sent: Date? = nil, effective: Date? = nil, onset: Date? = nil,
+                expires: Date? = nil, ends: Date? = nil, references: [String] = [],
+                rawSent: String? = nil, rawEffective: String? = nil, rawOnset: String? = nil,
+                rawExpires: String? = nil, rawEnds: String? = nil) {
         self.id = id
         self.event = event
         self.areaDesc = areaDesc
         self.severity = severity
+        self.urgency = urgency
+        self.certainty = certainty
         self.messageType = messageType
         self.headline = headline
+        self.description = description
+        self.instruction = instruction
         self.sent = sent
+        self.rawSent = rawSent
+        self.effective = effective
+        self.rawEffective = rawEffective
+        self.onset = onset
+        self.rawOnset = rawOnset
         self.expires = expires
+        self.rawExpires = rawExpires
         self.ends = ends
+        self.rawEnds = rawEnds
         self.references = references
     }
 }
@@ -195,6 +221,12 @@ public actor NWSClient {
         let canonicalURL = "https://\(Self.host)/alerts/\(alert.id)"
         guard alert.id == id || canonicalURL == id else { throw NWSError.alertIdentityMismatch }
         return alert
+    }
+
+    /// Returns the official fixed-host alert URL only for a validated public NWS identity.
+    public nonisolated static func publicAlertURL(for id: String) -> URL? {
+        guard let urn = try? alertURN(from: id) else { return nil }
+        return URL(string: "https://\(host)/alerts/\(urn)")
     }
 
     /// Forecast for a location. A 404 means the office or grid mapping moved, so the point is
@@ -364,7 +396,15 @@ public actor NWSClient {
             id: id, event: event, areaDesc: props["areaDesc"] as? String ?? "",
             severity: props["severity"] as? String ?? "Unknown",
             messageType: props["messageType"] as? String ?? "Alert",
-            headline: props["headline"] as? String, sent: date(props["sent"]),
-            expires: date(props["expires"]), ends: date(props["ends"]), references: references)
+            headline: props["headline"] as? String,
+            urgency: props["urgency"] as? String,
+            certainty: props["certainty"] as? String,
+            description: props["description"] as? String,
+            instruction: props["instruction"] as? String,
+            sent: date(props["sent"]), effective: date(props["effective"]), onset: date(props["onset"]),
+            expires: date(props["expires"]), ends: date(props["ends"]), references: references,
+            rawSent: props["sent"] as? String, rawEffective: props["effective"] as? String,
+            rawOnset: props["onset"] as? String, rawExpires: props["expires"] as? String,
+            rawEnds: props["ends"] as? String)
     }
 }

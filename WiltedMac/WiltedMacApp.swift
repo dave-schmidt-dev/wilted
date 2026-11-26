@@ -115,6 +115,9 @@ struct WiltedMacApp: App {
                 // A fixture switch is a fresh launch to the view tree: no
                 // selection, sheet or sizing survives from the previous model.
                 .id(host.generation)
+                .onOpenURL { url in
+                    Task { await Self.handleOpenURL(url, model: model) }
+                }
                 // Scene phase reports that the windows went away, which is
                 // not the same event as quitting and must not stop the audio.
                 // A normal quit already drained in `applicationShouldTerminate`;
@@ -184,6 +187,18 @@ struct WiltedMacApp: App {
                 model.checkpointForBackground()
             }
         }
+    }
+
+    /// The only URL action is an inert wake-up for the app's own private queue.
+    /// Hosted tests and fixtures never consume queued owner actions.
+    @MainActor
+    static func handleOpenURL(
+        _ url: URL,
+        model: WiltedMacModel
+    ) async {
+        guard url.absoluteString == "wilted://ad-feedback/process",
+              !WiltedMacModel.hostsTests, !model.fixtureMode else { return }
+        await model.adFeedback.processPendingHandledActions()
     }
 
     /// Puts a fixture run's window wholly on the screen that owns the menu bar.

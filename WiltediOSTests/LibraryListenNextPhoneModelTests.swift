@@ -27,7 +27,10 @@ actor ListenNextAudioFixture: LibraryStoryAudioTransport {
     }
 
     func setStatus(_ status: LibraryListenNextStatus) { statuses[status.requestID] = status }
-    func publishReadyBulletinStatus(for intent: LibraryIntent, at date: Date, revision: UInt64 = 1) throws {
+    func publishReadyBulletinStatus(
+        for intent: LibraryIntent, at date: Date, revision: UInt64 = 1,
+        includeSpokenTextDigest: Bool = true, digestOverride: String? = nil
+    ) throws {
         guard case let .requestBulletinAudio(bulletinID) = intent.action else { return }
         let attributes = try FileManager.default.attributesOfItem(atPath: sourceFile.path)
         guard let byteCount = (attributes[.size] as? NSNumber)?.int64Value else {
@@ -38,7 +41,8 @@ actor ListenNextAudioFixture: LibraryStoryAudioTransport {
             voiceID: "casey-kasem", voiceRevision: "casey-kasem-short-v1",
             audioRevision: RevisionID(rawValue: "rev-bulletin-audio"),
             contentHash: try MediaHash.sha256(fileAt: sourceFile), byteCount: byteCount,
-            mediaType: "audio/mp4", durationSeconds: 2)
+            mediaType: "audio/mp4", durationSeconds: 2,
+            spokenTextSHA256: digestOverride ?? (includeSpokenTextDigest ? intent.spokenTextSHA256 : nil))
         statuses[intent.id] = try LibraryListenNextStatus(
             requestID: intent.id, storyID: bulletinID, requesterDeviceID: intent.deviceID,
             phase: .ready, statusRevision: revision, updatedAt: date,

@@ -73,6 +73,7 @@ struct WiltedMacReportsCard: View {
                             .accessibilityIdentifier("wilted-reports-alerts")
                         note("Checks for local National Weather Service alerts using this Mac’s location.",
                              id: "wilted-reports-weather-explanation")
+                        WiltedMacLastWeatherAlertDisclosure(bulletin: model.bulletinHub.lastSpokenWeatherAlert)
                         Toggle("Read headlines aloud", isOn: reportsBinding(\.headlinesEnabled))
                             .accessibilityIdentifier("wilted-reports-headlines")
                         note("Reads eligible posts from your headline feeds at an ad break.",
@@ -83,6 +84,11 @@ struct WiltedMacReportsCard: View {
                         topicsSection
                             .padding(.leading, WiltedTheme.Spacing.large)
                             .disabled(!settings.reportEnabled && !(settings.interruptionsEnabled && settings.headlinesEnabled))
+                        Toggle("Scrolling news ticker", isOn: Binding(get: { model.headlineTickerEnabled },
+                            set: { model.headlineTickerEnabled = $0 }))
+                            .accessibilityIdentifier("wilted-reports-headline-ticker")
+                        note("Shows recent stories even when spoken bulletins are off. Select one to open the article, queue its audio after the current episode, or save it to Notebook.",
+                             id: "wilted-reports-headline-ticker-explanation")
                         Stepper(
                             value: Binding(
                                 get: { model.headlineToastDurationSeconds },

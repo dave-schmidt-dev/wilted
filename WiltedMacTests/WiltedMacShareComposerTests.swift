@@ -29,7 +29,12 @@ final class WiltedMacShareComposerTests: XCTestCase {
         let menuEnd = try XCTUnwrap(composer.range(of: "} label:", range: menuStart.upperBound..<composer.endIndex))
         let items = composer[menuStart.upperBound..<menuEnd.lowerBound]
         XCTAssertTrue(items.contains("WiltedMacPlaybackShareItems(model: model)"))
-        XCTAssertTrue(items.contains(#"Button("Transcript summary…") { state.present() }"#))
+        XCTAssertTrue(composer.contains(#"Label("Share with summary", systemImage: "square.and.arrow.up")"#))
+        XCTAssertTrue(composer.contains("} primaryAction: {\n            state.startOrAttach()"),
+                      "the visible Share with summary face starts work in one click")
+        XCTAssertTrue(composer.contains(".accessibilityHint(\"Create and review a local summary."))
+        XCTAssertTrue(composer.contains("if let preview {"), "the share control appears only after a verified preview exists")
+        XCTAssertTrue(composer.contains("ShareLink(item: payload(preview)"), "sending remains an explicit follow-up action")
         XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Menu {", in: composer), 1)
         let playerStart = try XCTUnwrap(player.range(of: "struct WiltedMacPlaybackShareLink:"))
         let shippingBranch = try XCTUnwrap(player.range(of: "#else", range: playerStart.upperBound..<player.endIndex))
@@ -54,28 +59,6 @@ final class WiltedMacShareComposerTests: XCTestCase {
                        "Select an available local model and try again.")
         XCTAssertEqual(WiltedMacShareComposer.message(for: TranscriptSummaryError.malformedResponse),
                        "The local summary could not be verified. Try again.")
-    }
-
-    func testFourComposerStatesRenderThroughTheShippingPanel() throws {
-        let states: [(String, String?, String?, (String, String, URL?)?)] = [
-            ("off", nil, nil, nil),
-            ("progress", "Summarizing locally…", nil, nil),
-            ("preview", nil, nil, ("Full locally generated summary for review.", "Episode", URL(string: "https://example.test/episode"))),
-            ("error", nil, "The local model is unavailable.", nil)
-        ]
-        for (name, progress, failure, preview) in states {
-            let view = WiltedMacShareComposerPanel(includeSummary: .constant(name != "off"), progress: progress, failure: failure,
-                preview: preview.map { (text: $0.0, title: $0.1, url: $0.2) }, onRetry: {}, onCancel: {},
-                payload: { value in value.url.map { "\(value.text)\n\n\($0.absoluteString)" } ?? value.text })
-            let text = try WiltedMacHeadless.recognizedText(view.padding(), size: CGSize(width: 430, height: 360)).joined(separator: " ")
-            XCTAssertTrue(text.contains("Include transcript summary"), "\(name): \(text)")
-            if let progress {
-                XCTAssertTrue(text.contains(progress.trimmingCharacters(in: CharacterSet(charactersIn: ".…"))), "\(name): \(text)")
-                XCTAssertTrue(text.contains("close this panel"), "\(name): \(text)")
-            }
-            if let failure { XCTAssertTrue(text.contains(failure), "\(name): \(text)") }
-            if preview != nil { XCTAssertTrue(text.contains("Preview"), "\(name): \(text)") }
-        }
     }
 
     func testActualLoadedTranscriptAndMetadataIgnoreConflictingBrowsedArticleAndNotes() async throws {
@@ -197,8 +180,96 @@ final class WiltedMacShareComposerTests: XCTestCase {
         XCTAssertFalse(state.includeSummary)
     }
 
+    func testOneClickStartsSummaryAndAtoBtoAReturnReattachesWithoutShowingWrongPreview() async throws {
+        let rig = try await realRig()
+        let aRunner = ComposerRunner(held: true)
+        let aSemantic = ComposerFingerprintGate()
+        let aState = rig.model.shareComposerState(service: TranscriptSummaryService(runner: aRunner),
+            configuration: .init(modelURL: rig.modelURL), fingerprint: { await aSemantic.value() })
+        aState.startOrAttach()
+        XCTAssertTrue(aState.presented, "one Share with summary action opens feedback immediately")
+        await aSemantic.waitUntilHeld()
+
+        let b = try await addSecondEpisode(to: rig)
+        let bController = PlaybackController(store: rig.store, backend: WiltedFixturePlaybackBackend())
+        try await bController.load(revision: b.revision, mediaURL: b.audioURL)
+        rig.model.playback = bController
+
+        let bRunner = ComposerRunner()
+        let bSemantic = ComposerSemantic()
+        let bState = rig.model.shareComposerState(service: TranscriptSummaryService(runner: bRunner),
+            configuration: .init(modelURL: rig.modelURL), fingerprint: { await bSemantic.value() })
+        XCTAssertFalse(aState === bState, "each transcript has independent progress and preview")
+        bState.startOrAttach()
+        await bState.waitForCompletion()
+        XCTAssertEqual(bState.preview?.text, "Summary of: " + b.text)
+        XCTAssertNil(aState.preview, "episode A's preview is never exposed while B is selected")
+
+        // Playback has moved before A's first async snapshot read begins.
+        await aSemantic.release()
+        await aRunner.waitUntilHeld()
+        let aInput = await aRunner.lastTranscript()
+        XCTAssertEqual(aInput, rig.text, "the one-click action is bound to A before any await")
+
+        await aRunner.release()
+        await aState.waitForCompletion()
+        XCTAssertNil(aState.preview, "completion while B is selected keeps A hidden")
+        XCTAssertEqual(aState.cachedCount, 1, "A's verified result remains ready in its own state")
+        let aCallsBeforeReturn = await aRunner.count()
+        XCTAssertEqual(aCallsBeforeReturn, 1)
+
+        let returnToA = PlaybackController(store: rig.store, backend: WiltedFixturePlaybackBackend())
+        try await returnToA.load(revision: rig.revision, mediaURL: rig.audioURL)
+        rig.model.playback = returnToA
+        let reattached = rig.model.shareComposerState(service: TranscriptSummaryService(runner: ComposerRunner()),
+            configuration: .init(modelURL: rig.modelURL), fingerprint: { await aSemantic.value() })
+        XCTAssertTrue(reattached === aState, "returning to the same owner and revision reuses A's job state")
+        reattached.startOrAttach()
+        XCTAssertNil(reattached.preview, "preview stays hidden during revalidation")
+        await reattached.waitForCompletion()
+        XCTAssertEqual(reattached.preview?.text, "Summary of: " + rig.text)
+        XCTAssertEqual(reattached.preview?.title, "Loaded store episode")
+        let aCallsAfterReturn = await aRunner.count()
+        XCTAssertEqual(aCallsAfterReturn, 1, "returning to A reuses the ready summary")
+        XCTAssertEqual(bState.preview?.text, "Summary of: " + b.text)
+    }
+
+    func testSameModelLibraryReloadKeepsHeldSummaryAttachedToItsRevision() async throws {
+        let rig = try await realRig()
+        let runner = ComposerRunner(held: true)
+        let semantic = ComposerSemantic()
+        let service = TranscriptSummaryService(runner: runner)
+        let configuration = TranscriptSummaryService.Configuration(modelURL: rig.modelURL)
+        let state = rig.model.shareComposerState(service: service, configuration: configuration,
+            fingerprint: { await semantic.value() })
+        let selection = rig.model.shareComposerSelectionIdentity
+
+        state.startOrAttach()
+        await runner.waitUntilHeld()
+        state.dismiss()
+        await rig.model.reloadLibraryRows()
+
+        XCTAssertEqual(rig.model.shareComposerSelectionIdentity, selection,
+                       "a same-store library refresh preserves the selected item and revision")
+        let reattached = rig.model.shareComposerState(service: service, configuration: configuration,
+            fingerprint: { await semantic.value() })
+        XCTAssertTrue(reattached === state, "a same-model reload keeps the held job in its registry")
+        reattached.startOrAttach()
+        XCTAssertTrue(reattached.presented)
+        let callsWhileHeld = await runner.count()
+        XCTAssertEqual(callsWhileHeld, 1, "reattaching after reload does not start a second worker")
+
+        await runner.release()
+        await reattached.waitForCompletion()
+        XCTAssertEqual(reattached.preview?.text, "Summary of: " + rig.text)
+        XCTAssertEqual(reattached.preview?.title, "Loaded store episode")
+        XCTAssertEqual(reattached.preview?.url, URL(string: "https://example.test/loaded"))
+        let callsAfterReload = await runner.count()
+        XCTAssertEqual(callsAfterReload, 1)
+    }
+
     func testReopeningRejectsCompletedPreviewAfterContextChanges() async throws {
-        for mode in ["transcript", "owner", "model", "worker", "playback"] {
+        for mode in ["transcript", "owner", "model", "worker"] {
             let rig = try await realRig(); let runner = ComposerRunner(); let semantic = ComposerSemantic()
             let state = composer(rig, runner, semantic)
             state.presented = true; state.setIncludeSummary(true); await state.waitForCompletion()
@@ -213,10 +284,7 @@ final class WiltedMacShareComposerTests: XCTestCase {
             case "model":
                 try Data("changed synthetic model".utf8).write(to: rig.modelURL)
             case "worker": await semantic.set("worker-source-v2")
-            default:
-                let replacement = PlaybackController(store: rig.store, backend: WiltedFixturePlaybackBackend())
-                try await replacement.load(revision: rig.revision, mediaURL: rig.audioURL)
-                rig.model.playback = replacement
+            default: XCTFail("Unhandled test mode: \(mode)")
             }
             state.present()
             XCTAssertNil(state.preview, mode)
@@ -227,16 +295,12 @@ final class WiltedMacShareComposerTests: XCTestCase {
         }
     }
 
-    func testReloadAndDurableOwnerChangeWhileHeldCannotDisplayOrCache() async throws {
-        for mode in ["reload", "owner", "close"] {
+    func testDurableOwnerChangeAndCloseWhileHeldCannotDisplayOrCache() async throws {
+        for mode in ["owner", "close"] {
             let rig = try await realRig(); let runner = ComposerRunner(held: true); let state = composer(rig, runner)
             state.presented = true; state.setIncludeSummary(true); await runner.waitUntilHeld()
             state.dismiss()
-            if mode == "reload" {
-                let replacement = PlaybackController(store: rig.store, backend: WiltedFixturePlaybackBackend())
-                try await replacement.load(revision: rig.revision, mediaURL: rig.audioURL)
-                rig.model.playback = replacement
-            } else if mode == "owner" {
+            if mode == "owner" {
                 try await rig.store.save(libraryAccountBinding: LocalLibraryAccountBinding(state: .bound, ownerToken: CloudKitAccountIdentity.token(for: "share-changed-synthetic-owner")))
             } else { await rig.model.close() }
             await runner.release(); await state.waitForCompletion()
@@ -278,35 +342,6 @@ final class WiltedMacShareComposerTests: XCTestCase {
         }
     }
 
-    func testFourShippingPanelPNGsAreRetained() throws {
-        let states: [(String, String?, String?, (String, String, URL?)?)] = [
-            ("off", nil, nil, nil), ("progress", "Summarizing locally…", nil, nil),
-            ("preview", nil, nil, ("Full locally generated summary for review.", "Episode", nil)),
-            ("error", nil, "The local model is unavailable.", nil)
-        ]
-        let size = CGSize(width: 430, height: 360)
-        let page = WiltedTheme.color(.page, scheme: .light)
-        for (name, progress, failure, preview) in states {
-            let panel = WiltedMacShareComposerPanel(includeSummary: .constant(name != "off"), progress: progress, failure: failure,
-                preview: preview.map { (text: $0.0, title: $0.1, url: $0.2) }, onRetry: {}, onCancel: {}, payload: { $0.text })
-            let capture = ZStack(alignment: .topLeading) {
-                page
-                panel.padding()
-            }
-            .frame(width: size.width, height: size.height, alignment: .topLeading)
-            .background(page)
-            .environment(\.colorScheme, .light)
-            let bitmap = try WiltedMacHeadless.render(capture, size: size)
-            XCTAssertEqual(bitmap.pixelsWide, Int(size.width), "\(name): capture uses the full canvas width")
-            XCTAssertEqual(bitmap.pixelsHigh, Int(size.height), "\(name): capture uses the full canvas height")
-            let corner = try XCTUnwrap(bitmap.colorAt(x: 0, y: 0)?.usingColorSpace(.deviceRGB))
-            XCTAssertGreaterThanOrEqual(corner.alphaComponent, 0.99, "\(name): page background covers the full capture")
-            let attachment = XCTAttachment(data: try XCTUnwrap(bitmap.representation(using: .png, properties: [:])),
-                                           uniformTypeIdentifier: "public.png")
-            attachment.name = "share-summary-\(name)"; attachment.lifetime = .keepAlways; add(attachment)
-        }
-    }
-
     private struct Rig {
         let model: WiltedMacModel; let store: LocalLibraryStore; let revision: AudioRevision
         let audioURL: URL; let modelURL: URL; let text: String
@@ -341,6 +376,26 @@ final class WiltedMacShareComposerTests: XCTestCase {
         try Transcript(itemID: rig.revision.itemID, revisionID: rig.revision.revisionID, availability: .available,
                        text: text, updatedAt: Timestamp(Date()))
     }
+    private func addSecondEpisode(to rig: Rig) async throws -> (revision: AudioRevision, audioURL: URL, text: String) {
+        let feedURL = URL(string: "https://example.test/feed")!
+        let enclosureURL = URL(string: "https://example.test/audio-b")!
+        let item = try ItemID.derivePodcastEpisode(feedURL: feedURL, rssGUID: "share-item-b", enclosureURL: enclosureURL)
+        let bytes = Data([4, 5, 6])
+        let audioURL = rig.audioURL.deletingLastPathComponent().appendingPathComponent("audio-b.m4a")
+        try bytes.write(to: audioURL)
+        let created = Timestamp(Date())
+        let revision = try AudioRevision(itemID: item, revisionID: RevisionID(rawValue: "rev-share-b"),
+            durationSeconds: 45, byteCount: Int64(bytes.count), contentHash: "sha256:" + composerDigest(bytes),
+            mediaType: "audio/mp4", createdAt: created, schemaVersion: 1)
+        try await rig.store.save(episode: PodcastEpisode(itemID: item, feedID: try ItemID.derivePodcastFeed(from: feedURL),
+            feedURL: feedURL, rssGUID: "share-item-b", title: "Second episode", enclosureURL: enclosureURL,
+            enclosureMediaType: "audio/mp4", episodeLink: URL(string: "https://example.test/second"), createdAt: created))
+        try await rig.store.saveReadyRevision(revision, mediaURL: audioURL)
+        let text = "Invented transcript for episode B; nothing personal."
+        try await rig.store.save(transcript: Transcript(itemID: item, revisionID: revision.revisionID,
+            availability: .available, text: text, updatedAt: created))
+        return (revision, audioURL, text)
+    }
     private func composer(_ rig: Rig, _ runner: ComposerRunner, _ semantic: ComposerSemantic = ComposerSemantic()) -> WiltedMacShareComposerState {
         WiltedMacShareComposerState(model: rig.model, service: TranscriptSummaryService(runner: runner),
             configuration: .init(modelURL: rig.modelURL), fingerprint: { await semantic.value() })
@@ -369,6 +424,27 @@ private actor ComposerSemantic {
     private var current = "worker-source-v1"
     func value() -> String { current }
     func set(_ value: String) { current = value }
+}
+private actor ComposerFingerprintGate {
+    private var didStart = false
+    private var isReleased = false
+    private var started: CheckedContinuation<Void, Never>?
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+    func value() async -> String? {
+        guard !isReleased else { return "worker-source-v1" }
+        didStart = true
+        started?.resume(); started = nil
+        await withCheckedContinuation { releaseWaiter = $0 }
+        return "worker-source-v1"
+    }
+    func waitUntilHeld() async {
+        guard !didStart else { return }
+        await withCheckedContinuation { started = $0 }
+    }
+    func release() {
+        isReleased = true
+        releaseWaiter?.resume(); releaseWaiter = nil
+    }
 }
 private actor ComposerRunner: PodcastPipelineRunning {
     private let held: Bool

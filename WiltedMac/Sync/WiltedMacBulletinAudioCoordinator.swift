@@ -6,7 +6,7 @@ import WiltedLibrary
 import WiltedProducer
 
 /// Renders one current Mac-owned bulletin with its approved local voice and returns only audio
-/// to the requesting phone. The request itself contains only the bulletin identity.
+/// to the requesting phone. The request contains a text digest, never the bulletin text or location.
 @MainActor
 final class WiltedMacBulletinAudioCoordinator {
     typealias RenderOperation = @Sendable (
@@ -49,6 +49,7 @@ final class WiltedMacBulletinAudioCoordinator {
     private let render: RenderOperation
     private let now: @Sendable () -> Date
     private var tasks: [String: Task<Void, Never>] = [:]
+    private var taskTextDigests: [String: String] = [:]
     private var cleanupTasks: [String: Task<Void, Never>] = [:]
 
     init(
@@ -87,6 +88,8 @@ final class WiltedMacBulletinAudioCoordinator {
     /// Applies only a request addressed to this Mac's active linked device.
     func handle(_ intent: LibraryIntent) async throws -> IntentOutcome {
         guard case let .requestBulletinAudio(bulletinID) = intent.action,
+              let expectedTextDigest = intent.spokenTextSHA256,
+              MediaHash.isWellFormed(expectedTextDigest),
               intent.deviceID != deviceID,
               let owner = await currentOwner(), !owner.isEmpty else {
             return try .rejected(for: intent, reason: IntentOutcome.reasonFailed, at: now())
@@ -104,14 +107,30 @@ final class WiltedMacBulletinAudioCoordinator {
             guard existing.requesterDeviceID == intent.deviceID, existing.storyID == bulletinID else {
                 return try .rejected(for: intent, reason: IntentOutcome.reasonFailed, at: now())
             }
-            if existing.phase == .ready || existing.phase == .failed || existing.phase == .cancelled {
+            if existing.phase == .ready {
+                guard existing.audioOffer?.spokenTextSHA256 == expectedTextDigest else {
+                    return try .rejected(for: intent, reason: IntentOutcome.reasonFailed, at: now())
+                }
+                return try .applied(for: intent, at: now())
+            }
+            if existing.phase == .failed || existing.phase == .cancelled {
                 return try .applied(for: intent, at: now())
             }
         }
-        if tasks[intent.id] != nil { return try .applied(for: intent, at: now()) }
+        if tasks[intent.id] != nil {
+            guard taskTextDigests[intent.id] == expectedTextDigest else {
+                return try .rejected(for: intent, reason: IntentOutcome.reasonFailed, at: now())
+            }
+            return try .applied(for: intent, at: now())
+        }
         guard let resolved = await resolveBulletin(bulletinID),
               await bulletinIsCurrent(resolved, context: context),
               await isCurrent(context) else {
+            try await publishFailure(intent, bulletinID: bulletinID, context: context,
+                                     revision: (existing?.statusRevision ?? 0) + 1, failure: .unavailableStory)
+            return try .applied(for: intent, at: now())
+        }
+        guard MediaHash.sha256(text: resolved.bulletin.text) == expectedTextDigest else {
             try await publishFailure(intent, bulletinID: bulletinID, context: context,
                                      revision: (existing?.statusRevision ?? 0) + 1, failure: .unavailableStory)
             return try .applied(for: intent, at: now())
@@ -132,8 +151,10 @@ final class WiltedMacBulletinAudioCoordinator {
             await self?.prepare(intent: intent, resolved: resolved, voice: voice, context: context,
                                 revision: (existing?.statusRevision ?? 0) + 2)
             self?.tasks.removeValue(forKey: intent.id)
+            self?.taskTextDigests.removeValue(forKey: intent.id)
         }
         tasks[intent.id] = task
+        taskTextDigests[intent.id] = expectedTextDigest
         return try .applied(for: intent, at: now())
     }
 
@@ -159,6 +180,7 @@ final class WiltedMacBulletinAudioCoordinator {
     func invalidate() {
         tasks.values.forEach { $0.cancel() }
         tasks.removeAll()
+        taskTextDigests.removeAll()
         cleanupTasks.values.forEach { $0.cancel() }
         cleanupTasks.removeAll()
     }
@@ -226,7 +248,8 @@ final class WiltedMacBulletinAudioCoordinator {
                 voiceID: voice.rawValue, voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: voice),
                 audioRevision: try RevisionID(rawValue: "bulletin-\(String(values.hash.dropFirst(MediaHash.prefix.count)))"),
                 contentHash: values.hash, byteCount: values.byteCount, mediaType: "audio/mp4",
-                durationSeconds: values.duration)
+                durationSeconds: values.duration,
+                spokenTextSHA256: intent.spokenTextSHA256)
             let retained = RetainedOffer(owner: context.owner, offer: offer, expiresAt: expected.expiresAt)
             saveRetainedOffers(loadRetainedOffers().filter { $0.offer.requestID != offer.requestID } + [retained])
             scheduleCleanup(retained, context: context)

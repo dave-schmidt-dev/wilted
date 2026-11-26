@@ -109,6 +109,9 @@ func nwsAlertBody(id: String, now: Date) throws -> Data {
         ISO8601DateFormatter().string(from: date)
     }
     let sent = now.addingTimeInterval(-60)
+    let effective = now.addingTimeInterval(-60)
+    let onset = now.addingTimeInterval(-30)
+    let ends = now.addingTimeInterval(1_800)
     let expires = now.addingTimeInterval(3_600)
     return try JSONSerialization.data(withJSONObject: [
         "id": "https://api.weather.gov/alerts/\(id)",
@@ -117,9 +120,16 @@ func nwsAlertBody(id: String, now: Date) throws -> Data {
             "event": "Severe Thunderstorm Warning",
             "areaDesc": "Test County",
             "severity": "Severe",
+            "urgency": "Immediate",
+            "certainty": "Likely",
             "messageType": "Alert",
-            "headline": "Severe Thunderstorm Warning for Test County.",
+            "headline": "Severe Thunderstorm Warning issued November 25 at 9:25PM EST until November 25 at 10:00PM EST by NWS Example Office",
+            "description": "A dangerous storm is moving through Test County.",
+            "instruction": "Move indoors now. Stay away from windows.",
             "sent": iso8601(sent),
+            "effective": iso8601(effective),
+            "onset": iso8601(onset),
+            "ends": iso8601(ends),
             "expires": iso8601(expires)
         ]
     ])

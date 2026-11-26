@@ -190,18 +190,19 @@ final class WiltedMacBulletinHubTests: XCTestCase {
         let rig = try await makeRig(speaker: speaker, weatherNarration: narration)
         let now = Date()
         let issuedAlert = NWSAlert(
-            id: "local-weather-ready", event: "Severe Weather Warning", areaDesc: "Washington",
-            severity: "Extreme", headline: "A severe weather warning is active.",
-            sent: now, expires: now.addingTimeInterval(3_600))
+            id: "local-weather-ready", event: "Special Marine Warning", areaDesc: "Hawk Channel",
+            severity: "Severe", urgency: "Immediate", certainty: "Likely",
+            description: "Conditions over the water are dangerous.",
+            instruction: "Stay low or go below, and make sure everyone is wearing life jackets.",
+            sent: now, effective: now, onset: now, expires: now.addingTimeInterval(3_600),
+            ends: now.addingTimeInterval(3_600))
         rig.source.setResponse(NWSAlertsResponse(alerts: [issuedAlert], pollInterval: 3_600))
         set(rig.model, interruptions: true)
         rig.model.playEpisode(rig.library.episodes[0])
         await rig.model.waitForPlaybackOperationForTesting()
         await WiltedMacHeadless.eventually("the alert monitor starts") { rig.hub.alertMonitorIsRunning }
 
-        let alert = try Bulletin(
-            id: "local-weather-ready", kind: .alert, text: "A severe weather warning is active.",
-            severity: .extreme, issuedAt: now, expiresAt: now.addingTimeInterval(3_600))
+        let alert = try XCTUnwrap(AlertMonitor.bulletin(for: issuedAlert, now: now))
         try await gate.waitForCount(1)
         XCTAssertTrue(speaker.bulletins.isEmpty, "the player cannot receive an unprepared weather alert")
         XCTAssertNil(rig.model.speakingBulletin)
@@ -215,6 +216,27 @@ final class WiltedMacBulletinHubTests: XCTestCase {
         XCTAssertTrue(rig.model.playback?.adBreakReached() == true,
                       "a ready weather alert starts at the next ad-break snapshot")
         XCTAssertEqual(speaker.bulletins.map(\.id), [alert.id])
+
+        let spokenAlert = try XCTUnwrap(speaker.bulletins.last)
+        XCTAssertEqual(rig.hub.lastSpokenWeatherAlert, spokenAlert,
+                       "only a bulletin accepted by the speaker is retained")
+        speaker.finish()
+        await WiltedMacHeadless.eventually("the transient player alert clears after speech") {
+            rig.model.speakingBulletin == nil
+        }
+        XCTAssertNil(rig.model.speakingBulletin, "the player banner remains transient")
+        XCTAssertEqual(rig.hub.lastSpokenWeatherAlert, spokenAlert,
+                       "Reports can reopen the original after speech completes")
+        let reports = WiltedMacReportsCard(
+            model: rig.model, location: rig.hub.location, startsExpanded: true)
+        let reportText = try WiltedMacHeadless.recognizedText(
+            reports, size: CGSize(width: 1_000, height: 1_400)).joined(separator: " ")
+        XCTAssertTrue(reportText.contains("Last weather alert"), reportText)
+        let original = try WiltedMacHeadless.recognizedText(
+            WiltedMacLastWeatherAlertDetails(bulletin: spokenAlert),
+            size: CGSize(width: 620, height: 560)).joined(separator: " ")
+        XCTAssertTrue(original.contains("Stay low or go below"), original)
+        XCTAssertTrue(original.contains("Affected areas: Hawk Channel"), original)
         set(rig.model, interruptions: false)
     }
 

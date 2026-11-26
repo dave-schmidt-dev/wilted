@@ -276,6 +276,7 @@ final class WiltedMacAdFeedbackTests: XCTestCase {
             "id", "kind", "itemID", "revisionID", "playedSeconds", "originalSeconds", "mapping", "nearestCut",
             "engineVersion", "pipelineFingerprint", "createdAt", "deviceID", "source", "showTitle", "episodeTitle", "review",
         ])
+        XCTAssertNil(object["handledActions"], "ordinary writes keep the version-1 layout")
     }
 
     // MARK: The press and Undo

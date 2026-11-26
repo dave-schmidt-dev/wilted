@@ -146,6 +146,15 @@ struct NWSClientTests {
         feature["id"] = "https://api.weather.gov/alerts/\(id)"
         var properties = try #require(feature["properties"] as? [String: Any])
         properties["id"] = id
+        properties["urgency"] = "Immediate"
+        properties["certainty"] = "Likely"
+        properties["description"] = "Hazard details."
+        properties["instruction"] = "Stay low or go below."
+        properties["effective"] = "2026-11-25T21:20:00-05:00"
+        properties["onset"] = "2026-11-25T21:25:00-05:00"
+        properties["ends"] = "2026-11-25T22:00:00-05:00"
+        properties["expires"] = "2026-11-25T22:05:00-05:00"
+        properties["sent"] = "2026-11-25T20:00:00-05:00"
         feature["properties"] = properties
         let detail = try JSONSerialization.data(withJSONObject: feature)
         let transport = StubTransport([.init(body: detail)])
@@ -156,6 +165,18 @@ struct NWSClientTests {
         let request = try #require(transport.requests.first)
         #expect(alert.id == id)
         #expect(alert.messageType == "Update")
+        #expect(alert.urgency == "Immediate")
+        #expect(alert.certainty == "Likely")
+        #expect(alert.description == "Hazard details.")
+        #expect(alert.instruction == "Stay low or go below.")
+        #expect(alert.effective != nil)
+        #expect(alert.onset != nil)
+        #expect(alert.ends != nil)
+        #expect(alert.rawSent == "2026-11-25T20:00:00-05:00")
+        #expect(alert.rawEffective == "2026-11-25T21:20:00-05:00")
+        #expect(alert.rawOnset == "2026-11-25T21:25:00-05:00")
+        #expect(alert.rawEnds == "2026-11-25T22:00:00-05:00")
+        #expect(alert.rawExpires == "2026-11-25T22:05:00-05:00")
         #expect(request.url?.host == NWSClient.host)
         #expect(request.url?.path == "/alerts/\(id)")
         #expect(request.url?.query == nil)
@@ -190,6 +211,13 @@ struct NWSClientTests {
         await #expect(throws: NWSError.alertIdentityMismatch) {
             try await mismatch.alert(id: "urn:oid:2.49.0.1.840.0.12345")
         }
+    }
+
+    @Test func officialAlertLinkUsesOnlyAValidatedFixedNWSIdentity() {
+        let id = "urn:oid:2.49.0.1.840.0.12345"
+        #expect(NWSClient.publicAlertURL(for: id)?.absoluteString == "https://api.weather.gov/alerts/\(id)")
+        #expect(NWSClient.publicAlertURL(for: "https://evil.example/alerts/\(id)") == nil)
+        #expect(NWSClient.publicAlertURL(for: "urn:oid:2.49/../other") == nil)
     }
 
     @Test func badZonesAndCoordinatesAreRejected() async throws {

@@ -1,4 +1,4 @@
-.PHONY: validate validate-inner native-meta native native-mac-unit native-ios-unit native-ui lint deadcode file-size check-fast install-hooks worktree-setup install install-walkthrough app-icon ad-corpus ad-corpus-adopt ad-feedback-drafts retention-report retention-apply retention-install
+.PHONY: validate validate-inner native-meta native native-mac-unit native-ios-unit native-ui lint deadcode file-size check-fast install-hooks worktree-setup install install-walkthrough app-icon ad-corpus ad-corpus-adopt ad-feedback-drafts ad-feedback-mark-handled retention-report retention-apply retention-install
 
 # The runtime venv every target shares (Producer/Runtime/Makefile pins the same path).
 export UV_PROJECT_ENVIRONMENT := $(CURDIR)/Producer/Runtime/.venv
@@ -136,6 +136,16 @@ ad-corpus-adopt:
 # Usage: make ad-feedback-drafts [OUT=<file outside the repo>]
 ad-feedback-drafts:
 	@python3 Producer/Workers/ad_feedback_export.py $(if $(OUT),--out "$(OUT)")
+
+# Queue validated tuning evidence for the app-owned ad-feedback store to apply.
+# The command reads the inbox and library, writes only Wilted's private queue,
+# then wakes the app with a fixed URL that carries no report or file data.
+# Usage: make ad-feedback-mark-handled PROOF=<proof.json> SNAPSHOT=<intake.json> REPLAY=<replay.json>
+ad-feedback-mark-handled:
+	@test -n "$(PROOF)" || { printf '%s\n' 'usage: make ad-feedback-mark-handled PROOF=<proof.json> SNAPSHOT=<intake.json> REPLAY=<replay.json>'; exit 2; }
+	@test -n "$(SNAPSHOT)" || { printf '%s\n' 'usage: make ad-feedback-mark-handled PROOF=<proof.json> SNAPSHOT=<intake.json> REPLAY=<replay.json>'; exit 2; }
+	@test -n "$(REPLAY)" || { printf '%s\n' 'usage: make ad-feedback-mark-handled PROOF=<proof.json> SNAPSHOT=<intake.json> REPLAY=<replay.json>'; exit 2; }
+	@python3 Producer/Workers/ad_feedback_handle.py --proof "$(PROOF)" --snapshot "$(SNAPSHOT)" --replay-report "$(REPLAY)" $(if $(FEEDBACK),--feedback "$(FEEDBACK)") $(if $(MANIFEST),--manifest "$(MANIFEST)") $(if $(LIBRARY),--library "$(LIBRARY)") $(if $(REPO),--repo "$(REPO)")
 
 retention-report:
 	@python3 scripts/storage-retention.py --repo "$(CURDIR)"

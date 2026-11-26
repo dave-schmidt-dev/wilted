@@ -253,7 +253,7 @@ class FeedbackExportTests(unittest.TestCase):
         )
 
     def test_version_mismatch_and_missing_file_exit_2(self):
-        self.write_feedback([], version=2)
+        self.write_feedback([], version=3)
         code, stdout, stderr = self.run_main("--feedback", self.feedback)
         self.assertEqual(code, 2)
         self.assertEqual(stdout, "")
@@ -265,6 +265,13 @@ class FeedbackExportTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(stdout, "")
         self.assertEqual(stderr.strip(), f"no ad feedback at {missing}")
+
+    def test_version_two_accepts_receipts_without_exporting_them(self):
+        self.feedback.write_text(json.dumps({
+            "version": 2, "entries": [entry()], "handledActions": [{"private": "receipt"}],
+        }), encoding="utf-8")
+        loaded = export.load_feedback(self.feedback)
+        self.assertEqual([item["id"] for item in loaded], ["fb-1"])
 
     def test_out_inside_the_repository_is_refused(self):
         self.write_feedback([entry()])

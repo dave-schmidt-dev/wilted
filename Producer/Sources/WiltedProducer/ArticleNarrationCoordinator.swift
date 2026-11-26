@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import WiltedLibrary
 
 public enum ApprovedReadingVoiceID: String, CaseIterable, Codable, Sendable, Identifiable {
     case caseyKasem = "casey-kasem"
@@ -194,6 +195,8 @@ public struct ArticleNarrationConfiguration: Sendable {
 /// Extracts article text on Mac and synthesizes a voice-selected private M4A without saving a transcript.
 public struct ArticleNarrationCoordinator: Sendable {
     public static let engineRevision = "chatterbox-turbo-mlx-aac96-r1"
+    public static let maximumShortTextUTF8Bytes = Bulletin.maximumTextUTF8Bytes
+    public static let maximumShortTextDuration: TimeInterval = 900
     private static let shortTextEngineRevision = "chatterbox-turbo-mlx-aac96-loudnorm-r1"
 
     struct SynthesisMetadata: Sendable {
@@ -321,6 +324,7 @@ public struct ArticleNarrationCoordinator: Sendable {
                 source: article.source
             )
         } catch {
+            try? FileManager.default.removeItem(at: outputURL)
             try? FileManager.default.removeItem(at: workspace)
             throw error
         }
@@ -335,7 +339,7 @@ public struct ArticleNarrationCoordinator: Sendable {
         progress: @escaping @Sendable (ArticleNarrationProgress) -> Void = { _ in }
     ) async throws -> ArticleNarrationAudio {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.utf8.count <= 4_096,
+        guard !trimmed.isEmpty, trimmed.utf8.count <= Self.maximumShortTextUTF8Bytes,
               outputURL.pathExtension.lowercased() == "m4a" else {
             throw ArticleNarrationError.invalidRequest
         }
@@ -361,6 +365,7 @@ public struct ArticleNarrationCoordinator: Sendable {
                 normalizeLoudness: true, progress: progress)
             try Task.checkCancellation()
             guard metadata.byteCount > 44, metadata.duration > 0,
+                  metadata.duration <= Self.maximumShortTextDuration,
                   FileManager.default.fileExists(atPath: outputURL.path) else {
                 throw ArticleNarrationError.invalidAudio
             }
@@ -368,6 +373,7 @@ public struct ArticleNarrationCoordinator: Sendable {
                 audioURL: outputURL, duration: metadata.duration,
                 voiceRevision: Self.shortTextVoiceRevision(for: voiceID))
         } catch {
+            try? FileManager.default.removeItem(at: outputURL)
             try? FileManager.default.removeItem(at: workspace)
             throw error
         }

@@ -115,7 +115,11 @@ class Span:
 @dataclass
 class SpanVerdict:
     label: str
+    # Original hand label. Keep these coordinates unchanged so a transcript
+    # or source-duration discrepancy remains inspectable.
     span: Span
+    # Portion of the hand label that exists in the source audio and is scored.
+    scored_span: Span
     why: str
     overlap_seconds: float
     passed: bool
@@ -137,6 +141,9 @@ class CaseVerdict:
     # Cut time that lands in no labelled region at all. Neither a pass nor a
     # failure: the labels do not reach it, and saying so is the honest report.
     unknown_cut_seconds: float = 0.0
+    # Removed time that lands outside must-cut and acceptable-cut labels.
+    # This includes cuts over must-keep regions and unknown transcript time.
+    outside_ad_label_cut_seconds: float = 0.0
     # How much of the episode carries any label. Both manifest cases label
     # their openings closely and leave the middle alone, so a verdict of
     # "every labelled span is where it should be" covers less than it sounds.
@@ -274,7 +281,8 @@ def score_case(case: dict, produced: list[Span]) -> CaseVerdict:
             raise ValueError(f"{case['id']}: unknown label {label!r}")
 
         verdicts.append(
-            SpanVerdict(label=label, span=span, why=expected["why"],
+            SpanVerdict(label=label, span=span, scored_span=scored_span,
+                        why=expected["why"],
                         overlap_seconds=shared, passed=passed, note=note)
         )
 
@@ -287,8 +295,17 @@ def score_case(case: dict, produced: list[Span]) -> CaseVerdict:
     labelled = union_spans(
         Span(float(entry["start"]), float(entry["end"])) for entry in case["expected"]
     )
+    ad_labelled = union_spans(
+        Span(float(entry["start"]), float(entry["end"]))
+        for entry in case["expected"]
+        if entry["label"] in {"must-cut", "acceptable-cut"}
+    )
     unknown = sum(
         max(0.0, cut.seconds - sum(cut.overlap(region) for region in labelled))
+        for cut in _clamped(cuts, total)
+    )
+    outside_ad_labels = sum(
+        max(0.0, cut.seconds - sum(cut.overlap(region) for region in ad_labelled))
         for cut in _clamped(cuts, total)
     )
     labelled_coverage = (
@@ -304,6 +321,7 @@ def score_case(case: dict, produced: list[Span]) -> CaseVerdict:
         produced=produced,
         keep_loss_seconds=keep_loss,
         unknown_cut_seconds=unknown,
+        outside_ad_label_cut_seconds=outside_ad_labels,
         labelled_coverage=labelled_coverage,
         coverage_complete=unknown <= UNKNOWN_CUT_TOLERANCE_SECONDS,
     )
@@ -487,6 +505,12 @@ def report(results: list[CaseVerdict]) -> str:
             lines.append(
                 f"    {flag} {span.label:<14} {span.span.start:8.2f}-{span.span.end:8.2f}  {span.note}"
             )
+            overhang = span.span.seconds - span.scored_span.seconds
+            if overhang > 0.0:
+                lines.append(
+                    f"      source overhang: {overhang:.2f}s outside the"
+                    f" {span.scored_span.start:.2f}-{span.scored_span.end:.2f}s scored interval"
+                )
         if result.produced:
             cuts = ", ".join(f"{s.start:.1f}-{s.end:.1f}" for s in result.produced)
             lines.append(f"      detector cut: {cuts}")

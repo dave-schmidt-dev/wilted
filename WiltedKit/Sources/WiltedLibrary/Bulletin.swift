@@ -25,7 +25,10 @@ public enum BulletinSeverity: String, Codable, CaseIterable, Comparable, Sendabl
 /// One spoken interruption: a weather alert or a news headline. Expiry is judged on the
 /// receiving device's clock, so a stale bulletin is never spoken late.
 public struct Bulletin: Codable, Equatable, Sendable, Identifiable {
-    public static let maximumTextCharacters = 600
+    public static let maximumTextCharacters = 16_384
+    public static let maximumTextUTF8Bytes = 16_384
+    public static let maximumOriginalTextCharacters = 1_060_000
+    public static let maximumOriginalTextUTF8Bytes = 1_060_000
 
     public let id: String
     public let kind: BulletinKind
@@ -43,26 +46,37 @@ public struct Bulletin: Codable, Equatable, Sendable, Identifiable {
     public let publisherName: String?
     /// Headline without the publisher text prepended to `text`.
     public let headline: String?
-    /// Original article address, when the feed supplied a safe HTTP(S) link.
+    /// Original article or official alert address, when a safe HTTP(S) link is available.
     public let link: URL?
     /// The article's publication date, when the feed supplied one.
     public let publishedAt: Date?
+    /// The source alert wording retained for the listener to open offline.
+    public let originalText: String?
 
     public init(id: String, kind: BulletinKind, text: String, severity: BulletinSeverity = .unknown,
                 issuedAt: Date, expiresAt: Date, supersedes: String? = nil,
                 storyID: String? = nil, publisherID: String? = nil, publisherName: String? = nil,
-                headline: String? = nil, link: URL? = nil, publishedAt: Date? = nil) throws {
+                headline: String? = nil, link: URL? = nil, publishedAt: Date? = nil,
+                originalText: String? = nil) throws {
         guard !id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw LibraryTransportError.transport("bulletin identity is empty")
         }
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, text.count <= Self.maximumTextCharacters else {
-            throw LibraryTransportError.transport("bulletin text must be 1 to \(Self.maximumTextCharacters) characters")
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              text.count <= Self.maximumTextCharacters, text.utf8.count <= Self.maximumTextUTF8Bytes else {
+            throw LibraryTransportError.transport(
+                "bulletin text must be 1 to \(Self.maximumTextCharacters) characters and \(Self.maximumTextUTF8Bytes) UTF-8 bytes")
         }
         guard issuedAt.timeIntervalSinceReferenceDate.isFinite, expiresAt.timeIntervalSinceReferenceDate.isFinite else {
             throw LibraryTransportError.transport("bulletin dates are not finite")
         }
         guard publishedAt?.timeIntervalSinceReferenceDate.isFinite != false else {
             throw LibraryTransportError.transport("bulletin publication date is not finite")
+        }
+        if let originalText,
+           originalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || originalText.count > Self.maximumOriginalTextCharacters
+            || originalText.utf8.count > Self.maximumOriginalTextUTF8Bytes {
+            throw LibraryTransportError.transport("original bulletin text must be 1 to \(Self.maximumOriginalTextCharacters) characters")
         }
         if let link {
             guard let scheme = link.scheme?.lowercased(), ["http", "https"].contains(scheme),
@@ -95,11 +109,12 @@ public struct Bulletin: Codable, Equatable, Sendable, Identifiable {
         self.headline = headline
         self.link = link
         self.publishedAt = publishedAt
+        self.originalText = originalText
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, kind, text, severity, issuedAt, expiresAt, supersedes
-        case storyID, publisherID, publisherName, headline, link, publishedAt
+        case storyID, publisherID, publisherName, headline, link, publishedAt, originalText
     }
 
     public init(from decoder: Decoder) throws {
@@ -117,7 +132,8 @@ public struct Bulletin: Codable, Equatable, Sendable, Identifiable {
             publisherName: values.decodeIfPresent(String.self, forKey: .publisherName),
             headline: values.decodeIfPresent(String.self, forKey: .headline),
             link: values.decodeIfPresent(URL.self, forKey: .link),
-            publishedAt: values.decodeIfPresent(Date.self, forKey: .publishedAt)
+            publishedAt: values.decodeIfPresent(Date.self, forKey: .publishedAt),
+            originalText: values.decodeIfPresent(String.self, forKey: .originalText)
         )
     }
 

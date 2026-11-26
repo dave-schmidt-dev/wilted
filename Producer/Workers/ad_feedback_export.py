@@ -76,7 +76,7 @@ def load_feedback(path) -> list[dict]:
     Returns:
         Entry dictionaries; unknown keys are ignored downstream.
     Raises:
-        FeedbackError: Missing, invalid JSON, or a version other than 1.
+        FeedbackError: Missing, invalid JSON, or an unsupported version.
     """
     path = Path(path)
     if not path.is_file():
@@ -85,11 +85,13 @@ def load_feedback(path) -> list[dict]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         raise FeedbackError(f"ad feedback at {path} is not valid JSON") from None
-    if not isinstance(payload, dict) or payload.get("version") != 1:
+    if not isinstance(payload, dict) or payload.get("version") not in (1, 2):
         version = payload.get("version") if isinstance(payload, dict) else None
-        raise FeedbackError(f"ad feedback version {version!r} is not supported (expected 1)")
+        raise FeedbackError(f"ad feedback version {version!r} is not supported (expected 1 or 2)")
     if not isinstance(entries := payload.get("entries"), list):
         raise FeedbackError(f"ad feedback at {path} has no entries list")
+    if payload["version"] == 2 and not isinstance(payload.get("handledActions"), list):
+        raise FeedbackError(f"ad feedback at {path} has no handled actions list")
     return [entry for entry in entries if isinstance(entry, dict)]
 def _counts(entry) -> bool:
     """True for a press that counts: filed presses count unless removed (`dismissed`) in Settings.

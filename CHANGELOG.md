@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.9.0] - 2026-11-25
+
+### Added
+
+- On Mac, **Share with summary** starts a local transcript summary. Close the panel or switch episodes while it runs, then return to the episode to preview and share it.
+- An optional scrolling news ticker on Mac opens a headline’s article, Listen next, and Notebook actions. Scrolling pauses for keyboard focus and pointer hover and respects Reduce Motion.
+- The ad-tuning workflow can mark a listening report handled after a verified replay. The original report remains in its history.
+
+### Changed
+
+- Spoken weather alerts identify the event, area and timing and preserve official safety instructions. The original alert remains available to read.
+- If iPhone cannot verify a bulletin’s narration, its story or weather card explains how to get a fresh clip. Automatic playback still waits for an ad break.
+- Ad-removal replay reports now distinguish labelled seconds beyond the end of a recording from ads left in the audio.
+
 ## [0.8.1] - 2026-11-25
 
 ### Changed

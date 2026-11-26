@@ -45,6 +45,10 @@ extension LibraryListenNextPhoneModelTests {
             return XCTFail("The Mac request must contain the bulletin identity.")
         }
         XCTAssertEqual(bulletinID, bulletin.id)
+        XCTAssertEqual(request.spokenTextSHA256, MediaHash.sha256(text: bulletin.text))
+        XCTAssertNotEqual(request.spokenTextSHA256, bulletin.text)
+        let fetchedOffers = await activeTransport.audio.fetchedOffers
+        XCTAssertEqual(fetchedOffers.first?.spokenTextSHA256, request.spokenTextSHA256)
         XCTAssertTrue(manager.canSpeak(bulletin))
         let cachedURL = try XCTUnwrap(manager.audioURL(for: bulletin))
         XCTAssertEqual(try Data(contentsOf: cachedURL), try Data(contentsOf: sourceFile))
@@ -66,6 +70,59 @@ extension LibraryListenNextPhoneModelTests {
         XCTAssertFalse(offlineManager.canSpeak(bulletin), "a missing local asset must never pause playback")
     }
 
+    func testUpdatedSameIDBulletinPurgesLegacyCachedSpeech() async throws {
+        let activeTransport = transport(OutboxSendScript(.deliver), autoReadyBulletinAudio: true)
+        let activeModel = model(activeTransport)
+        await activeModel.loadLocalState()
+        activeModel.macAddActions = ["requestBulletinAudio"]
+        let original = try Bulletin(
+            id: "urn:oid:stable-weather-id", kind: .alert, text: "Original alert wording",
+            issuedAt: now, expiresAt: now.addingTimeInterval(900))
+        let originalManager = activeModel.bulletinAudioManager
+        originalManager.prepare(original)
+        await originalManager.refreshPreparedAudio()
+        XCTAssertTrue(originalManager.canSpeak(original))
+        let originalIntents = await server.allIntents()
+        let originalIntent = try XCTUnwrap(originalIntents.first)
+        let originalDigest = try XCTUnwrap(originalIntent.spokenTextSHA256)
+
+        // Recreate a v2 manifest from an installed build before digest binding existed.
+        let manifestURL = scratch.appendingPathComponent("bulletin-audio-cache.json")
+        var manifest = try XCTUnwrap(JSONSerialization.jsonObject(
+            with: Data(contentsOf: manifestURL)) as? [String: Any])
+        manifest["version"] = 2
+        var entries = try XCTUnwrap(manifest["entries"] as? [[String: Any]])
+        var entry = try XCTUnwrap(entries.first)
+        entry["textHash"] = String(originalDigest.dropFirst(MediaHash.prefix.count))
+        var oldIntent = try XCTUnwrap(entry["intent"] as? [String: Any])
+        oldIntent.removeValue(forKey: "spokenTextSHA256")
+        entry["intent"] = oldIntent
+        var oldOffer = try XCTUnwrap(entry["offer"] as? [String: Any])
+        oldOffer.removeValue(forKey: "spokenTextSHA256")
+        entry["offer"] = oldOffer
+        entries[0] = entry
+        manifest["entries"] = entries
+        try JSONSerialization.data(withJSONObject: manifest).write(to: manifestURL, options: [.atomic])
+
+        let updated = try Bulletin(
+            id: original.id, kind: .alert, text: "Revised alert wording for the same bulletin ID",
+            issuedAt: original.issuedAt, expiresAt: original.expiresAt)
+        let newModel = model(transport(OutboxSendScript(.deliver)))
+        await newModel.loadLocalState()
+        newModel.macAddActions = ["requestBulletinAudio"]
+        let newManager = newModel.bulletinAudioManager
+        newManager.prepare(updated)
+
+        XCTAssertFalse(newManager.canSpeak(updated), "legacy audio without a matching digest is discarded")
+        await newManager.refreshPreparedAudio()
+
+        let intents = await server.allIntents()
+        let updatedIntent = try XCTUnwrap(intents.last)
+        XCTAssertNotEqual(updatedIntent.id, originalIntent.id)
+        XCTAssertEqual(updatedIntent.spokenTextSHA256, MediaHash.sha256(text: updated.text))
+        XCTAssertFalse(newManager.canSpeak(updated), "new audio stays unavailable until the Mac attests it")
+    }
+
     func testOlderMacCapabilityDoesNotReceiveAutomaticBulletinRequests() async throws {
         let transport = transport(OutboxSendScript(.deliver))
         let model = model(transport)
@@ -81,6 +138,48 @@ extension LibraryListenNextPhoneModelTests {
         let intents = await server.allIntents()
         XCTAssertTrue(intents.isEmpty)
         XCTAssertFalse(model.bulletinAudioManager.canSpeak(bulletin))
+    }
+
+    func testOlderMacOfferWithoutTextDigestIsRejectedBeforeDownload() async throws {
+        let transport = transport(OutboxSendScript(.deliver))
+        let model = model(transport)
+        await model.loadLocalState()
+        model.macAddActions = ["requestBulletinAudio"]
+        let bulletin = try Bulletin(
+            id: "headline:old-mac", kind: .alert, text: "Current phone alert copy",
+            issuedAt: now, expiresAt: now.addingTimeInterval(600))
+        let manager = model.bulletinAudioManager
+        manager.prepare(bulletin)
+        await manager.refreshPreparedAudio()
+        let intents = await server.allIntents()
+        let request = try XCTUnwrap(intents.first)
+
+        try await transport.audio.publishReadyBulletinStatus(
+            for: request, at: now, includeSpokenTextDigest: false)
+        clock.advance(by: 11)
+        await manager.refreshPreparedAudio()
+
+        XCTAssertEqual(manager.failure(for: bulletin), .transferFailed)
+        XCTAssertFalse(manager.canSpeak(bulletin), "an older Mac's unattested clip must never be spoken")
+        let fetchCount = await transport.audio.fetchAttemptCount
+        XCTAssertEqual(fetchCount, 0)
+
+        let revised = try Bulletin(
+            id: "headline:wrong-mac-copy", kind: .alert, text: "Expected revised phone copy",
+            issuedAt: now, expiresAt: now.addingTimeInterval(600))
+        manager.prepare(revised)
+        await manager.refreshPreparedAudio()
+        let revisedIntents = await server.allIntents()
+        let revisedRequest = try XCTUnwrap(revisedIntents.last)
+        try await transport.audio.publishReadyBulletinStatus(
+            for: revisedRequest, at: now, digestOverride: MediaHash.sha256(text: "Different Mac copy"))
+        clock.advance(by: 11)
+        await manager.refreshPreparedAudio()
+
+        XCTAssertEqual(manager.failure(for: revised), .transferFailed)
+        XCTAssertFalse(manager.canSpeak(revised), "a valid digest for different text still fails closed")
+        let finalFetchCount = await transport.audio.fetchAttemptCount
+        XCTAssertEqual(finalFetchCount, 0)
     }
 
     func testBulletinAudioContinuesSparsePollingUntilLateReadyStatus() async throws {
@@ -199,6 +298,75 @@ extension LibraryListenNextPhoneModelTests {
         XCTAssertEqual(unsupportedPlayer.state, LibrarySettingsTestBulletinPlayer.State.waiting)
         XCTAssertTrue(unsupportedSpeaker.spoken.isEmpty)
         XCTAssertEqual(unsupportedSpeaker.textFallbackCalls, 0)
+    }
+
+    func testOlderMacMessageRecoversAfterUpdateAndFreshVerifiedClip() async throws {
+        let transport = transport(OutboxSendScript(.deliver), autoReadyBulletinAudio: true)
+        let model = model(transport)
+        await model.loadLocalState()
+        model.macAddActions = ["listenNext"]
+        let bulletin = try Bulletin(
+            id: "weather-old-mac-retry", kind: .alert, text: "A current alert copy.",
+            issuedAt: now, expiresAt: now.addingTimeInterval(600))
+        let manager = model.bulletinAudioManager
+        manager.prepare(bulletin)
+
+        XCTAssertEqual(
+            manager.issue(for: bulletin),
+            "Update Wilted on both devices to use verified bulletin audio, then retry.")
+        await manager.refreshPreparedAudio()
+        let olderMacIntents = await server.allIntents()
+        XCTAssertTrue(olderMacIntents.isEmpty, "an older Mac must not receive the unsupported request")
+
+        model.macAddActions = ["requestBulletinAudio"]
+        manager.retry(bulletin)
+        await manager.refreshPreparedAudio()
+
+        let intents = await server.allIntents()
+        let request = try XCTUnwrap(intents.first { if case .requestBulletinAudio = $0.action { true } else { false } })
+        XCTAssertTrue(request.id.hasPrefix("bulletin-audio-retry-"))
+        XCTAssertTrue(manager.canSpeak(bulletin), "a new digest-matched clip becomes usable after the Mac update")
+        XCTAssertNil(manager.issue(for: bulletin))
+    }
+
+    func testChangedMacCopyShowsExactCauseAndManualRetryAcceptsMatchingClip() async throws {
+        let transport = transport(OutboxSendScript(.deliver))
+        let model = model(transport)
+        await model.loadLocalState()
+        model.macAddActions = ["requestBulletinAudio"]
+        let bulletin = try Bulletin(
+            id: "weather-changed-copy-retry", kind: .alert, text: "The phone's current alert copy.",
+            issuedAt: now, expiresAt: now.addingTimeInterval(600))
+        let manager = model.bulletinAudioManager
+        manager.prepare(bulletin)
+        await manager.refreshPreparedAudio()
+        let initialIntents = await server.allIntents()
+        let firstRequest = try XCTUnwrap(initialIntents.first {
+            if case .requestBulletinAudio = $0.action { true } else { false }
+        })
+        try await transport.audio.publishReadyBulletinStatus(
+            for: firstRequest, at: now, digestOverride: MediaHash.sha256(text: "Different Mac copy"))
+        clock.advance(by: 11)
+        await manager.refreshPreparedAudio()
+
+        XCTAssertEqual(
+            manager.issue(for: bulletin),
+            "The bulletin text changed between devices. Update Wilted on both devices, then retry.")
+        XCTAssertFalse(manager.canSpeak(bulletin), "the mismatched clip stays unusable")
+
+        manager.retry(bulletin)
+        await manager.refreshPreparedAudio()
+        let requestsAfterRetry = await server.allIntents()
+        let retryRequest = try XCTUnwrap(requestsAfterRetry.last {
+            if case .requestBulletinAudio = $0.action { true } else { false }
+        })
+        XCTAssertNotEqual(retryRequest.id, firstRequest.id)
+        try await transport.audio.publishReadyBulletinStatus(for: retryRequest, at: clock.current())
+        clock.advance(by: 11)
+        await manager.refreshPreparedAudio()
+
+        XCTAssertTrue(manager.canSpeak(bulletin), "only the fresh, matching Mac clip becomes usable")
+        XCTAssertNil(manager.issue(for: bulletin))
     }
 
 }

@@ -347,6 +347,7 @@ extension WiltedMacModel {
                 _ = inbound.stop(); controller?.publicationHydration?.cancel()
                 listenNextRuntime?.invalidate()
                 bulletinAudioRuntime?.invalidate()
+                self?.invalidateShareComposerStates()
                 self?.librarySyncActivity.publicationOwner = nil
             }
             account.onStatus = { [weak self] status in self?.libraryAccountStatus = status }
@@ -375,6 +376,7 @@ extension WiltedMacModel {
     }
 
     func stopLibrarySync() {
+        invalidateShareComposerStates()
         listenNextRemoteCoordinator = nil
         if let controller = librarySyncController {
             controller.publicationHydration?.cancel()

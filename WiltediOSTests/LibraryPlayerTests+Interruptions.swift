@@ -58,15 +58,23 @@ final class InterruptionNowPlaying: ListenerNowPlaying, @unchecked Sendable {
 @MainActor final class StubSpeaker: LibrarySpeaking {
     var canStart = true
     var canSpeakBulletins = true
+    var expectedPlaybackDuration: TimeInterval?
     private(set) var spoken: [String] = []
     private(set) var spokenBulletins: [Bulletin] = []
     private(set) var preparedBulletins: [Bulletin] = []
     private(set) var preparedAudioRefreshes = 0
     private(set) var stops = 0
+    var bulletinAudioIssueMessage: String?
+    private(set) var bulletinAudioRetries: [Bulletin] = []
     private var finish: (@MainActor () -> Void)?
 
     func prepare(_ bulletin: Bulletin) { preparedBulletins.append(bulletin) }
     func refreshPreparedAudio() async { preparedAudioRefreshes += 1 }
+    func bulletinAudioIssue(for bulletin: Bulletin) -> String? { bulletinAudioIssueMessage }
+    func retryBulletinAudio(_ bulletin: Bulletin) {
+        bulletinAudioRetries.append(bulletin)
+        bulletinAudioIssueMessage = nil
+    }
     func canSpeak(_ bulletin: Bulletin) -> Bool { canSpeakBulletins }
 
     func speak(_ bulletin: Bulletin, onFinish: @escaping @MainActor () -> Void) -> Bool {
@@ -94,6 +102,12 @@ final class StubMonitor: LibraryAlertMonitoring, @unchecked Sendable {
     func setCoordinates(lat: Double, lon: Double) async { record("coords \(lat),\(lon)") }
     func clearCoordinates() async { record("clear") }
     var activeAlertIDs: Set<String> { [] }
+}
+
+actor InterruptionWatchdogRecorder {
+    private var durations: [Duration] = []
+    func record(_ duration: Duration) { durations.append(duration) }
+    func first() -> Duration? { durations.first }
 }
 
 @MainActor final class InterruptionLocationManager: LibraryLocationManaging {
@@ -153,11 +167,15 @@ struct InterruptionRig {
 func makeInterruptionRig(
     channel: LibraryBulletins?, defaults: UserDefaults, tick: Duration = .seconds(3600),
     foreground: Bool = true,
+    speaker suppliedSpeaker: StubSpeaker? = nil,
     adBreakSeams seams: [Double] = [42.5],
-    adBreakSeamProvider: (() -> [Double])? = nil
+    adBreakSeamProvider: (() -> [Double])? = nil,
+    sleep: @escaping @Sendable (Duration) async throws -> Void = { _ in
+        try await Task.sleep(for: .seconds(3600))
+    }
 ) -> InterruptionRig {
     let engine = InterruptionEngine(), session = InterruptionSession(), nowPlaying = InterruptionNowPlaying()
-    let remote = InterruptionRemote(), events = InterruptionEvents(), speaker = StubSpeaker()
+    let remote = InterruptionRemote(), events = InterruptionEvents(), speaker = suppliedSpeaker ?? StubSpeaker()
     let previewSpeaker = StubSpeaker(), playingPreviewSpeaker = StubSpeaker()
     let player = LibraryPlayer(
         engine: engine, session: session, nowPlaying: nowPlaying, remoteCommands: remote,
@@ -177,8 +195,7 @@ func makeInterruptionRig(
             location: LibraryLocationProvider(manager: location),
             adBreakSeams: { _, _ in adBreakSeams() },
             revision: { _ in revision },
-            isForeground: { foreground },
-            sleep: { _ in try await Task.sleep(for: .seconds(3600)) }))
+            isForeground: { foreground }, sleep: sleep))
     return InterruptionRig(
         player: player, engine: engine, session: session, nowPlaying: nowPlaying, remote: remote, events: events,
         speaker: speaker, previewSpeaker: previewSpeaker, playingPreviewSpeaker: playingPreviewSpeaker,

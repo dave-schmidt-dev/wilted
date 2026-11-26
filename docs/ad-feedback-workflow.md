@@ -164,3 +164,37 @@ End each pass with report counts, accepted/rejected changes, measured scope,
 unresolved inputs, and exact next actions. Reconcile any newly arrived feedback
 against the intake snapshot so reports cannot disappear between passes.
 
+## 7. Mark a replayed report handled
+
+Only queue a report after its source and revision match the app's preparation
+journal, and a clean replay of the current committed candidate passes the exact
+labelled interval. `Ad here` needs its reported point inside a passing
+`must-cut` span and inside an actual produced cut. `Good cut` needs the stored
+cut fully removed. `Not an ad` needs its point and stored cut in passing
+`must-keep` evidence, with neither cut. A whole-case pass alone is insufficient.
+
+The tuning proof links each feedback ID to one corpus case and pins both the
+intake snapshot and replay report by SHA-256. The replay report must identify
+the candidate commit, fixture and command. Its case identity must match the
+feedback's item, revision and source hash, and the app library must contain that
+same source hash in the exact revision's successful preparation record. Missing
+or contradictory evidence leaves the report unhandled.
+
+After acceptance, run:
+
+```sh
+make ad-feedback-mark-handled PROOF=<proof.json> SNAPSHOT=<intake.json> REPLAY=<replay.json>
+```
+
+The command only reads the inbox and library. It writes a validated, owner-only
+request in Wilted's private pending queue, then opens Wilted with a fixed URL
+that carries no report ID or file path. Wilted rechecks the current report and
+writes handled timestamps plus replay receipts through its own atomic inbox
+writer. Stale, dismissed, relabelled or missing reports stay unchanged; a
+replayed request is idempotent. The entry remains in the historical inbox and
+keeps its label. Ordinary inbox writes keep schema version 1; the first
+verified action writes version 2 with its receipt. An older build quarantines
+version 2 rather than rewriting it as version 1. On upgrade, Wilted merges that
+archive with any new version-1 feedback before its next write, retaining the
+receipt and historical entries.
+

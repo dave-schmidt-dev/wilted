@@ -13,18 +13,27 @@ final class LibraryStoryAudioTests: XCTestCase {
             firstSeenAt: now, lastSeenAt: now)
     }
 
-    private func offer(voice: String = "casey", revision: String = "story-audio-r1") throws -> LibraryStoryAudioOffer {
+    private func offer(
+        voice: String = "casey", revision: String = "story-audio-r1", spokenTextSHA256: String? = nil
+    ) throws -> LibraryStoryAudioOffer {
         try LibraryStoryAudioOffer(
             requestID: "request-1", storyID: "story-1", requesterDeviceID: "phone-1",
             voiceID: voice, voiceRevision: "voice-r1", audioRevision: RevisionID(rawValue: revision),
             contentHash: "sha256:" + String(repeating: "a", count: 64), byteCount: 120,
-            mediaType: "audio/mp4", durationSeconds: 8)
+            mediaType: "audio/mp4", durationSeconds: 8, spokenTextSHA256: spokenTextSHA256)
     }
 
     func testStoryAudioOfferRoundTripsAndRequiresValidIdentityAndHash() throws {
-        let expected = try offer()
+        let spokenDigest = MediaHash.sha256(text: "Weather alert copy")
+        let expected = try offer(spokenTextSHA256: spokenDigest)
         let data = try JSONEncoder().encode(expected)
         XCTAssertEqual(try JSONDecoder().decode(LibraryStoryAudioOffer.self, from: data), expected)
+        XCTAssertEqual(expected.spokenTextSHA256, spokenDigest)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        legacy.removeValue(forKey: "spokenTextSHA256")
+        let legacyOffer = try JSONDecoder().decode(
+            LibraryStoryAudioOffer.self, from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertNil(legacyOffer.spokenTextSHA256, "old Mac offers decode but remain distinguishable")
         XCTAssertThrowsError(try LibraryStoryAudioOffer(
             requestID: "request-1", storyID: "story-1", requesterDeviceID: "phone-1",
             voiceID: "casey", voiceRevision: "voice-r1", audioRevision: RevisionID(rawValue: "r1"),
@@ -34,6 +43,7 @@ final class LibraryStoryAudioTests: XCTestCase {
             voiceID: "casey", voiceRevision: "voice-r1", audioRevision: RevisionID(rawValue: "r1"),
             contentHash: "sha256:" + String(repeating: "a", count: 64), byteCount: 120,
             mediaType: "audio/wav", durationSeconds: 8))
+        XCTAssertThrowsError(try offer(spokenTextSHA256: "not-a-digest"))
     }
 
     func testReadyStatusCarriesTheExactRequestDeviceAndVoiceOffer() throws {

@@ -183,7 +183,25 @@ final class LibraryInterruptionController: ObservableObject {
     @Published private(set) var activeSpokenHeadline: Bulletin?
     /// The most recently read story remains available after its speech ends.
     @Published private(set) var lastSpokenHeadline: Bulletin?
-    var nowPlayingHeadline: Bulletin? { activeSpokenHeadline ?? lastSpokenHeadline }
+    /// A failed or not-yet-rendered headline stays visible with its recovery action.
+    @Published private(set) var availableHeadline: Bulletin?
+    var nowPlayingHeadline: Bulletin? {
+        if let activeSpokenHeadline, let availableHeadline,
+           activeSpokenHeadline.id == availableHeadline.id,
+           activeSpokenHeadline.text != availableHeadline.text { return availableHeadline }
+        return activeSpokenHeadline ?? availableHeadline ?? lastSpokenHeadline
+    }
+    /// The alert currently being read, or the last alert read, with its official source text.
+    @Published private(set) var activeSpokenWeatherAlert: Bulletin?
+    @Published private(set) var lastSpokenWeatherAlert: Bulletin?
+    /// The latest fetched alert remains available while its cached clip is prepared.
+    @Published private(set) var availableWeatherAlert: Bulletin?
+    var nowPlayingWeatherAlert: Bulletin? {
+        if let activeSpokenWeatherAlert, let availableWeatherAlert,
+           activeSpokenWeatherAlert.id == availableWeatherAlert.id,
+           activeSpokenWeatherAlert.text != availableWeatherAlert.text { return availableWeatherAlert }
+        return activeSpokenWeatherAlert ?? availableWeatherAlert ?? lastSpokenWeatherAlert
+    }
     private(set) var hasCheckedChannel = false
     private(set) var channelCheckFailed = false
     private var alerts: [String: Bulletin] = [:]
@@ -222,6 +240,21 @@ final class LibraryInterruptionController: ObservableObject {
     var isMonitorRunning: Bool { monitorRunning }
     /// True once the playing item's revision is known; until then no bulletin is spoken.
     var hasRevision: Bool { revision != nil }
+
+    func bulletinAudioIssue(for bulletin: Bulletin) -> String? {
+        deps.speaker.bulletinAudioIssue(for: bulletin)
+    }
+
+    /// Requests a fresh clip only. Playback still waits for a real ad break.
+    func retryBulletinAudio(_ bulletin: Bulletin) {
+        deps.speaker.retryBulletinAudio(bulletin)
+        objectWillChange.send()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.deps.speaker.refreshPreparedAudio()
+            self.objectWillChange.send()
+        }
+    }
 
     init(player: LibraryPlayer, dependencies: Dependencies) {
         self.player = player
@@ -289,6 +322,7 @@ final class LibraryInterruptionController: ObservableObject {
         await refreshActiveAlerts()
         applyChannel()
         await deps.speaker.refreshPreparedAudio()
+        objectWillChange.send()
     }
 
     func appBecameActive() {
@@ -302,6 +336,7 @@ final class LibraryInterruptionController: ObservableObject {
         discardDisabledBulletins()
         let headlines = channel.headlinesEnabled ? channel.headlines : []
         let local = channel.alertsEnabled ? alerts.values.filter { activeAlertIDs.contains($0.id) } : []
+        availableHeadline = headlines.first
         for bulletin in headlines + local { deps.speaker.prepare(bulletin) }
         send { .channelReplaced(headlines + local, $0) }
         for headline in headlines { send { .bulletinArrived(headline, $0) } }
@@ -310,6 +345,9 @@ final class LibraryInterruptionController: ObservableObject {
     private func refreshActiveAlerts() async {
         guard let monitor, monitorRunning else { activeAlertIDs = []; return }
         activeAlertIDs = await monitor.activeAlertIDs
+        if let availableWeatherAlert, !activeAlertIDs.contains(availableWeatherAlert.id) {
+            self.availableWeatherAlert = nil
+        }
     }
 
     // MARK: Alert monitor
@@ -377,6 +415,7 @@ final class LibraryInterruptionController: ObservableObject {
     func alertArrived(_ bulletin: Bulletin) {
         guard deps.preferences.speaks, channel?.alertsEnabled == true else { return }
         alerts[bulletin.id] = bulletin
+        availableWeatherAlert = bulletin
         deps.speaker.prepare(bulletin)
         send { .bulletinArrived(bulletin, $0) }
     }
@@ -569,13 +608,23 @@ final class LibraryInterruptionController: ObservableObject {
             return
         }
         if bulletin.kind == .headline { lastSpokenHeadline = bulletin }
+        if bulletin.kind == .alert { lastSpokenWeatherAlert = bulletin }
         if token == speechToken, bulletin.kind == .headline { activeSpokenHeadline = bulletin }
-        let (limit, sleep) = (deps.maximumSpeech, deps.sleep)
+        if token == speechToken, bulletin.kind == .alert { activeSpokenWeatherAlert = bulletin }
+        let (limit, sleep) = (speechWatchdogLimit(for: bulletin), deps.sleep)
         watchdog = Task { @MainActor [weak self] in
             try? await sleep(limit)
             guard !Task.isCancelled else { return }
             self?.speechEnded(token)
         }
+    }
+
+    private func speechWatchdogLimit(for bulletin: Bulletin) -> Duration {
+        if let duration = deps.speaker.expectedPlaybackDuration, duration.isFinite, duration > 0 {
+            return max(deps.maximumSpeech, .seconds(duration + 15))
+        }
+        let words = max(1, bulletin.text.split(whereSeparator: \.isWhitespace).count)
+        return max(deps.maximumSpeech, .seconds(Double(words + 15)))
     }
 
     private func speechEnded(_ token: UInt64) {
@@ -589,6 +638,7 @@ final class LibraryInterruptionController: ObservableObject {
         watchdog?.cancel()
         watchdog = nil
         activeSpokenHeadline = nil
+        activeSpokenWeatherAlert = nil
         deps.speaker.stop()
     }
 }

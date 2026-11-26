@@ -135,6 +135,7 @@ struct LibraryPlayerView: View {
                 }
             }
             if let model, let interruptions = model.handoffState.interruptions {
+                LibraryNowPlayingWeatherAlertCard(controller: interruptions)
                 LibraryNowPlayingHeadlineCard(
                     controller: interruptions, headlineState: model.headlinePhoneState, model: model)
             }

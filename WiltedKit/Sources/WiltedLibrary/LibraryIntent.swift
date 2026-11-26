@@ -34,6 +34,7 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         /// Ask the Mac to narrate a retained headline and send only its audio back to this device.
         case listenNext(story: LibraryHeadlineStory, anchorID: ItemID?)
         /// Ask the Mac to narrate one current automatic bulletin, without sending its text or location.
+        /// Current clients require `spokenTextSHA256`; legacy peers fail closed until updated.
         case requestBulletinAudio(bulletinID: String)
         /// Persistently cancel one Listen next request, including one already accepted by the Mac.
         case cancelListenNext(requestID: String)
@@ -120,8 +121,12 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
     public let deviceID: String
     public let createdAt: Date
     public let action: Action
+    /// Digest of the expected spoken bulletin copy. Raw text and location stay on-device.
+    public let spokenTextSHA256: String?
 
-    public init(id: String, deviceID: String, createdAt: Date, action: Action) throws {
+    public init(
+        id: String, deviceID: String, createdAt: Date, action: Action, spokenTextSHA256: String? = nil
+    ) throws {
         guard !id.isEmpty else { throw DomainError.invalidValue(field: "id", reason: "must not be empty") }
         guard !deviceID.isEmpty else { throw DomainError.invalidValue(field: "deviceID", reason: "must not be empty") }
         if case let .reorder(entryID, after) = action, after == entryID {
@@ -151,6 +156,11 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         default:
             break
         }
+        if let spokenTextSHA256 {
+            guard case .requestBulletinAudio = action, MediaHash.isWellFormed(spokenTextSHA256) else {
+                throw DomainError.invalidValue(field: "spokenTextSHA256", reason: "must be a SHA-256 digest on a bulletin audio request")
+            }
+        }
         if case let .setShowStartOffset(_, seconds, revision) = action,
            !(seconds.isFinite && (0...LibraryShowStartOffset.maximumSeconds).contains(seconds) && revision >= 0) {
             throw DomainError.invalidValue(field: "showStartOffset", reason: "must be finite, bounded, and revisioned")
@@ -171,6 +181,7 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         self.deviceID = deviceID
         self.createdAt = createdAt
         self.action = action
+        self.spokenTextSHA256 = spokenTextSHA256
     }
 
     /// Request for media with a fresh idempotency id.
@@ -270,16 +281,18 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         )
     }
 
-    /// Requests a Mac-rendered, owner-scoped audio clip for a currently active bulletin.
+    /// Requests a Mac-rendered, owner-scoped clip bound to the expected spoken copy.
+    /// Older peers can still decode this value, but current peers reject requests or offers without the digest.
     public static func requestBulletinAudio(
         bulletinID: String,
         deviceID: String,
+        spokenTextSHA256: String? = nil,
         createdAt: Date = Date(),
         id: String = UUID().uuidString
     ) throws -> LibraryIntent {
         try LibraryIntent(
             id: id, deviceID: deviceID, createdAt: createdAt,
-            action: .requestBulletinAudio(bulletinID: bulletinID)
+            action: .requestBulletinAudio(bulletinID: bulletinID), spokenTextSHA256: spokenTextSHA256
         )
     }
 
@@ -323,7 +336,7 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         try LibraryIntent(id: id, deviceID: deviceID, createdAt: createdAt, action: .unsupported)
     }
 
-    private enum CodingKeys: String, CodingKey { case id, deviceID, createdAt, action }
+    private enum CodingKeys: String, CodingKey { case id, deviceID, createdAt, action, spokenTextSHA256 }
 
     public func encode(to encoder: Encoder) throws {
         if case .unsupported = action {
@@ -334,6 +347,7 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
         try c.encode(deviceID, forKey: .deviceID)
         try c.encode(createdAt, forKey: .createdAt)
         try c.encode(action, forKey: .action)
+        try c.encodeIfPresent(spokenTextSHA256, forKey: .spokenTextSHA256)
     }
 
     public init(from decoder: Decoder) throws {
@@ -342,7 +356,8 @@ public struct LibraryIntent: Codable, Sendable, Equatable, Identifiable {
             id: c.decode(String.self, forKey: .id),
             deviceID: c.decode(String.self, forKey: .deviceID),
             createdAt: c.decode(Date.self, forKey: .createdAt),
-            action: c.decode(Action.self, forKey: .action)
+            action: c.decode(Action.self, forKey: .action),
+            spokenTextSHA256: c.decodeIfPresent(String.self, forKey: .spokenTextSHA256)
         )
     }
 

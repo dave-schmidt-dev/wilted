@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import WiltedLibrary
 import WiltedProducer
 import WiltedWeather
@@ -32,7 +33,8 @@ final class WiltedMacBulletinAudioCoordinatorTests: XCTestCase {
             })
         defer { coordinator.invalidate() }
         let intent = try LibraryIntent.requestBulletinAudio(
-            bulletinID: story.id, deviceID: phoneID, createdAt: now, id: "bulletin-audio-success")
+            bulletinID: story.id, deviceID: phoneID, spokenTextSHA256: MediaHash.sha256(text: story.text),
+            createdAt: now, id: "bulletin-audio-success")
         let resultServer = InMemoryLibraryServer(writerDeviceID: macID)
         let resultTransport = InMemoryLibraryTransport(deviceID: macID, server: resultServer)
         let applier = WiltedMacIntentApplier(
@@ -64,6 +66,8 @@ final class WiltedMacBulletinAudioCoordinatorTests: XCTestCase {
         XCTAssertEqual(offer.requestID, intent.id)
         XCTAssertEqual(offer.storyID, story.id)
         XCTAssertEqual(offer.requesterDeviceID, phoneID)
+        XCTAssertEqual(offer.spokenTextSHA256, intent.spokenTextSHA256)
+        XCTAssertEqual(offer.spokenTextSHA256, MediaHash.sha256(text: rendered.text))
         XCTAssertEqual(offer.mediaType, "audio/mp4")
         XCTAssertEqual(offer.byteCount, Int64(publishedAudio.bytes.count))
         XCTAssertEqual(publishedAudio.offer, offer)
@@ -87,9 +91,11 @@ final class WiltedMacBulletinAudioCoordinatorTests: XCTestCase {
             })
         defer { coordinator.invalidate() }
         let expiredIntent = try LibraryIntent.requestBulletinAudio(
-            bulletinID: expired.id, deviceID: phoneID, createdAt: now, id: "bulletin-audio-expired")
+            bulletinID: expired.id, deviceID: phoneID, spokenTextSHA256: MediaHash.sha256(text: expired.text),
+            createdAt: now, id: "bulletin-audio-expired")
         let wrongIDIntent = try LibraryIntent.requestBulletinAudio(
-            bulletinID: "headline:not-active", deviceID: phoneID, createdAt: now,
+            bulletinID: "headline:not-active", deviceID: phoneID,
+            spokenTextSHA256: MediaHash.sha256(text: "not active"), createdAt: now,
             id: "bulletin-audio-wrong-id")
 
         let expiredOutcome = try await coordinator.handle(expiredIntent)
@@ -129,9 +135,11 @@ final class WiltedMacBulletinAudioCoordinatorTests: XCTestCase {
             })
         defer { coordinator.invalidate() }
         let thrown = try LibraryIntent.requestBulletinAudio(
-            bulletinID: story.id, deviceID: phoneID, createdAt: now, id: "bulletin-audio-thrown")
+            bulletinID: story.id, deviceID: phoneID, spokenTextSHA256: MediaHash.sha256(text: story.text),
+            createdAt: now, id: "bulletin-audio-thrown")
         let invalid = try LibraryIntent.requestBulletinAudio(
-            bulletinID: story.id, deviceID: phoneID, createdAt: now, id: "bulletin-audio-invalid")
+            bulletinID: story.id, deviceID: phoneID, spokenTextSHA256: MediaHash.sha256(text: story.text),
+            createdAt: now, id: "bulletin-audio-invalid")
 
         let thrownOutcome = try await coordinator.handle(thrown)
         XCTAssertTrue(thrownOutcome.isApplied)
@@ -165,7 +173,8 @@ final class WiltedMacBulletinAudioCoordinatorTests: XCTestCase {
             })
         defer { coordinator.invalidate() }
         let intent = try LibraryIntent.requestBulletinAudio(
-            bulletinID: story.id, deviceID: phoneID, createdAt: now, id: "bulletin-audio-prepared")
+            bulletinID: story.id, deviceID: phoneID, spokenTextSHA256: MediaHash.sha256(text: story.text),
+            createdAt: now, id: "bulletin-audio-prepared")
 
         let outcome = try await coordinator.handle(intent)
         XCTAssertTrue(outcome.isApplied)
@@ -180,6 +189,7 @@ final class WiltedMacBulletinAudioCoordinatorTests: XCTestCase {
         XCTAssertEqual(uploaded.bytes, try Data(contentsOf: readyURL))
         XCTAssertEqual(ready.requesterDeviceID, phoneID)
         XCTAssertEqual(offer.requesterDeviceID, phoneID)
+        XCTAssertEqual(offer.spokenTextSHA256, intent.spokenTextSHA256)
         XCTAssertTrue(trace.ownerChecks.allSatisfy { $0 == owner })
     }
 
@@ -207,7 +217,8 @@ final class WiltedMacBulletinAudioCoordinatorTests: XCTestCase {
             coordinator.invalidate()
         }
         let intent = try LibraryIntent.requestBulletinAudio(
-            bulletinID: story.id, deviceID: phoneID, createdAt: now, id: "bulletin-audio-stale")
+            bulletinID: story.id, deviceID: phoneID, spokenTextSHA256: MediaHash.sha256(text: story.text),
+            createdAt: now, id: "bulletin-audio-stale")
 
         let outcome = try await coordinator.handle(intent)
         XCTAssertTrue(outcome.isApplied)
@@ -220,6 +231,66 @@ final class WiltedMacBulletinAudioCoordinatorTests: XCTestCase {
         XCTAssertEqual(failed.failure, .unavailableStory)
         XCTAssertTrue(trace.audio.isEmpty, "A render for old bulletin text must not be uploaded.")
         XCTAssertFalse(trace.statusHistory.contains { $0.phase == .ready })
+    }
+
+    func testNewMacRejectsOlderPhoneRequestWithoutDigest() async throws {
+        let directory = wiltedTemporaryDirectory("bulletin-audio-old-phone")
+        let story = try bulletin(id: "headline:old-phone", text: "An older phone has no digest")
+        let audioTransport = BulletinAudioTransportRecorder(owner: owner)
+        let authority = BulletinAudioAuthority(owner: owner, generation: 5)
+        let recorder = BulletinAudioRenderRecorder()
+        let coordinator = makeCoordinator(
+            directory: directory, transport: audioTransport, authority: authority,
+            activeBulletin: { $0 == story.id ? story : nil },
+            readyAudioURL: { _, _ in nil },
+            render: { text, voice, outputURL in
+                await recorder.record(text: text, voice: voice)
+                throw BulletinAudioTestError.renderFailed
+            })
+        defer { coordinator.invalidate() }
+        let oldPhoneIntent = try LibraryIntent.requestBulletinAudio(
+            bulletinID: story.id, deviceID: phoneID, createdAt: now, id: "bulletin-audio-old-phone")
+
+        let outcome = try await coordinator.handle(oldPhoneIntent)
+
+        XCTAssertEqual(outcome.disposition, .rejected)
+        let oldPhoneTrace = await audioTransport.snapshot()
+        let oldPhoneRenderCalls = await recorder.value()
+        XCTAssertTrue(oldPhoneTrace.statusHistory.isEmpty)
+        XCTAssertTrue(oldPhoneRenderCalls.isEmpty)
+    }
+
+    func testSameBulletinIDWithChangedMacTextFailsBeforeRendering() async throws {
+        let directory = wiltedTemporaryDirectory("bulletin-audio-version-skew")
+        let phoneCopy = try bulletin(id: "urn:oid:version-skew", text: "Phone's alert version")
+        let macCopy = try bulletin(id: phoneCopy.id, text: "Mac has a revised alert version")
+        let audioTransport = BulletinAudioTransportRecorder(owner: owner)
+        let authority = BulletinAudioAuthority(owner: owner, generation: 6)
+        let recorder = BulletinAudioRenderRecorder()
+        let coordinator = makeCoordinator(
+            directory: directory, transport: audioTransport, authority: authority,
+            activeBulletin: { $0 == macCopy.id ? macCopy : nil },
+            readyAudioURL: { _, _ in nil },
+            render: { text, voice, outputURL in
+                await recorder.record(text: text, voice: voice)
+                throw BulletinAudioTestError.renderFailed
+            })
+        defer { coordinator.invalidate() }
+        let intent = try LibraryIntent.requestBulletinAudio(
+            bulletinID: phoneCopy.id, deviceID: phoneID,
+            spokenTextSHA256: MediaHash.sha256(text: phoneCopy.text),
+            createdAt: now, id: "bulletin-audio-version-skew")
+
+        let outcome = try await coordinator.handle(intent)
+
+        XCTAssertTrue(outcome.isApplied)
+        let failed = try await eventuallyStatus(intent.id, phase: .failed, from: audioTransport)
+        XCTAssertEqual(failed.failure, .unavailableStory)
+        XCTAssertNil(failed.audioOffer)
+        let renderCalls = await recorder.value()
+        let trace = await audioTransport.snapshot()
+        XCTAssertTrue(renderCalls.isEmpty)
+        XCTAssertTrue(trace.audio.isEmpty)
     }
 
     func testSettingsTestSampleUsesLocalResolverWithoutStartingPublicNWSLookup() async throws {
@@ -253,7 +324,8 @@ final class WiltedMacBulletinAudioCoordinatorTests: XCTestCase {
         let requestsWhileIdle = await nwsTransport.requests()
         XCTAssertTrue(requestsWhileIdle.isEmpty, "The public adapter stays idle until fallback is needed.")
         let intent = try LibraryIntent.requestBulletinAudio(
-            bulletinID: sample.id, deviceID: phoneID, createdAt: at, id: "bulletin-audio-local-test-sample")
+            bulletinID: sample.id, deviceID: phoneID, spokenTextSHA256: MediaHash.sha256(text: sample.text),
+            createdAt: at, id: "bulletin-audio-local-test-sample")
 
         let outcome = try await coordinator.handle(intent)
         XCTAssertTrue(outcome.isApplied)
@@ -271,8 +343,28 @@ final class WiltedMacBulletinAudioCoordinatorTests: XCTestCase {
         let at = now
         let alertID = "urn:oid:2.49.0.1.840.0.54321"
         let body = try nwsAlertBody(id: alertID, now: at)
+        let detailFeature = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let activeBody = try JSONSerialization.data(withJSONObject: ["features": [detailFeature]])
+        let activeClient = NWSClient(
+            transport: BulletinAudioNWSResponseTransport(body: activeBody), appVersion: "test",
+            repositoryURL: "https://github.com/dave-schmidt-dev/wilted")
+        let activeResponse = try await activeClient.activeAlerts(zones: ["FLZ074"])
+        let phoneAlert = try XCTUnwrap(activeResponse.alerts.first)
+        let phoneBulletin = try XCTUnwrap(AlertMonitor.bulletin(for: phoneAlert, now: at))
         let nwsTransport = BulletinAudioNWSResponseTransport(body: body)
         let publicLookup = WiltedMacPublicNWSBulletinLookup(transport: nwsTransport, now: { at })
+        let comparisonLookup = WiltedMacPublicNWSBulletinLookup(
+            transport: BulletinAudioNWSResponseTransport(body: body), now: { at })
+        let maybeRemoteBulletin = await comparisonLookup.bulletin(id: alertID)
+        let remoteBulletin = try XCTUnwrap(maybeRemoteBulletin)
+        XCTAssertEqual(Data(phoneBulletin.text.utf8), Data(remoteBulletin.text.utf8),
+                       "phone and Mac format the same alert byte for byte")
+        XCTAssertEqual(phoneBulletin.issuedAt, remoteBulletin.issuedAt)
+        XCTAssertEqual(phoneBulletin.expiresAt, remoteBulletin.expiresAt)
+        XCTAssertEqual(
+            Data(SHA256.hash(data: Data(phoneBulletin.text.utf8))),
+            Data(SHA256.hash(data: Data(remoteBulletin.text.utf8))),
+            "the phone's spoken-text cache hash is identical on the Mac path")
         let audioTransport = BulletinAudioTransportRecorder(owner: owner)
         let authority = BulletinAudioAuthority(owner: owner, generation: 9)
         let recorder = BulletinAudioRenderRecorder()
@@ -292,7 +384,8 @@ final class WiltedMacBulletinAudioCoordinatorTests: XCTestCase {
         let requestsWhileIdle = await nwsTransport.requests()
         XCTAssertTrue(requestsWhileIdle.isEmpty, "No public lookup runs while the Mac is idle.")
         let intent = try LibraryIntent.requestBulletinAudio(
-            bulletinID: alertID, deviceID: phoneID, createdAt: at, id: "bulletin-audio-nws-fallback")
+            bulletinID: alertID, deviceID: phoneID, spokenTextSHA256: MediaHash.sha256(text: phoneBulletin.text),
+            createdAt: at, id: "bulletin-audio-nws-fallback")
 
         let outcome = try await coordinator.handle(intent)
         XCTAssertTrue(outcome.isApplied)
@@ -308,7 +401,8 @@ final class WiltedMacBulletinAudioCoordinatorTests: XCTestCase {
         XCTAssertNil(request.httpBody)
         XCTAssertEqual(ready.storyID, alertID)
         XCTAssertEqual(ready.requesterDeviceID, phoneID)
-        XCTAssertEqual(rendered.first?.text, "Severe Thunderstorm Warning for Test County.")
+        XCTAssertEqual(ready.audioOffer?.spokenTextSHA256, MediaHash.sha256(text: phoneBulletin.text))
+        XCTAssertEqual(Data(try XCTUnwrap(rendered.first?.text).utf8), Data(phoneBulletin.text.utf8))
     }
 
     private func makeCoordinator(

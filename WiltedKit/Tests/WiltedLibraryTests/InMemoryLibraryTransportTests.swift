@@ -40,7 +40,15 @@ final class InMemoryLibraryTransportTests: XCTestCase {
 
     func testBulletinLimitsAreEnforcedIncludingOnDecode() throws {
         let now = Date(timeIntervalSince1970: 1)
-        XCTAssertThrowsError(try Bulletin(id: "a", kind: .alert, text: String(repeating: "x", count: 601), issuedAt: now, expiresAt: now))
+        let tooLong = String(repeating: "x", count: Bulletin.maximumTextCharacters + 1)
+        XCTAssertThrowsError(try Bulletin(id: "a", kind: .alert, text: tooLong, issuedAt: now, expiresAt: now))
+        let tooLongPayload = Data("""
+        {"id":"a","kind":"alert","text":"\(tooLong)","severity":"unknown","issuedAt":1,"expiresAt":1}
+        """.utf8)
+        XCTAssertThrowsError(try JSONDecoder().decode(Bulletin.self, from: tooLongPayload))
+        XCTAssertThrowsError(try Bulletin(
+            id: "a", kind: .alert, text: "Alert", issuedAt: now, expiresAt: now,
+            originalText: String(repeating: "x", count: Bulletin.maximumOriginalTextCharacters + 1)))
         let one = try Bulletin(id: "a", kind: .headline, text: "x", issuedAt: now, expiresAt: now)
         XCTAssertThrowsError(try LibraryBulletins(alertsEnabled: true, headlinesEnabled: true,
                                                   headlines: Array(repeating: one, count: 21)))
@@ -72,6 +80,24 @@ final class InMemoryLibraryTransportTests: XCTestCase {
         XCTAssertEqual(bulletin.headlineStoryID, "legacy")
         XCTAssertNil(bulletin.publisherID)
         XCTAssertNil(bulletin.link)
+        XCTAssertNil(bulletin.originalText)
+    }
+
+    func testOriginalAlertTextRoundTripsAndRemainsOptionalForLegacyBulletins() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let bulletin = try Bulletin(
+            id: "nws-alert", kind: .alert,
+            text: "Severe Wind Advisory for Haleakala Summit, until 3 PM HST. Take care.",
+            severity: .severe, issuedAt: now, expiresAt: now.addingTimeInterval(3_600),
+            originalText: "Wind Advisory issued until 3 PM HST.\n\nTake care.")
+
+        let decoded = try JSONDecoder().decode(Bulletin.self, from: JSONEncoder().encode(bulletin))
+        let legacy = try JSONDecoder().decode(Bulletin.self, from: Data(
+            #"{"id":"old-alert","kind":"alert","text":"Old alert","severity":"severe","issuedAt":1000,"expiresAt":1600}"#.utf8))
+
+        XCTAssertEqual(decoded, bulletin)
+        XCTAssertEqual(decoded.originalText, "Wind Advisory issued until 3 PM HST.\n\nTake care.")
+        XCTAssertNil(legacy.originalText)
     }
 
     func testHeadlineLinkRejectsCredentialsAndNonWebSchemes() throws {

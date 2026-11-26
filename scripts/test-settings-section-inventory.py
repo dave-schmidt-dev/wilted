@@ -366,6 +366,8 @@ INVENTORY = {
         'wilted-reports-skip-sports',
         'wilted-reports-skip-words',
         'wilted-reports-skipped-count',
+        'wilted-reports-headline-ticker',
+        'wilted-reports-headline-ticker-explanation',
         'wilted-reports-headline-toast-duration',
         'wilted-reports-headline-toast-duration-explanation',
         'wilted-reports-bulletin-status',

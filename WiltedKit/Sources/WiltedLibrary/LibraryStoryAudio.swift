@@ -14,12 +14,15 @@ public struct LibraryStoryAudioOffer: Codable, Sendable, Equatable, Identifiable
     public let byteCount: Int64
     public let mediaType: String
     public let durationSeconds: Double
+    /// Digest of the exact spoken copy; absent on older peers and non-bulletin narration.
+    /// A client must not play automatic bulletin audio when this digest is absent or mismatched.
+    public let spokenTextSHA256: String?
 
     public var id: String { requestID }
 
     private enum CodingKeys: String, CodingKey {
         case requestID, storyID, requesterDeviceID, voiceID, voiceRevision
-        case audioRevision, contentHash, byteCount, mediaType, durationSeconds
+        case audioRevision, contentHash, byteCount, mediaType, durationSeconds, spokenTextSHA256
     }
 
     public init(
@@ -32,7 +35,8 @@ public struct LibraryStoryAudioOffer: Codable, Sendable, Equatable, Identifiable
         contentHash: String,
         byteCount: Int64,
         mediaType: String,
-        durationSeconds: Double
+        durationSeconds: Double,
+        spokenTextSHA256: String? = nil
     ) throws {
         guard !requestID.isEmpty else {
             throw DomainError.invalidValue(field: "requestID", reason: "must not be empty")
@@ -59,6 +63,9 @@ public struct LibraryStoryAudioOffer: Codable, Sendable, Equatable, Identifiable
         guard durationSeconds.isFinite, durationSeconds > 0 else {
             throw DomainError.invalidValue(field: "durationSeconds", reason: "must be finite and positive")
         }
+        if let spokenTextSHA256, !MediaHash.isWellFormed(spokenTextSHA256) {
+            throw DomainError.invalidValue(field: "spokenTextSHA256", reason: "must be sha256:<64 lowercase hex>")
+        }
         self.requestID = requestID
         self.storyID = storyID
         self.requesterDeviceID = requesterDeviceID
@@ -69,6 +76,7 @@ public struct LibraryStoryAudioOffer: Codable, Sendable, Equatable, Identifiable
         self.byteCount = byteCount
         self.mediaType = mediaType
         self.durationSeconds = durationSeconds
+        self.spokenTextSHA256 = spokenTextSHA256
     }
 
     public init(from decoder: Decoder) throws {
@@ -83,7 +91,8 @@ public struct LibraryStoryAudioOffer: Codable, Sendable, Equatable, Identifiable
             contentHash: values.decode(String.self, forKey: .contentHash),
             byteCount: values.decode(Int64.self, forKey: .byteCount),
             mediaType: values.decode(String.self, forKey: .mediaType),
-            durationSeconds: values.decode(Double.self, forKey: .durationSeconds)
+            durationSeconds: values.decode(Double.self, forKey: .durationSeconds),
+            spokenTextSHA256: values.decodeIfPresent(String.self, forKey: .spokenTextSHA256)
         )
     }
 }

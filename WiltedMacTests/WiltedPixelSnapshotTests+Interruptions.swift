@@ -32,6 +32,27 @@ extension WiltedPixelSnapshotTests {
             WiltedMacBulletinBanner(text: "Wire. City council approves the new transit plan.", isAlert: false, onSkip: {}),
             size: CGSize(width: 760, height: 80)).joined(separator: " ")
         XCTAssertTrue(shown.contains("City council"), shown)
+
+        let original = """
+        Event: Special Marine Warning
+        Severity: Severe
+        Affected areas: Hawk Channel
+        Hazard starts (CAP): 2026-11-25T21:25:00-05:00
+        Official instructions:
+        Stay low or go below, and make sure everyone is wearing life jackets.
+        """
+        let alertDetail = try WiltedMacHeadless.recognizedText(
+            WiltedMacBulletinBanner(
+                text: "Severe Special Marine Warning for Hawk Channel.", isAlert: true,
+                originalText: original,
+                officialURL: URL(string: "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.12345"),
+                originalTextExpanded: true, onSkip: {}),
+            size: CGSize(width: 760, height: 420)).joined(separator: " ")
+        XCTAssertTrue(alertDetail.contains("Read original NWS alert"), alertDetail)
+        XCTAssertTrue(alertDetail.contains("Affected areas: Hawk Channel"), alertDetail)
+        XCTAssertTrue(alertDetail.contains("21:25:00-05:00"), alertDetail)
+        XCTAssertTrue(alertDetail.contains("wearing life jackets"), alertDetail)
+        XCTAssertTrue(alertDetail.contains("Open full NWS alert"), alertDetail)
     }
 
     private func fixtureReport() -> WiltedMacEpisode {

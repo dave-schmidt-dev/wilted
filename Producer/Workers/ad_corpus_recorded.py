@@ -8,6 +8,44 @@ import sqlite3
 from pathlib import Path
 
 
+def revision_matches_source(item_id: str, revision_id: str, source_hash: str, *, library: Path) -> bool:
+    """Verify a feedback revision's source hash from its successful journal record.
+
+    The match comes from the app-owned preparation provenance, not a copied case sidecar. If the
+    revision has no successful record, or its newest successful record lacks the exact source hash,
+    it is unavailable and cannot support a handled action.
+    """
+    if not item_id or not revision_id or not source_hash or not library.is_file():
+        return False
+    connection = sqlite3.connect(f"file:{library}?mode=ro", uri=True)
+    try:
+        rows = connection.execute(
+            "SELECT CAST(ZSTATUSDATA AS TEXT) FROM ZPREPARATIONRECORD"
+            " WHERE ZITEMID = ? ORDER BY ZEMITTEDAT DESC", (item_id,)
+        ).fetchall()
+    except sqlite3.Error:
+        return False
+    finally:
+        connection.close()
+    for (blob,) in rows:
+        try:
+            status = json.loads(blob or "")
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(status, dict):
+            continue
+        terminal = status.get("terminalResult")
+        if (not isinstance(terminal, dict) or terminal.get("outcome") != "succeeded"
+                or terminal.get("revisionID") != revision_id):
+            continue
+        evidence = status.get("evidence")
+        fields = evidence.get("fields") if isinstance(evidence, dict) else None
+        return (isinstance(evidence, dict)
+                and evidence.get("kind") == "podcast-pipeline-provenance"
+                and isinstance(fields, dict) and fields.get("sourceHash") == source_hash)
+    return False
+
+
 def recorded_intervals(case: dict, *, library: Path) -> list[tuple[float, float]] | None:
     """Read the latest successful preparation matching the case's input identity.
 

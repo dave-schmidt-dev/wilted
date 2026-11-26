@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 import ad_corpus
+from ad_corpus_recorded import revision_matches_source
 
 
 class RecordedIdentityTests(unittest.TestCase):
@@ -69,6 +70,21 @@ class RecordedIdentityTests(unittest.TestCase):
         self.assertEqual(self.cuts(revisionID="rev-one"), [ad_corpus.Span(10, 20)])
         self.assertEqual(self.cuts(), [ad_corpus.Span(30, 40)])
         self.assertIsNone(self.cuts(revisionID="rev-missing"))
+
+    def test_feedback_source_binding_uses_the_exact_successful_revision(self):
+        self.insert(self.status(), 1)
+        self.assertTrue(revision_matches_source(
+            "item-one", "rev-one", "sha256:original", library=self.library))
+        self.assertFalse(revision_matches_source(
+            "item-one", "rev-one", "sha256:changed", library=self.library))
+        self.assertFalse(revision_matches_source(
+            "item-one", "rev-two", "sha256:original", library=self.library))
+
+        newer = self.status(source="sha256:changed")
+        self.insert(newer, 2)
+        self.assertFalse(revision_matches_source(
+            "item-one", "rev-one", "sha256:original", library=self.library),
+            "a contradictory newer success for one revision fails closed")
 
     def test_failed_attempt_does_not_replace_successful_cuts(self):
         self.insert(self.status(), 1)

@@ -109,7 +109,9 @@ struct WiltedMacPlayerContent: View {
             if model.hasCurrentPlayback {
                 #if canImport(WiltedProducer)
                 if let bulletin = model.speakingBulletin, bulletin.kind == .alert {
-                    WiltedMacBulletinBanner(text: bulletin.text, isAlert: bulletin.kind == .alert) {
+                    WiltedMacBulletinBanner(
+                        text: bulletin.text, isAlert: true, originalText: bulletin.originalText,
+                        officialURL: bulletin.link) {
                         model.skipSpokenBulletin()
                     }
                 }
@@ -432,6 +434,7 @@ struct WiltedMacPlaybackShareLink: View {
     var body: some View {
         #if canImport(WiltedProducer)
         WiltedMacShareComposer(model: model)
+            .id(model.shareComposerSelectionIdentity)
         #else
         WiltedMacPlaybackShareItems(model: model)
         #endif
@@ -468,22 +471,60 @@ struct WiltedMacBulletinBanner: View {
     @Environment(\.colorScheme) private var colorScheme
     let text: String
     let isAlert: Bool
+    let originalText: String?
+    let officialURL: URL?
+    @State private var showOriginalText: Bool
     let onSkip: () -> Void
 
+    init(text: String, isAlert: Bool, originalText: String? = nil, officialURL: URL? = nil,
+         originalTextExpanded: Bool = false, onSkip: @escaping () -> Void) {
+        self.text = text
+        self.isAlert = isAlert
+        self.originalText = originalText
+        self.officialURL = officialURL
+        _showOriginalText = State(initialValue: originalTextExpanded)
+        self.onSkip = onSkip
+    }
+
     var body: some View {
-        HStack(spacing: WiltedTheme.Spacing.small) {
-            Image(systemName: isAlert ? "exclamationmark.triangle.fill" : "newspaper.fill")
-                .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-                .accessibilityHidden(true)
-            Text(text)
-                .wiltedFont(.body)
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Button(action: onSkip) { Label("Skip", systemImage: "forward.end.fill") }
-                .labelStyle(.iconOnly)
-                .help("Skip")
-                .accessibilityLabel("Skip bulletin")
-                .accessibilityIdentifier("wilted-player-bulletin-skip")
+        VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
+            HStack(spacing: WiltedTheme.Spacing.small) {
+                Image(systemName: isAlert ? "exclamationmark.triangle.fill" : "newspaper.fill")
+                    .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
+                    .accessibilityHidden(true)
+                Text(text)
+                    .wiltedFont(.body)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button(action: onSkip) { Label("Skip", systemImage: "forward.end.fill") }
+                    .labelStyle(.iconOnly)
+                    .help("Skip")
+                    .accessibilityLabel("Skip bulletin")
+                    .accessibilityIdentifier("wilted-player-bulletin-skip")
+            }
+            if isAlert, originalText != nil || officialURL != nil {
+                if let originalText {
+                    DisclosureGroup(isExpanded: $showOriginalText) {
+                        Text(originalText)
+                            .wiltedFont(.utility)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("wilted-player-bulletin-original-text")
+                        if let officialURL {
+                            Link("Open full NWS alert", destination: officialURL)
+                                .wiltedFont(.utility)
+                        }
+                    } label: {
+                        Text("Read original NWS alert")
+                            .wiltedFont(.utility)
+                    }
+                    .accessibilityIdentifier("wilted-player-bulletin-original")
+                } else if let officialURL {
+                    Link("Open full NWS alert", destination: officialURL)
+                        .wiltedFont(.utility)
+                        .accessibilityIdentifier("wilted-player-bulletin-original-link")
+                }
+            }
         }
         .padding(WiltedTheme.Spacing.small)
         .background(
