@@ -445,11 +445,20 @@ final class WiltedMacNarrowLayoutTests: XCTestCase {
             windowWidth: minimum, scale: .standard, sidebarVisible: true), height: 260)
         let wide = try recognizedPlayerLines(WiltedMacCompactPlayer(model: model), size: wideSize)
         let narrow = try recognizedPlayerLines(WiltedMacCompactPlayer(model: model), size: narrowSize)
+        XCTAssertEqual(model.playbackProgressSpokenLabel, "1 minute of 30 minutes",
+                       "the visible readout's exact duration remains available accessibly")
+        XCTAssertTrue(wide.contains { $0.text.contains("1:00 of 30:0") },
+                      "the visible wide readout and its row are recognized: \(wide.map(\.text))")
+        XCTAssertTrue(wide.contains { $0.text.contains("Share with summary") },
+                      "the wide player keeps the full action label: \(wide.map(\.text))")
+        XCTAssertTrue(narrow.contains { $0.text.contains("Share") },
+                      "the minimum-width player keeps a readable share label: \(narrow.map(\.text))")
         // Vision reports the vertical position as a fraction of the image; this is points.
         func top(_ lines: [(text: String, top: CGFloat)], _ label: String, in size: CGSize) throws -> CGFloat {
-            try XCTUnwrap(lines.first { $0.text.contains(label) }, "\(label) is drawn").top * size.height
+            try XCTUnwrap(lines.first { $0.text.contains(label) },
+                          "\(label) is drawn in OCR output \(lines.map(\.text))").top * size.height
         }
-        XCTAssertEqual(try top(wide, "Transcript", in: wideSize), try top(wide, "of 30:00", in: wideSize), accuracy: 12,
+        XCTAssertEqual(try top(wide, "Transcript", in: wideSize), try top(wide, "1:00 of 30:0", in: wideSize), accuracy: 12,
                        "wide: the scrubber's readout and the section buttons share a row")
         XCTAssertGreaterThan(
             try top(narrow, "Transcript", in: narrowSize), try top(narrow, "of 30:00", in: narrowSize) + 8,
@@ -467,6 +476,8 @@ final class WiltedMacNarrowLayoutTests: XCTestCase {
                 bar(playingModel(link: page), scale: available.scale), size: CGSize(width: available.width, height: 260))
             XCTAssertEqual(lines.map(\.text), linkedLines.map(\.text),
                            "text sharing adds no wider warning at \(available.name)")
+            XCTAssertTrue(lines.contains { $0.text.contains("Share") },
+                          "a readable Share action remains at \(available.name): \(lines.map(\.text))")
             XCTAssertFalse(lines.contains { $0.text.contains("Playback position") },
                            "the scrubber's label is for assistive technology only")
         }

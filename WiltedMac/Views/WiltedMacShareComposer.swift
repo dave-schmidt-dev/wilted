@@ -210,11 +210,18 @@ struct WiltedMacShareComposer: View {
             Button {
                 state.startOrAttach()
             } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "square.and.arrow.up")
-                    Text("Share with summary").lineLimit(1)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "square.and.arrow.up")
+                        Text("Share with summary").lineLimit(1)
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                    HStack(spacing: 6) {
+                        Image(systemName: "square.and.arrow.up")
+                        Text("Share summary").lineLimit(1)
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
                 }
-                .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(.bordered)
             .controlSize(.small)

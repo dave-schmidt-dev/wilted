@@ -271,6 +271,10 @@ final class WiltedMacPlaylistDiscoverabilityTests: XCTestCase {
             WiltedMacPlaybackShareLink(model: model).padding(12), size: CGSize(width: 360, height: 100))
         XCTAssertTrue(lines.contains { $0.localizedCaseInsensitiveContains("Share with summary") },
                       "the control names itself: \(lines)")
+        let compactLines = try WiltedMacHeadless.recognizedText(
+            WiltedMacPlaybackShareLink(model: model).padding(12), size: CGSize(width: 190, height: 100))
+        XCTAssertTrue(compactLines.contains { $0.localizedCaseInsensitiveContains("Share summary") },
+                      "a compact control keeps a readable summary label: \(compactLines)")
         XCTAssertFalse(lines.contains { $0.localizedCaseInsensitiveContains("transcript summary") },
                        "the summary popover stays closed until asked: \(lines)")
     }

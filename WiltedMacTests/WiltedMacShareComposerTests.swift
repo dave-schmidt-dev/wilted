@@ -31,6 +31,8 @@ final class WiltedMacShareComposerTests: XCTestCase {
         XCTAssertTrue(items.contains("WiltedMacPlaybackShareItems(model: model)"))
         XCTAssertTrue(composer.contains(#"Text("Share with summary")"#),
                       "the one-click action has visible text")
+        XCTAssertTrue(composer.contains(#"Text("Share summary")"#),
+                      "the visible action has a compact text label when space is tight")
         XCTAssertTrue(composer.contains("Button {\n                state.startOrAttach()"),
                       "the visible Share with summary button starts work in one click")
         XCTAssertTrue(composer.contains(#".accessibilityLabel("More share options")"#))
