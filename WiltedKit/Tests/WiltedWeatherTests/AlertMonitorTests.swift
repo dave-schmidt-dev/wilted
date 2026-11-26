@@ -287,6 +287,17 @@ struct AlertMonitorTests {
         #expect(bulletin.originalText?.contains(description.trimmingCharacters(in: .whitespacesAndNewlines)) == true)
     }
 
+    @Test func severityAlreadyInEventIsNotRepeated() throws {
+        let alert = NWSAlert(
+            id: "severe-event-title", event: "Severe Thunderstorm Warning", areaDesc: "Tulsa County",
+            severity: "Severe")
+
+        let bulletin = try #require(AlertMonitor.bulletin(for: alert, now: nowDate))
+
+        #expect(bulletin.text == "Severe Thunderstorm Warning for Tulsa County.")
+        #expect(!bulletin.text.contains("Severe Severe"))
+    }
+
     @Test func onsetAndEndAcrossDaylightTransitionUseExplicitUTCWhenHeadlineHasNoZone() throws {
         let alert = NWSAlert(
             id: "dst-alert", event: "Flood Watch", areaDesc: "Example County", severity: "Moderate",
