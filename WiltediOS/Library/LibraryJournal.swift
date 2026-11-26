@@ -3,7 +3,7 @@ import OSLog
 import WiltedCloudKitLibrary
 import WiltedLibrary
 
-private let journalLog = Logger(subsystem: "com.zerodelta.wilted", category: "PlaybackJournalV2")
+private let journalLog = Logger(subsystem: "com.zerodelta.wilted", category: "PlaybackJournal")
 
 /// The iPhone's version-2 playback record. Legacy `Library/Logs/playback-journal.log` is preserved
 /// and is not read into this stream. New records contain only allowlisted state and a pseudonymous

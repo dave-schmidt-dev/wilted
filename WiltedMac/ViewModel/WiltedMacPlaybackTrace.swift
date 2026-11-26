@@ -3,7 +3,7 @@ import OSLog
 import WiltedDomain
 import WiltedLibrary
 
-private let playbackJournalLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "PlaybackJournalV2")
+private let playbackJournalLog = Logger(subsystem: "com.zerodelta.wilted.mac", category: "PlaybackJournal")
 
 /// Durable, rotating playback boundaries for joining Mac handoff with the phone journal.
 /// Private files retain a pseudonymous item tag; public OSLog contains only event fields.
