@@ -160,6 +160,9 @@ extension LibraryListenNextPhoneModelTests {
         await manager.refreshPreparedAudio()
 
         XCTAssertEqual(manager.failure(for: bulletin), .transferFailed)
+        XCTAssertEqual(
+            manager.issue(for: bulletin),
+            "The Mac audio has no text check. Update Wilted on both devices, then retry.")
         XCTAssertFalse(manager.canSpeak(bulletin), "an older Mac's unattested clip must never be spoken")
         let fetchCount = await transport.audio.fetchAttemptCount
         XCTAssertEqual(fetchCount, 0)
@@ -177,6 +180,9 @@ extension LibraryListenNextPhoneModelTests {
         await manager.refreshPreparedAudio()
 
         XCTAssertEqual(manager.failure(for: revised), .transferFailed)
+        XCTAssertEqual(
+            manager.issue(for: revised),
+            "The bulletin text changed between devices. Update Wilted on both devices, then retry.")
         XCTAssertFalse(manager.canSpeak(revised), "a valid digest for different text still fails closed")
         let finalFetchCount = await transport.audio.fetchAttemptCount
         XCTAssertEqual(finalFetchCount, 0)
