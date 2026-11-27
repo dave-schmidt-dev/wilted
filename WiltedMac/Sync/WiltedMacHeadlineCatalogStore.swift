@@ -104,7 +104,7 @@ final class WiltedMacHeadlineCatalogStore {
         }
     }
 
-    /// Returns the current projection and durably removes stories outside the seven-day window.
+    /// Returns the current projection and durably removes stories outside the 24-hour window.
     func projection(at date: Date) throws -> LibraryHeadlineProjection {
         try ensureWritable()
         try pruneRecent(at: date)

@@ -36,7 +36,7 @@ final class WiltedMacHeadlineNarration {
     ) async throws -> ArticleNarrationAudio
 
     @ObservationIgnored private let render: RenderOperation
-    @ObservationIgnored private let availability: @MainActor (ApprovedReadingVoiceID) -> ArticleVoiceAvailability
+    @ObservationIgnored private let availability: @Sendable (ApprovedReadingVoiceID) -> ArticleVoiceAvailability
     @ObservationIgnored private let now: @Sendable () -> Date
     @ObservationIgnored private let directory: URL
     @ObservationIgnored private var renderTask: Task<Void, Never>?
@@ -61,7 +61,7 @@ final class WiltedMacHeadlineNarration {
         render: @escaping RenderOperation = { text, voiceID, outputURL in
             try await ArticleNarrationCoordinator().synthesizeShortText(text, voiceID: voiceID, outputURL: outputURL)
         },
-        availability: @escaping @MainActor (ApprovedReadingVoiceID) -> ArticleVoiceAvailability = {
+        availability: @escaping @Sendable (ApprovedReadingVoiceID) -> ArticleVoiceAvailability = {
             ArticleNarrationCoordinator().availability(for: $0)
         },
         now: @escaping @Sendable () -> Date = { Date() },
@@ -225,71 +225,119 @@ final class WiltedMacHeadlineNarration {
         queue.removeFirst()
         let storyID = bulletin.headlineStoryID ?? ""
         let voiceRevision = ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID)
-        let state = WiltedMacHeadlineNarrationState.preparing(
+        states[id] = .preparing(
             storyID: storyID, bulletinID: bulletin.id, voiceID: voiceID, voiceRevision: voiceRevision)
-        states[id] = state
-        switch availability(voiceID) {
-        case .available: break
-        case .missingVoice:
-            states[id] = .unavailable(storyID: storyID, bulletinID: bulletin.id, voiceID: voiceID, reason: .voiceFilesMissing)
-            startNextIfPossible()
-            return
-        case .missingModel:
-            states[id] = .unavailable(storyID: storyID, bulletinID: bulletin.id, voiceID: voiceID, reason: .modelMissing)
-            startNextIfPossible()
-            return
-        case .missingRuntime:
-            states[id] = .unavailable(storyID: storyID, bulletinID: bulletin.id, voiceID: voiceID, reason: .runtimeUnavailable)
-            startNextIfPossible()
+        let generation = renderGeneration
+        activeRenderID = id
+        renderTask = Task { @MainActor [weak self] in
+            await self?.checkAvailabilityAndRender(
+                bulletin, id: id, storyID: storyID, voiceID: voiceID,
+                voiceRevision: voiceRevision, generation: generation)
+        }
+    }
+
+    private func checkAvailabilityAndRender(
+        _ bulletin: Bulletin, id: String, storyID: String, voiceID: ApprovedReadingVoiceID,
+        voiceRevision: String, generation: UInt64
+    ) async {
+        guard taskStillOwns(bulletin, id: id, voiceID: voiceID, generation: generation) else {
+            discardExpiredCandidateIfNeeded(bulletin, id: id)
+            finishRenderTask(generation)
             return
         }
+        let availability = self.availability
+        let result = await Task.detached(priority: .utility) { availability(voiceID) }.value
+        guard taskStillOwns(bulletin, id: id, voiceID: voiceID, generation: generation) else {
+            discardExpiredCandidateIfNeeded(bulletin, id: id)
+            finishRenderTask(generation)
+            return
+        }
+        if let reason = unavailableReason(for: result) {
+            states[id] = .unavailable(
+                storyID: storyID, bulletinID: bulletin.id, voiceID: voiceID, reason: reason)
+            finishRenderTask(generation)
+            return
+        }
+        guard let outputURL = makeOutputURL() else {
+            states[id] = .unavailable(
+                storyID: storyID, bulletinID: bulletin.id, voiceID: voiceID, reason: .renderFailed)
+            finishRenderTask(generation)
+            return
+        }
+        await renderCandidate(bulletin, id: id, storyID: storyID, voiceID: voiceID,
+                     voiceRevision: voiceRevision, generation: generation, outputURL: outputURL)
+    }
+
+    private func taskStillOwns(
+        _ bulletin: Bulletin, id: String, voiceID: ApprovedReadingVoiceID, generation: UInt64
+    ) -> Bool {
+        !Task.isCancelled && renderGeneration == generation
+            && self.voiceID == voiceID && candidates[id] == bulletin && bulletin.expiresAt > now()
+    }
+
+    private func discardExpiredCandidateIfNeeded(_ bulletin: Bulletin, id: String) {
+        guard bulletin.expiresAt <= now(), candidates[id] == bulletin else { return }
+        candidates.removeValue(forKey: id)
+        queue.removeAll { $0 == id }
+        states.removeValue(forKey: id)
+        refreshLatestCandidate()
+        scheduleExpiry()
+    }
+
+    private func unavailableReason(
+        for availability: ArticleVoiceAvailability
+    ) -> WiltedMacHeadlineNarrationState.UnavailableReason? {
+        switch availability {
+        case .available: nil
+        case .missingVoice: .voiceFilesMissing
+        case .missingModel: .modelMissing
+        case .missingRuntime: .runtimeUnavailable
+        }
+    }
+
+    private func makeOutputURL() -> URL? {
         do {
             try FileManager.default.createDirectory(
                 at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            return directory.appending(path: "\(UUID().uuidString).m4a")
         } catch {
-            states[id] = .unavailable(storyID: storyID, bulletinID: bulletin.id, voiceID: voiceID, reason: .renderFailed)
-            startNextIfPossible()
-            return
+            return nil
         }
-        let outputURL = directory.appending(path: "\(UUID().uuidString).m4a")
-        let generation = renderGeneration
-        let render = self.render
-        activeRenderID = id
-        renderTask = Task { @MainActor [weak self] in
-            do {
-                let audio = try await render(bulletin.text, voiceID, outputURL)
-                guard let self else { try? FileManager.default.removeItem(at: outputURL); return }
-                guard !Task.isCancelled, self.renderGeneration == generation,
-                      self.voiceID == voiceID, self.candidates[id] == bulletin,
-                      bulletin.expiresAt > self.now(),
-                      audio.voiceRevision == voiceRevision, audio.audioURL == outputURL else {
-                    try? FileManager.default.removeItem(at: outputURL)
-                    if self.renderGeneration == generation {
-                        self.renderTask = nil
-                        self.activeRenderID = nil
-                        self.startNextIfPossible()
-                    }
-                    return
-                }
-                self.assets[id] = (bulletin, voiceID, audio.voiceRevision, audio.audioURL)
-                self.states[id] = .ready(
-                    storyID: storyID, bulletinID: bulletin.id, voiceID: voiceID, voiceRevision: voiceRevision)
-                self.onReady?(bulletin)
-            } catch {
-                guard let self else { return }
+    }
+
+    private func renderCandidate(
+        _ bulletin: Bulletin, id: String, storyID: String, voiceID: ApprovedReadingVoiceID,
+        voiceRevision: String, generation: UInt64, outputURL: URL
+    ) async {
+        do {
+            let audio = try await render(bulletin.text, voiceID, outputURL)
+            guard taskStillOwns(bulletin, id: id, voiceID: voiceID, generation: generation),
+                  bulletin.expiresAt > now(), audio.voiceRevision == voiceRevision,
+                  audio.audioURL == outputURL else {
                 try? FileManager.default.removeItem(at: outputURL)
-                guard self.renderGeneration == generation else { return }
-                if self.candidates[id] == bulletin {
-                    self.states[id] = .unavailable(
-                        storyID: storyID, bulletinID: bulletin.id, voiceID: voiceID, reason: .renderFailed)
-                }
+                finishRenderTask(generation)
+                return
             }
-            if self?.renderGeneration == generation {
-                self?.renderTask = nil
-                self?.activeRenderID = nil
-                self?.startNextIfPossible()
+            assets[id] = (bulletin, voiceID, audio.voiceRevision, audio.audioURL)
+            states[id] = .ready(
+                storyID: storyID, bulletinID: bulletin.id, voiceID: voiceID, voiceRevision: voiceRevision)
+            onReady?(bulletin)
+        } catch {
+            try? FileManager.default.removeItem(at: outputURL)
+            guard renderGeneration == generation else { return }
+            if candidates[id] == bulletin {
+                states[id] = .unavailable(
+                    storyID: storyID, bulletinID: bulletin.id, voiceID: voiceID, reason: .renderFailed)
             }
         }
+        finishRenderTask(generation)
+    }
+
+    private func finishRenderTask(_ generation: UInt64) {
+        guard renderGeneration == generation else { return }
+        renderTask = nil
+        activeRenderID = nil
+        startNextIfPossible()
     }
 }
 

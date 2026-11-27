@@ -7,6 +7,74 @@ import WiltedProducer
 
 @MainActor
 final class WiltedMacHeadlineCardTests: XCTestCase {
+    func testReadingVoiceAvailabilityIsDeferredAndConcurrentRefreshesShareOneCheck() async throws {
+        actor CheckCounter {
+            private(set) var count = 0
+            private var releasedResult: [ApprovedReadingVoiceID: ArticleVoiceAvailability]?
+            private var completions: [CheckedContinuation<[ApprovedReadingVoiceID: ArticleVoiceAvailability], Never>] = []
+            private var startedWaiters: [CheckedContinuation<Void, Never>] = []
+
+            func check() async -> [ApprovedReadingVoiceID: ArticleVoiceAvailability] {
+                count += 1
+                if let releasedResult { return releasedResult }
+                startedWaiters.forEach { $0.resume() }
+                startedWaiters.removeAll()
+                return await withCheckedContinuation { completions.append($0) }
+            }
+
+            func waitUntilStarted() async {
+                guard count == 0 else { return }
+                await withCheckedContinuation { startedWaiters.append($0) }
+            }
+
+            func release() {
+                let result: [ApprovedReadingVoiceID: ArticleVoiceAvailability] = [
+                    .paulHarvey: .available,
+                    .rodSerling: .missingVoice
+                ]
+                releasedResult = result
+                completions.forEach { $0.resume(returning: result) }
+                completions.removeAll()
+            }
+
+            func currentCount() -> Int {
+                count
+            }
+        }
+
+        let counter = CheckCounter()
+        let selection = WiltedMacReadingVoiceSelection(
+            preferences: WiltedMacTestPreferences.ephemeral(),
+            availabilityChecker: { await counter.check() })
+        selection.select(ApprovedReadingVoiceID.paulHarvey.rawValue)
+
+        XCTAssertNil(selection.availability(for: .paulHarvey))
+        XCTAssertEqual(selection.availabilityText(for: .paulHarvey), "Checking…")
+        XCTAssertEqual(selection.selectedStatus, "Checking voice availability…")
+        XCTAssertFalse(selection.isAvailable(selection.availability(for: .paulHarvey)),
+                       "unverified options remain disabled until the background check finishes")
+        let countBeforeRefresh = await counter.currentCount()
+        XCTAssertEqual(countBeforeRefresh, 0, "reading the UI state must not touch the filesystem")
+
+        let first = Task { await selection.refreshAvailability() }
+        await counter.waitUntilStarted()
+        var secondRefreshStarted = false
+        let second = Task { @MainActor in
+            secondRefreshStarted = true
+            await selection.refreshAvailability()
+        }
+        while !secondRefreshStarted { await Task.yield() }
+        await counter.release()
+        await first.value
+        await second.value
+
+        let completedCheckCount = await counter.currentCount()
+        XCTAssertEqual(completedCheckCount, 1)
+        XCTAssertEqual(selection.availability(for: .paulHarvey), .available)
+        XCTAssertEqual(selection.availabilityText(for: .rodSerling), "Voice files missing")
+        XCTAssertTrue(selection.selectedStatus.contains("ready"))
+    }
+
     func testRoleVoicesInheritTheOldSelectionOnceThenPersistIndependently() throws {
         let preferences = WiltedMacTestPreferences.ephemeral()
         preferences.set(ApprovedReadingVoiceID.wolfmanJack.rawValue,

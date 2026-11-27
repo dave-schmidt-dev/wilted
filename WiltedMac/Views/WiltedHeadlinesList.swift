@@ -210,6 +210,8 @@ struct WiltedHeadlineStoryCard: View {
 }
 
 struct WiltedHeadlinesList: View {
+    private static let pageSize = 25
+
     let recent: [LibraryHeadlineStory]
     let publishers: [LibraryHeadlinePublisher]
     let actionInProgress: Bool
@@ -223,6 +225,7 @@ struct WiltedHeadlinesList: View {
     var requestListenNext: @MainActor (LibraryHeadlineStory) async -> Void = { _ in }
     var cancelListenNext: @MainActor (String) async -> Void = { _ in }
     var chooseReadingVoice: () -> Void = {}
+    @State private var visibleLimit = pageSize
     @State private var lastListenNextStoryID: String?
 
     private var mutedPublisherIDs: Set<String> {
@@ -243,7 +246,7 @@ struct WiltedHeadlinesList: View {
                     .accessibilityIdentifier("wilted-headlines-load-status")
             }
             if recentStories.isEmpty && projectionMessage == nil {
-                Text("New stories from your headline feeds will appear here for seven days.")
+                Text("New stories from your headline feeds appear here for 24 hours.")
                     .wiltedFont(.utility)
                     .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
                     .fixedSize(horizontal: false, vertical: true)
@@ -265,10 +268,18 @@ struct WiltedHeadlinesList: View {
     @ViewBuilder
     private func storySection(_ title: String, stories: [LibraryHeadlineStory]) -> some View {
         if !stories.isEmpty {
-            VStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
+            let visibleStories = Array(stories.prefix(visibleLimit))
+            LazyVStack(alignment: .leading, spacing: WiltedTheme.Spacing.small) {
                 Text(title).wiltedFont(.utility)
-                ForEach(stories) { story in
+                ForEach(visibleStories) { story in
                     storyCard(for: story)
+                }
+                if stories.count > visibleLimit {
+                    Button("Show more stories") {
+                        visibleLimit += Self.pageSize
+                    }
+                    .wiltedFont(.utility)
+                    .accessibilityIdentifier("wilted-headlines-show-more")
                 }
             }
         }

@@ -15,13 +15,23 @@ final class WiltedMacReadingVoiceSelection {
     static let morningReportPreferenceKey = "wilted.reports.morningReportVoiceID"
 
     @ObservationIgnored private let preferences: UserDefaults
+    @ObservationIgnored private let availabilityChecker: @Sendable () async -> [ApprovedReadingVoiceID: ArticleVoiceAvailability]
+    @ObservationIgnored private var availabilityTask: Task<[ApprovedReadingVoiceID: ArticleVoiceAvailability], Never>?
+    @ObservationIgnored private var availabilityTaskID: UUID?
     private(set) var selectedReadingVoiceID: String?
     private(set) var headlineVoiceID: ApprovedReadingVoiceID
     private(set) var weatherVoiceID: ApprovedReadingVoiceID
     private(set) var morningReportVoiceID: ApprovedReadingVoiceID
+    private(set) var cachedAvailabilities: [ApprovedReadingVoiceID: ArticleVoiceAvailability] = [:]
 
-    init(preferences: UserDefaults) {
+    init(
+        preferences: UserDefaults,
+        availabilityChecker: @escaping @Sendable () async -> [ApprovedReadingVoiceID: ArticleVoiceAvailability] = {
+            ArticleNarrationCoordinator().availabilities()
+        }
+    ) {
         self.preferences = preferences
+        self.availabilityChecker = availabilityChecker
         let legacyVoiceID = preferences.string(forKey: Self.preferenceKey)
         selectedReadingVoiceID = legacyVoiceID
 
@@ -79,13 +89,37 @@ final class WiltedMacReadingVoiceSelection {
         preferences.set(voice.rawValue, forKey: Self.morningReportPreferenceKey)
     }
 
-    func availability(for voice: ApprovedReadingVoiceID) -> ArticleVoiceAvailability {
-        ArticleNarrationCoordinator().availability(for: voice)
+    func availability(for voice: ApprovedReadingVoiceID) -> ArticleVoiceAvailability? {
+        cachedAvailabilities[voice]
+    }
+
+    /// Checks local voice files off the render path and coalesces concurrent refreshes.
+    func refreshAvailability() async {
+        let task: Task<[ApprovedReadingVoiceID: ArticleVoiceAvailability], Never>
+        let taskID: UUID
+        if let availabilityTask, let availabilityTaskID {
+            task = availabilityTask
+            taskID = availabilityTaskID
+        } else {
+            cachedAvailabilities = [:]
+            let checker = availabilityChecker
+            task = Task.detached(priority: .utility) { await checker() }
+            taskID = UUID()
+            availabilityTask = task
+            availabilityTaskID = taskID
+        }
+
+        let result = await task.value
+        guard availabilityTaskID == taskID else { return }
+        cachedAvailabilities = result
+        availabilityTask = nil
+        availabilityTaskID = nil
     }
 
     var selectedStatus: String {
         guard let voice = selectedVoice else { return "Choose a voice for stories you queue." }
-        switch availability(for: voice) {
+        guard let availability = availability(for: voice) else { return "Checking voice availability…" }
+        switch availability {
         case .available: return "\(voice.displayName) is ready for story narration."
         case .missingVoice: return "The selected voice files are missing. Choose an available voice."
         case .missingModel: return "The Chatterbox model is missing."
@@ -99,7 +133,8 @@ final class WiltedMacReadingVoiceSelection {
     }
 
     func availabilityText(for voice: ApprovedReadingVoiceID) -> String {
-        switch availability(for: voice) {
+        guard let availability = availability(for: voice) else { return "Checking…" }
+        return switch availability {
         case .available: "Ready"
         case .missingVoice: "Voice files missing"
         case .missingModel: "Model missing"
@@ -107,7 +142,8 @@ final class WiltedMacReadingVoiceSelection {
         }
     }
 
-    func isAvailable(_ availability: ArticleVoiceAvailability) -> Bool {
+    func isAvailable(_ availability: ArticleVoiceAvailability?) -> Bool {
+        guard let availability else { return false }
         if case .available = availability { return true }
         return false
     }
@@ -155,7 +191,7 @@ extension WiltedMacModel {
         bulletinHub.readingVoiceSelectionChanged()
     }
 
-    func readingVoiceAvailability(for voice: ApprovedReadingVoiceID) -> ArticleVoiceAvailability {
+    func readingVoiceAvailability(for voice: ApprovedReadingVoiceID) -> ArticleVoiceAvailability? {
         readingVoiceSelection.availability(for: voice)
     }
 
@@ -165,6 +201,10 @@ extension WiltedMacModel {
 
     func readingVoiceIsAvailable(_ voice: ApprovedReadingVoiceID) -> Bool {
         readingVoiceSelection.isAvailable(readingVoiceAvailability(for: voice))
+    }
+
+    func refreshReadingVoiceAvailability() async {
+        await readingVoiceSelection.refreshAvailability()
     }
 
     /// The UI action fixes its queue anchor at the moment the listener presses Listen next.

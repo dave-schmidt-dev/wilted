@@ -232,6 +232,27 @@ public struct ArticleNarrationCoordinator: Sendable {
     }
 
     public func availability(for voiceID: ApprovedReadingVoiceID) -> ArticleVoiceAvailability {
+        if let unavailable = sharedAvailabilityFailure() {
+            return unavailable
+        }
+        let reference = configuration.referenceDirectory.appending(path: voiceID.referenceFilename)
+        return FileManager.default.isReadableFile(atPath: reference.path) ? .available : .missingVoice
+    }
+
+    /// Checks shared runtime files once, then checks every approved voice file.
+    public func availabilities() -> [ApprovedReadingVoiceID: ArticleVoiceAvailability] {
+        if let unavailable = sharedAvailabilityFailure() {
+            return Dictionary(uniqueKeysWithValues: ApprovedReadingVoiceID.allCases.map { ($0, unavailable) })
+        }
+        return Dictionary(uniqueKeysWithValues: ApprovedReadingVoiceID.allCases.map { voiceID in
+            let reference = configuration.referenceDirectory.appending(path: voiceID.referenceFilename)
+            let result: ArticleVoiceAvailability = FileManager.default.isReadableFile(atPath: reference.path)
+                ? .available : .missingVoice
+            return (voiceID, result)
+        })
+    }
+
+    private func sharedAvailabilityFailure() -> ArticleVoiceAvailability? {
         guard FileManager.default.isExecutableFile(atPath: configuration.pythonURL.path),
               FileManager.default.isReadableFile(atPath: configuration.helperURL.path),
               ["__init__.py", "gpu_admission.py", "reporting.py", "constants.py"].allSatisfy({
@@ -246,8 +267,7 @@ public struct ArticleNarrationCoordinator: Sendable {
               FileManager.default.fileExists(atPath: configuration.modelDirectory.appending(path: "config.json").path) else {
             return .missingModel
         }
-        let reference = configuration.referenceDirectory.appending(path: voiceID.referenceFilename)
-        return FileManager.default.isReadableFile(atPath: reference.path) ? .available : .missingVoice
+        return nil
     }
 
     public static func voiceRevision(for voiceID: ApprovedReadingVoiceID) -> String {

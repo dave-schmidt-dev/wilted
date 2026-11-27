@@ -212,7 +212,7 @@ final class LibraryHeadlineCardsTests: XCTestCase {
             lastSeenAt: now.addingTimeInterval(-8 * 24 * 60 * 60), savedAt: now.addingTimeInterval(-9 * 24 * 60 * 60))
         let oldFeedItem = try sampleStory(
             id: "old-feed-item", firstSeenAt: now, lastSeenAt: now,
-            publishedAt: now.addingTimeInterval(-8 * 24 * 60 * 60))
+            publishedAt: now.addingTimeInterval(-24 * 60 * 60 - 1))
         let recent = try sampleStory(id: "recent-story", firstSeenAt: now, lastSeenAt: now)
         let projection = try sampleProjection(stories: [old, oldFeedItem, recent], revision: 2, updatedAt: now)
         let server = InMemoryLibraryServer(writerDeviceID: "mac")

@@ -23,33 +23,37 @@ final class WiltedMacHeadlineCatalogStoreTests: XCTestCase {
             savedAt: savedAt, savedRevision: savedRevision)
     }
 
-    func testRecentCardsSurviveFeedRotationUntilStableSevenDayCutoffAndSavedSurvives() throws {
-        let store = WiltedMacHeadlineCatalogStore(fileURL: nil, now: { Self.fixedNow })
+    func testRecentCardsExpireAfter24HoursAcrossRelaunchAndNotebookKeepsSavedStory() throws {
+        let file = wiltedTemporaryDirectory("headline-catalog-window").appendingPathComponent("catalog.json")
+        let store = WiltedMacHeadlineCatalogStore(fileURL: file, now: { Self.fixedNow })
         let a = try story("a")
         let b = try story("b")
         _ = try store.mergeRecent([a, b], at: Self.fixedNow)
         XCTAssertEqual(try store.setSaved(
             story: a, isSaved: true, basedOnRevision: 0, commandID: "save-a", at: Self.fixedNow), .applied)
 
-        let dayOne = Self.fixedNow.addingTimeInterval(24 * 60 * 60)
-        let bPoll = try story("b", firstSeenAt: dayOne, lastSeenAt: dayOne)
-        let c = try story("c", firstSeenAt: dayOne, lastSeenAt: dayOne)
-        let rotated = try store.mergeRecent([bPoll, c], at: dayOne)
+        let midDay = Self.fixedNow.addingTimeInterval(12 * 60 * 60)
+        let bPoll = try story("b", firstSeenAt: midDay, lastSeenAt: midDay)
+        let c = try story("c", firstSeenAt: midDay, lastSeenAt: midDay)
+        let rotated = try store.mergeRecent([bPoll, c], at: midDay)
         XCTAssertEqual(Set(rotated.recent.map(\.id)), ["a", "b", "c"])
 
         let unchangedRevision = rotated.revision
         let unchangedGeneration = rotated.generationID
-        let repeated = try store.mergeRecent([bPoll, c], at: dayOne.addingTimeInterval(60))
+        let repeated = try store.mergeRecent([bPoll, c], at: midDay.addingTimeInterval(60))
         XCTAssertEqual(repeated.revision, unchangedRevision)
         XCTAssertEqual(repeated.generationID, unchangedGeneration)
 
-        let emptyPoll = try store.mergeRecent([], at: dayOne.addingTimeInterval(60 * 60))
+        let emptyPoll = try store.mergeRecent([], at: midDay.addingTimeInterval(60 * 60))
         XCTAssertEqual(Set(emptyPoll.recent.map(\.id)), ["a", "b", "c"])
 
-        let dayEight = try store.projection(at: Self.fixedNow.addingTimeInterval(8 * 24 * 60 * 60))
-        XCTAssertTrue(dayEight.recent.isEmpty)
-        XCTAssertEqual(dayEight.saved.map(\.id), ["a"])
-        XCTAssertEqual(dayEight.saved.first?.link, a.link)
+        let cutoff = Self.fixedNow.addingTimeInterval(24 * 60 * 60)
+        XCTAssertEqual(try store.projection(at: cutoff).recent.count, 3)
+        let reopened = WiltedMacHeadlineCatalogStore(fileURL: file, now: { cutoff.addingTimeInterval(1) })
+        let expired = try reopened.projection(at: cutoff.addingTimeInterval(1))
+        XCTAssertTrue(expired.recent.isEmpty)
+        XCTAssertEqual(expired.saved.map(\.id), ["a"])
+        XCTAssertEqual(expired.saved.first?.link, a.link)
     }
 
     func testUnchangedFeedPollDoesNotBumpLastSeenOrProjectionGeneration() throws {
@@ -89,15 +93,15 @@ final class WiltedMacHeadlineCatalogStoreTests: XCTestCase {
             story: a, isSaved: false, basedOnRevision: 0, commandID: "stale-unsave", at: Self.fixedNow), .staleRevision)
     }
 
-    func testPhoneSaveQueuedOnDaySixCanRestoreAnExpiredCardOnDayNine() throws {
+    func testPhoneSaveQueuedWhileRecentCanRestoreAnExpiredCardOnDayNine() throws {
         let store = WiltedMacHeadlineCatalogStore(fileURL: nil, now: { Self.fixedNow })
         let a = try story("a")
         _ = try store.mergeRecent([a], at: Self.fixedNow)
-        let daySixSnapshot = a
+        let queuedSnapshot = a
         let dayNine = Self.fixedNow.addingTimeInterval(9 * 24 * 60 * 60)
 
         XCTAssertEqual(try store.setSaved(
-            story: daySixSnapshot, isSaved: true, basedOnRevision: 0,
+            story: queuedSnapshot, isSaved: true, basedOnRevision: 0,
             commandID: "offline-save-a", at: dayNine), .applied)
 
         let projection = try store.projection(at: dayNine)

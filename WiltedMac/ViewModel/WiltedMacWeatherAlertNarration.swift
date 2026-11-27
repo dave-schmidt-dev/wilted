@@ -21,7 +21,7 @@ final class WiltedMacWeatherAlertNarration {
     }
 
     private let render: RenderOperation
-    private let availability: @MainActor (ApprovedReadingVoiceID) -> ArticleVoiceAvailability
+    private let availability: @Sendable (ApprovedReadingVoiceID) -> ArticleVoiceAvailability
     private let now: @Sendable () -> Date
     private let directory: URL
     private var renderTask: Task<Void, Never>?
@@ -45,7 +45,7 @@ final class WiltedMacWeatherAlertNarration {
             try await ArticleNarrationCoordinator().synthesizeShortText(
                 text, voiceID: voiceID, outputURL: outputURL)
         },
-        availability: @escaping @MainActor (ApprovedReadingVoiceID) -> ArticleVoiceAvailability = {
+        availability: @escaping @Sendable (ApprovedReadingVoiceID) -> ArticleVoiceAvailability = {
             ArticleNarrationCoordinator().availability(for: $0)
         },
         now: @escaping @Sendable () -> Date = { Date() },
@@ -192,55 +192,82 @@ final class WiltedMacWeatherAlertNarration {
     private func startNextIfPossible() {
         guard renderTask == nil, let voiceID, let id = queue.first, let bulletin = current[id] else { return }
         queue.removeFirst()
-        switch availability(voiceID) {
-        case .available: break
-        case .missingVoice, .missingModel, .missingRuntime:
-            failed[id] = Failed(bulletin: bulletin, voiceID: voiceID)
-            startNextIfPossible()
+        let token = generation
+        activeID = id
+        activeBulletin = bulletin
+        renderTask = Task { @MainActor [weak self] in
+            await self?.checkAvailabilityAndRender(bulletin, id: id, voiceID: voiceID, token: token)
+        }
+    }
+
+    private func checkAvailabilityAndRender(
+        _ bulletin: Bulletin, id: String, voiceID: ApprovedReadingVoiceID, token: UInt64
+    ) async {
+        let availability = self.availability
+        let result = await Task.detached(priority: .utility) { availability(voiceID) }.value
+        guard taskStillOwns(bulletin, id: id, voiceID: voiceID, token: token) else {
+            finishRender(token)
             return
         }
+        guard result == .available else {
+            failed[id] = Failed(bulletin: bulletin, voiceID: voiceID)
+            finishRender(token)
+            return
+        }
+        guard let outputURL = makeOutputURL() else {
+            failed[id] = Failed(bulletin: bulletin, voiceID: voiceID)
+            finishRender(token)
+            return
+        }
+        await renderCandidate(bulletin, id: id, voiceID: voiceID, token: token, outputURL: outputURL)
+    }
+
+    private func taskStillOwns(
+        _ bulletin: Bulletin, id: String, voiceID: ApprovedReadingVoiceID, token: UInt64
+    ) -> Bool {
+        !Task.isCancelled && generation == token && enabled && self.voiceID == voiceID
+            && current[id] == bulletin && bulletin.expiresAt > now()
+    }
+
+    private func makeOutputURL() -> URL? {
         do {
             try FileManager.default.createDirectory(
                 at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            return directory.appending(path: "\(UUID().uuidString).m4a")
         } catch {
-            failed[id] = Failed(bulletin: bulletin, voiceID: voiceID)
-            startNextIfPossible()
-            return
+            return nil
         }
+    }
 
-        let outputURL = directory.appending(path: "\(UUID().uuidString).m4a")
-        let token = generation
+    private func renderCandidate(
+        _ bulletin: Bulletin, id: String, voiceID: ApprovedReadingVoiceID,
+        token: UInt64, outputURL: URL
+    ) async {
         let expectedRevision = ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID)
         let render = self.render
-        activeID = id
-        activeBulletin = bulletin
         activeOutputURL = outputURL
-        renderTask = Task { @MainActor [weak self] in
-            do {
-                let audio = try await render(bulletin.text, voiceID, outputURL)
-                guard let self else { try? FileManager.default.removeItem(at: outputURL); return }
-                guard !Task.isCancelled, self.generation == token, self.enabled,
-                      self.voiceID == voiceID, self.current[id] == bulletin, bulletin.expiresAt > self.now(),
-                      audio.voiceRevision == expectedRevision, audio.audioURL == outputURL,
-                      FileManager.default.fileExists(atPath: outputURL.path) else {
-                    try? FileManager.default.removeItem(at: outputURL)
-                    if self.generation == token {
-                        self.failed[id] = Failed(bulletin: bulletin, voiceID: voiceID)
-                        self.finishRender(token)
-                    }
-                    return
-                }
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outputURL.path)
-                self.assets[id] = Asset(
-                    bulletin: bulletin, voiceID: voiceID, voiceRevision: audio.voiceRevision, url: outputURL)
-                self.finishRender(token)
-                self.onReady?(bulletin)
-            } catch {
+        do {
+            let audio = try await render(bulletin.text, voiceID, outputURL)
+            guard taskStillOwns(bulletin, id: id, voiceID: voiceID, token: token),
+                  audio.voiceRevision == expectedRevision, audio.audioURL == outputURL,
+                  FileManager.default.fileExists(atPath: outputURL.path) else {
                 try? FileManager.default.removeItem(at: outputURL)
-                guard let self, self.generation == token else { return }
-                if self.current[id] == bulletin { self.failed[id] = Failed(bulletin: bulletin, voiceID: voiceID) }
-                self.finishRender(token)
+                if generation == token {
+                    failed[id] = Failed(bulletin: bulletin, voiceID: voiceID)
+                    finishRender(token)
+                }
+                return
             }
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: outputURL.path)
+            assets[id] = Asset(
+                bulletin: bulletin, voiceID: voiceID, voiceRevision: audio.voiceRevision, url: outputURL)
+            finishRender(token)
+            onReady?(bulletin)
+        } catch {
+            try? FileManager.default.removeItem(at: outputURL)
+            guard generation == token else { return }
+            if current[id] == bulletin { failed[id] = Failed(bulletin: bulletin, voiceID: voiceID) }
+            finishRender(token)
         }
     }
 

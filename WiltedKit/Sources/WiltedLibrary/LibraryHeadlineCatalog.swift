@@ -176,7 +176,7 @@ public struct LibraryHeadlineStoryIdentity: Codable, Equatable, Sendable, Identi
 
 /// The complete Mac-authored story state projected to followers and cached for offline display.
 public struct LibraryHeadlineProjection: Codable, Equatable, Sendable {
-    public static let recentRetention: TimeInterval = 7 * 24 * 60 * 60
+    public static let recentRetention: TimeInterval = 24 * 60 * 60
 
     public let generationID: String
     public let revision: Int64

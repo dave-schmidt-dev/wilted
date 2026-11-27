@@ -180,6 +180,13 @@ struct WiltedMacReportsCard: View {
                 showsDetails = true
             }
         }
+#if canImport(WiltedProducer)
+        .task(id: showsDetails) {
+            if showsDetails {
+                await model.refreshReadingVoiceAvailability()
+            }
+        }
+#endif
     }
 
     #if canImport(WiltedProducer)

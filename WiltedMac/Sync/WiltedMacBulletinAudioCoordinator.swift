@@ -45,7 +45,7 @@ final class WiltedMacBulletinAudioCoordinator {
     private let bulletinFallback: @MainActor (String) async -> Bulletin?
     private let readyAudioURL: @MainActor (Bulletin, ApprovedReadingVoiceID) -> URL?
     private let selectedVoice: @MainActor (Bulletin) -> ApprovedReadingVoiceID?
-    private let voiceAvailability: @MainActor (ApprovedReadingVoiceID) -> ArticleVoiceAvailability
+    private let voiceAvailability: @Sendable (ApprovedReadingVoiceID) -> ArticleVoiceAvailability
     private let render: RenderOperation
     private let now: @Sendable () -> Date
     private var tasks: [String: Task<Void, Never>] = [:]
@@ -62,7 +62,7 @@ final class WiltedMacBulletinAudioCoordinator {
         bulletinFallback: @escaping @MainActor (String) async -> Bulletin? = { _ in nil },
         readyAudioURL: @escaping @MainActor (Bulletin, ApprovedReadingVoiceID) -> URL?,
         selectedVoice: @escaping @MainActor (Bulletin) -> ApprovedReadingVoiceID?,
-        voiceAvailability: @escaping @MainActor (ApprovedReadingVoiceID) -> ArticleVoiceAvailability = {
+        voiceAvailability: @escaping @Sendable (ApprovedReadingVoiceID) -> ArticleVoiceAvailability = {
             ArticleNarrationCoordinator().availability(for: $0)
         },
         render: @escaping RenderOperation = { text, voiceID, outputURL in
@@ -200,12 +200,25 @@ final class WiltedMacBulletinAudioCoordinator {
             if let renderedURL { try? FileManager.default.removeItem(at: renderedURL.deletingLastPathComponent()) }
         }
         do {
-            guard await isCurrent(context) else { return }
+            guard requestIsCurrent(intent) else { return }
             guard await bulletinIsCurrent(resolved, context: context) else {
                 await fail(intent, bulletin: expected, context: context, revision: revision, failure: .unavailableStory)
                 return
             }
-            guard selectedVoice(expected) == voice, voiceAvailability(voice).isAvailable else {
+            guard selectedVoice(expected) == voice else {
+                await fail(intent, bulletin: expected, context: context, revision: revision, failure: .missingVoice)
+                return
+            }
+            let voiceAvailability = self.voiceAvailability
+            let isVoiceAvailable = await Task.detached(priority: .utility) {
+                voiceAvailability(voice)
+            }.value.isAvailable
+            guard requestIsCurrent(intent) else { return }
+            guard await bulletinIsCurrent(resolved, context: context) else {
+                await fail(intent, bulletin: expected, context: context, revision: revision, failure: .unavailableStory)
+                return
+            }
+            guard selectedVoice(expected) == voice, isVoiceAvailable else {
                 await fail(intent, bulletin: expected, context: context, revision: revision, failure: .missingVoice)
                 return
             }
@@ -325,6 +338,10 @@ final class WiltedMacBulletinAudioCoordinator {
         let owner = await currentOwner()
         let generation = await currentGeneration()
         return !Task.isCancelled && owner == context.owner && generation == context.generation
+    }
+
+    private func requestIsCurrent(_ intent: LibraryIntent) -> Bool {
+        tasks[intent.id] != nil && taskTextDigests[intent.id] == intent.spokenTextSHA256 && !Task.isCancelled
     }
 
     private func resolveBulletin(_ id: String) async -> ResolvedBulletin? {
