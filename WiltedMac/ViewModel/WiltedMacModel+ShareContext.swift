@@ -16,7 +16,10 @@ struct WiltedMacShareSelection: Sendable {
     let accountGateGeneration: UInt64?
 }
 
+#endif
+
 struct WiltedMacShareContext: Sendable {
+    #if canImport(WiltedProducer)
     let store: LocalLibraryStore
     let account: WiltedMacLibraryAccountController?
     let storeID: ObjectIdentifier
@@ -28,9 +31,87 @@ struct WiltedMacShareContext: Sendable {
     let transcript: String
     let transcriptDigest: String
     let title: String
+    let subtitle: String?
+    let hostCredit: String?
     let shareURL: URL?
+    #endif
+
+    static func usablePublicShareURL(
+        episodeLink: URL?,
+        enclosureURL: URL? = nil,
+        feedURL: URL? = nil,
+        title: String,
+        show: String?
+    ) -> URL? {
+        if let episodeLink, isSafePublicWebLink(episodeLink, enclosureURL: enclosureURL, feedURL: feedURL) {
+            return episodeLink
+        }
+        return safeSearchURL(title: title, show: show)
+    }
+
+    static func isSafePublicWebLink(_ url: URL, enclosureURL: URL? = nil, feedURL: URL? = nil) -> Bool {
+        guard PodcastEpisode.isValidEpisodeLink(url) else { return false }
+        if let enclosureURL, withoutFragment(url) == withoutFragment(enclosureURL) { return false }
+        let mediaExtensions: Set<String> = ["mp3", "m4a", "aac", "mp4", "wav", "ogg", "opus", "flac", "m3u", "m3u8", "pls", "mpd"]
+        if mediaExtensions.contains(url.pathExtension.lowercased()) { return false }
+        if let feedURL, withoutFragment(url) == withoutFragment(feedURL) { return false }
+        if let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+           let items = components.queryItems {
+            let sensitiveKeys: Set<String> = [
+                "signature", "sig", "x-amz-signature", "x-goog-signature",
+                "token", "access_token", "auth_token", "auth", "jwt", "key", "api_key", "apikey",
+                "secret", "ticket", "session", "session_id", "sessionid", "credential"
+            ]
+            for item in items {
+                let name = item.name.lowercased()
+                if sensitiveKeys.contains(name) || name.hasSuffix("_token") || name.hasSuffix("token")
+                    || name.contains("signature") || name.hasPrefix("x-amz-") || name.hasPrefix("x-goog-") {
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
+    static func safeSearchURL(title: String, show: String?) -> URL? {
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedShow = show?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let queryTerms = [trimmedTitle, trimmedShow].filter { !$0.isEmpty }
+        guard !queryTerms.isEmpty else { return nil }
+        let queryValue = queryTerms.joined(separator: " ")
+        let query = String(String.UnicodeScalarView(queryValue.unicodeScalars.prefix(120)))
+        var components = URLComponents(string: "https://podcasts.apple.com/search")
+        components?.queryItems = [URLQueryItem(name: "term", value: query)]
+        // URLQueryItem may leave `+` literal; form-style servers can decode it as a space.
+        if let encodedQuery = components?.percentEncodedQuery {
+            components?.percentEncodedQuery = encodedQuery.replacingOccurrences(of: "+", with: "%2B")
+        }
+        return components?.url
+    }
+
+    /// Returns only a plainly labeled host credit from feed notes, never a publisher or byline.
+    static func explicitHostCredit(from notes: String?) -> String? {
+        guard let notes else { return nil }
+        let pattern = #"^\s*(?:episode\s+)?hosts?\s*:\s*(.{1,240})\s*$"#
+        guard let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        for line in notes.components(separatedBy: .newlines) {
+            let lineRange = NSRange(line.startIndex..<line.endIndex, in: line)
+            guard let match = expression.firstMatch(in: line, range: lineRange),
+                  let valueRange = Range(match.range(at: 1), in: line) else { continue }
+            let credit = line[valueRange].trimmingCharacters(in: .whitespacesAndNewlines)
+            if !credit.isEmpty { return credit }
+        }
+        return nil
+    }
+
+    private static func withoutFragment(_ url: URL) -> String {
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: true)
+        components?.fragment = nil
+        return components?.string ?? url.absoluteString
+    }
 }
 
+#if canImport(WiltedProducer)
 enum WiltedMacShareContextError: LocalizedError {
     case unavailable
     case transcriptUnavailable
@@ -84,12 +165,13 @@ extension WiltedMacModel {
             throw WiltedMacShareContextError.transcriptUnavailable
         }
         guard await stillOwnsShareSelection(selection) else { throw WiltedMacShareContextError.unavailable }
-        let (title, shareURL) = try await shareMetadata(for: selection.itemID, in: selection.store)
+        let (title, subtitle, hostCredit, shareURL) = try await shareMetadata(for: selection.itemID, in: selection.store)
         let context = WiltedMacShareContext(store: selection.store, account: selection.account,
             storeID: selection.storeID, accountID: selection.accountID, itemID: selection.itemID,
             revisionID: selection.revisionID, binding: selection.binding,
             accountGateGeneration: selection.accountGateGeneration,
-            transcript: text, transcriptDigest: Self.shareTranscriptDigest(text), title: title, shareURL: shareURL)
+            transcript: text, transcriptDigest: Self.shareTranscriptDigest(text), title: title, subtitle: subtitle,
+            hostCredit: hostCredit, shareURL: shareURL)
         guard await stillOwnsShareContext(context) else {
             throw WiltedMacShareContextError.unavailable
         }
@@ -122,8 +204,9 @@ extension WiltedMacModel {
               transcript.availability == .available, transcript.text == context.transcript,
               !isClosingTemporaryState, store === context.store, shareContextAccountMatches(context) else { return false }
 
-        guard let (title, shareURL) = try? await shareMetadata(for: context.itemID, in: context.store),
-              title == context.title, shareURL == context.shareURL else { return false }
+        guard let (title, subtitle, hostCredit, shareURL) = try? await shareMetadata(for: context.itemID, in: context.store),
+              title == context.title, subtitle == context.subtitle, hostCredit == context.hostCredit,
+              shareURL == context.shareURL else { return false }
         let persistedBinding = try? await context.store.libraryAccountBinding()
         return !isClosingTemporaryState && store === context.store
             && shareContextAccountMatches(context) && persistedBinding == context.binding
@@ -162,13 +245,21 @@ extension WiltedMacModel {
             && libraryAccount == nil
     }
 
-    private func shareMetadata(for itemID: ItemID, in store: LocalLibraryStore) async throws -> (String, URL?) {
+    private func shareMetadata(for itemID: ItemID, in store: LocalLibraryStore) async throws -> (String, String?, String?, URL?) {
         if let episode = try await store.podcastEpisode(for: itemID) {
             guard try await store.removalKind(for: itemID) == nil else { throw WiltedMacShareContextError.unavailable }
-            return (episode.title, episode.episodeLink)
+            let feedTitle = (try? await store.podcastFeed(for: episode.feedID))?.title
+            let usableURL = WiltedMacShareContext.usablePublicShareURL(
+                episodeLink: episode.episodeLink,
+                enclosureURL: episode.enclosureURL,
+                feedURL: episode.feedURL,
+                title: episode.title,
+                show: feedTitle
+            )
+            return (episode.title, feedTitle, WiltedMacShareContext.explicitHostCredit(from: episode.notes), usableURL)
         }
         if let article = try await store.article(for: itemID), !article.isDeleted {
-            return (article.title, article.canonicalURL)
+            return (article.title, article.source, nil, article.canonicalURL)
         }
         throw WiltedMacShareContextError.unavailable
     }

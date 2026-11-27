@@ -458,10 +458,10 @@ struct WiltedMacPlaybackShareItems: View {
                 subject: Text(model.currentPlaybackShareTitle),
                 message: Text(model.currentPlaybackShareMessage)
             ) {
-                Text("Share title and show")
+                Text("Share episode details")
             }
-            .help("Only title and show text is shared.")
-            .accessibilityHint("Only title and show text is shared.")
+            .help("Share the episode title, show, and listening link.")
+            .accessibilityHint("Share the episode title, show, and listening link.")
         }
     }
 }

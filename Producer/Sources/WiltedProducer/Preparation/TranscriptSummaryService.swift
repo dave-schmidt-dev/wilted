@@ -19,13 +19,15 @@ public struct TranscriptSummaryRequest: Codable, Equatable, Sendable {
     public let requestID: String
     public let transcriptText: String
     public let llmModel: String
+    public let episodeHostCredit: String?
 
-    public init(transcript: String, modelURL: URL, requestID: UUID) {
+    public init(transcript: String, modelURL: URL, requestID: UUID, episodeHostCredit: String? = nil) {
         protocolVersion = 2
         operation = "summary"
         self.requestID = requestID.uuidString.lowercased()
         transcriptText = transcript
         llmModel = modelURL.resolvingSymlinksInPath().standardizedFileURL.path
+        self.episodeHostCredit = episodeHostCredit
     }
 }
 
@@ -114,6 +116,7 @@ public struct TranscriptSummaryService: Sendable {
         requestID: UUID = UUID(),
         expectedModelIdentity: String? = nil,
         expectedPromptIdentity: String? = nil,
+        episodeHostCredit: String? = nil,
         onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void = { _ in }
     ) async throws -> TranscriptSummaryResult {
         try Task.checkCancellation()
@@ -129,7 +132,8 @@ public struct TranscriptSummaryService: Sendable {
         if let expectedPromptIdentity, !Self.isDigest(expectedPromptIdentity) {
             throw TranscriptSummaryError.identityMismatch
         }
-        let request = TranscriptSummaryRequest(transcript: transcript, modelURL: selectedModel, requestID: requestID)
+        let request = TranscriptSummaryRequest(transcript: transcript, modelURL: selectedModel, requestID: requestID,
+                                               episodeHostCredit: episodeHostCredit)
         let payload = try JSONEncoder().encode(request)
         let response = try await runner.run(request: payload) { progress in
             guard progress.requestID == requestID, progress.stage.hasPrefix("summary.") else { return }

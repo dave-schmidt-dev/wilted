@@ -6,16 +6,19 @@ import XCTest
 @MainActor
 final class WiltedMacShareComposerPanelTests: XCTestCase {
     func testLoadingPreviewAndErrorRenderThroughTheShippingPanel() throws {
-        let states: [(String, String?, String?, (String, String, URL?)?)] = [
+        let states: [(String, String?, String?, (String, String, String?, URL?)?)] = [
             ("loading", "Loading local transcript…", nil, nil),
             ("progress", "Summarizing locally…", nil, nil),
-            ("preview", nil, nil, ("Full locally generated summary for review.", "Episode", URL(string: "https://example.test/episode"))),
+            ("preview", nil, nil, ("Full locally generated summary for review.", "Episode", "Show", URL(string: "https://example.test/episode"))),
             ("error", nil, "The local model is unavailable.", nil)
         ]
         for (name, progress, failure, preview) in states {
             let view = WiltedMacShareComposerPanel(progress: progress, failure: failure,
-                preview: preview.map { (text: $0.0, title: $0.1, url: $0.2) }, onRetry: {}, onCancel: {},
-                payload: { value in value.url.map { "\(value.text)\n\n\($0.absoluteString)" } ?? value.text })
+                preview: preview.map { (text: $0.0, title: $0.1, subtitle: $0.2, url: $0.3) }, onRetry: {}, onCancel: {},
+                payload: { value in
+                    let heading = value.subtitle.map { "\(value.title) · \($0)" } ?? value.title
+                    return value.url.map { "\(heading)\n\n\(value.text)\n\nLink: \($0.absoluteString)" } ?? value.text
+                })
             let text = try WiltedMacHeadless.recognizedText(view.padding(), size: CGSize(width: 430, height: 360)).joined(separator: " ")
             if let progress {
                 XCTAssertTrue(text.contains(progress.trimmingCharacters(in: CharacterSet(charactersIn: ".…"))), "\(name): \(text)")
@@ -27,16 +30,17 @@ final class WiltedMacShareComposerPanelTests: XCTestCase {
     }
 
     func testFourShippingPanelPNGsAreRetained() throws {
-        let states: [(String, String?, String?, (String, String, URL?)?)] = [
+        let states: [(String, String?, String?, (String, String, String?, URL?)?)] = [
             ("loading", "Loading local transcript…", nil, nil), ("progress", "Summarizing locally…", nil, nil),
-            ("preview", nil, nil, ("Full locally generated summary for review.", "Episode", nil)),
+            ("preview", nil, nil, ("The ferry now runs until eight.", "The last sailing", "Harbor Notes",
+                                    WiltedMacShareContext.safeSearchURL(title: "The last sailing", show: "Harbor Notes"))),
             ("error", nil, "The local model is unavailable.", nil)
         ]
         let size = CGSize(width: 430, height: 360)
         let page = WiltedTheme.color(.page, scheme: .light)
         for (name, progress, failure, preview) in states {
             let panel = WiltedMacShareComposerPanel(progress: progress, failure: failure,
-                preview: preview.map { (text: $0.0, title: $0.1, url: $0.2) }, onRetry: {}, onCancel: {}, payload: { $0.text })
+                preview: preview.map { (text: $0.0, title: $0.1, subtitle: $0.2, url: $0.3) }, onRetry: {}, onCancel: {}, payload: { $0.text })
             let capture = ZStack(alignment: .topLeading) { page; panel.padding() }
                 .frame(width: size.width, height: size.height, alignment: .topLeading)
                 .background(page)
@@ -50,5 +54,22 @@ final class WiltedMacShareComposerPanelTests: XCTestCase {
                                            uniformTypeIdentifier: "public.png")
             attachment.name = "share-summary-\(name)"; attachment.lifetime = .keepAlways; add(attachment)
         }
+    }
+
+    func testPanelRendersSubtitleAndSafeSearchLink() throws {
+        let searchURL = WiltedMacShareContext.safeSearchURL(title: "Deep Dive", show: "Tech Show")!
+        let view = WiltedMacShareComposerPanel(
+            progress: nil,
+            failure: nil,
+            preview: (text: "Summary of discussion points.", title: "Deep Dive", subtitle: "Tech Show", url: searchURL),
+            onRetry: {},
+            onCancel: {},
+            payload: { value in "\(value.title) · \(value.subtitle ?? "")\n\n\(value.text)" }
+        )
+        let text = try WiltedMacHeadless.recognizedText(view.padding(), size: CGSize(width: 430, height: 360)).joined(separator: " ")
+        XCTAssertTrue(text.contains("Deep Dive"))
+        XCTAssertTrue(text.contains("Tech Show"))
+        XCTAssertTrue(text.contains("Listen / Search"))
+        XCTAssertTrue(text.contains("Share summary"))
     }
 }

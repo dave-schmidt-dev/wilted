@@ -76,15 +76,41 @@ final class WiltedMacShareComposerTests: XCTestCase {
         let context = try await rig.model.captureShareContext()
         XCTAssertEqual(context.transcript, rig.text)
         XCTAssertEqual(context.title, "Loaded store episode")
+        XCTAssertEqual(context.hostCredit, "Maya Chen")
         XCTAssertEqual(context.shareURL, URL(string: "https://example.test/loaded"))
         let runner = ComposerRunner()
         let state = composer(rig, runner)
         state.presented = true; state.setIncludeSummary(true); await state.waitForCompletion()
         XCTAssertEqual(state.preview?.text, "Summary of: " + rig.text)
         XCTAssertEqual(state.preview?.title, "Loaded store episode")
+        XCTAssertEqual(state.preview?.subtitle, "Show")
         XCTAssertEqual(state.preview?.url, URL(string: "https://example.test/loaded"))
+        let payload = state.payload(try XCTUnwrap(state.preview))
+        XCTAssertTrue(payload.contains("Loaded store episode · Show"))
+        XCTAssertTrue(payload.contains("Link: https://example.test/loaded"))
+        XCTAssertEqual(payload.components(separatedBy: "https://example.test/loaded").count - 1, 1)
         XCTAssertFalse(try XCTUnwrap(state.preview).text.contains("Notes are not input"))
         let capturedTranscript = await runner.lastTranscript(); XCTAssertEqual(capturedTranscript, rig.text)
+        let capturedHostCredit = await runner.lastHostCredit(); XCTAssertEqual(capturedHostCredit, "Maya Chen")
+    }
+
+    func testPayloadKeepsFullTitleWhenSubtitleIsMissing() {
+        let state = WiltedMacShareComposerState(model: makeModel())
+        let title = String(repeating: "Long episode title ", count: 20)
+        let payload = state.payload(.init(text: "Short summary.", title: title, subtitle: nil, url: nil))
+        XCTAssertTrue(payload.hasPrefix(title + "\n\n"))
+        XCTAssertFalse(payload.contains(" · "))
+        XCTAssertFalse(payload.contains("https://"))
+    }
+
+    func testSafeSearchURLRoundTripsLiteralPlusAndAmpersand() throws {
+        for (term, encoded) in [("C++", "C%2B%2B"), ("Q&A", "Q%26A")] {
+            let url = try XCTUnwrap(WiltedMacShareContext.safeSearchURL(title: term, show: nil))
+            let components = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+            XCTAssertEqual(components.queryItems?.count, 1)
+            XCTAssertEqual(components.queryItems?.first?.value, term)
+            XCTAssertTrue(try XCTUnwrap(components.percentEncodedQuery).contains("term=\(encoded)"))
+        }
     }
 
     func testSameIdentityUsesCacheButTranscriptModelAndWorkerChangesRegenerate() async throws {
@@ -106,7 +132,7 @@ final class WiltedMacShareComposerTests: XCTestCase {
         XCTAssertNotNil(state.preview); XCTAssertNil(state.failure)
     }
 
-    func testCacheIsBoundedToEightAndLinklessPayloadContainsOnlyActualSummary() async throws {
+    func testCacheIsBoundedToEightAndLinklessPayloadIncludesShowAndSafeListeningSearch() async throws {
         let rig = try await realRig(link: nil); let runner = ComposerRunner(); let state = composer(rig, runner)
         state.presented = true
         for index in 0..<10 {
@@ -116,8 +142,12 @@ final class WiltedMacShareComposerTests: XCTestCase {
         let calls6 = await runner.count(); XCTAssertEqual(calls6, 10); XCTAssertEqual(state.cachedCount, 8)
         state.setIncludeSummary(true); await state.waitForCompletion()
         let preview = try XCTUnwrap(state.preview)
-        XCTAssertNil(preview.url); XCTAssertEqual(state.payload(preview), preview.text)
-        XCTAssertFalse(state.payload(preview).contains("https://"))
+        let expectedFallbackURL = WiltedMacShareContext.safeSearchURL(title: "Loaded store episode", show: "Show")
+        XCTAssertEqual(preview.url, expectedFallbackURL)
+        let payload = state.payload(preview)
+        XCTAssertTrue(payload.contains("Loaded store episode · Show"))
+        XCTAssertTrue(payload.contains(preview.text))
+        XCTAssertTrue(payload.contains("Listen / Search: https://podcasts.apple.com/search?term=Loaded%20store%20episode%20Show"))
     }
 
     func testCancelTeardownAndOptionOffRejectCancellationIgnoringLateReply() async throws {
@@ -368,7 +398,7 @@ final class WiltedMacShareComposerTests: XCTestCase {
         try await store.save(feed: PodcastFeed(itemID: feedID, canonicalURL: feedURL, title: "Show", createdAt: created))
         try await store.save(episode: PodcastEpisode(itemID: item, feedID: feedID, feedURL: feedURL, rssGUID: "loaded",
             title: "Loaded store episode", enclosureURL: URL(string: "https://example.test/audio")!, enclosureMediaType: "audio/mp4",
-            notes: "Notes are not input.", episodeLink: link, createdAt: created))
+            notes: "Host: Maya Chen\nNotes are not input.", episodeLink: link, createdAt: created))
         try await store.saveReadyRevision(revision, mediaURL: audioURL)
         let text = "Actual stored transcript café 水 🌱 ending."
         try await store.save(transcript: Transcript(itemID: item, revisionID: revision.revisionID,
@@ -459,6 +489,7 @@ private actor ComposerRunner: PodcastPipelineRunning {
 
     private var calls = 0
     private var text: String?
+    private var hostCredit: String?
     private var arrived = false
     private var arrival: CheckedContinuation<Void, Never>?
     private var continuation: CheckedContinuation<Void, Never>?
@@ -468,11 +499,13 @@ private actor ComposerRunner: PodcastPipelineRunning {
     }
     func count() -> Int { calls }
     func lastTranscript() -> String? { text }
+    func lastHostCredit() -> String? { hostCredit }
     func waitUntilHeld() async { if !arrived { await withCheckedContinuation { arrival = $0 } } }
     func release() { continuation?.resume(); continuation = nil }
     func run(request: Data, onProgress: @escaping @Sendable (PodcastPreparationProgress) -> Void) async throws -> Data {
         let input = try JSONSerialization.jsonObject(with: request) as! [String: Any]
         let transcript = input["transcriptText"] as! String; text = transcript; calls += 1
+        hostCredit = input["episodeHostCredit"] as? String
         if held {
             arrived = true; arrival?.resume(); arrival = nil
             await withCheckedContinuation { continuation = $0 }

@@ -120,8 +120,9 @@ extension WiltedMacModelTests {
             feedURL: feedURL
         )
         model.installPlaybackStateForTesting(episode: fallback, isPlaying: false, position: 12, duration: 100)
-        XCTAssertNil(model.currentPlaybackShareURL)
-        XCTAssertEqual(model.currentPlaybackShareText, "An episode - A show")
+        XCTAssertNil(model.currentPlaybackShareURL, "search fallback stays labeled text instead of a synthetic direct link")
+        XCTAssertTrue((model.currentPlaybackShareText ?? "").contains("Listen / Search: https://podcasts.apple.com/search?term=An%20episode%20A%20show"))
+        XCTAssertEqual(model.currentPlaybackShareTitle, "An episode")
         XCTAssertEqual(model.currentPlaybackShareMessage, "An episode · A show")
         XCTAssertFalse(model.currentPlaybackShareMessage.contains("Only title and show text is shared."),
                        "control guidance must not be sent as the shared message")

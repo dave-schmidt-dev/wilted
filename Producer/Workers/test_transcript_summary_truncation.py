@@ -79,7 +79,7 @@ class TranscriptSummaryTruncationTests(unittest.TestCase):
         return result
 
     def test_truncated_map_passage_is_split_and_full_coverage_is_returned(self):
-        self.backend.context_size = 1200
+        self.backend.context_size = 1400  # fit the full fidelity and host-attribution system prompt
         self.backend.truncations_remaining = 1
         transcript = "START " + ("soil café 水 🌱 roots. " * 90) + "END SENTINEL"
         result = self.accepted_summary(self.request(transcript))

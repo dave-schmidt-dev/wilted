@@ -339,6 +339,8 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
     var feedURL: URL? = nil
     /// The episode's own web page from the feed's `<link>`, when it published one. Never the feed.
     var episodeLink: URL? = nil
+    /// The feed's audio address, retained so the player can reject it as a page link.
+    var enclosureURL: URL? = nil
     /// Title of the earlier episode this one looks like, when the feed refresh flagged it as a
     /// possible duplicate and the owner has not answered. Nil otherwise. It only keeps the
     /// episode out of automatic download and preparation; manual actions ignore it.
@@ -382,7 +384,8 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
         preparationStamp: WiltedMacPreparationStamp? = nil,
         feedID: String? = nil,
         feedURL: URL? = nil,
-        episodeLink: URL? = nil
+        episodeLink: URL? = nil,
+        enclosureURL: URL? = nil
     ) {
         self.init(
             id: id, title: title, feedTitle: feedTitle, summary: summary, notes: notes,
@@ -392,7 +395,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
             retiredAt: retiredAt, removalKind: removalKind, downloadState: downloadState,
             preparationState: preparationState, isReadyMediaAvailable: isReadyMediaAvailable,
             preparationStamp: preparationStamp,
-            feedID: feedID, feedURL: feedURL, episodeLink: episodeLink
+            feedID: feedID, feedURL: feedURL, episodeLink: episodeLink, enclosureURL: enclosureURL
         )
     }
 
@@ -422,6 +425,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
         feedID: String? = nil,
         feedURL: URL? = nil,
         episodeLink: URL? = nil,
+        enclosureURL: URL? = nil,
         possibleDuplicateOf: String? = nil,
         audiobook: WiltedMacAudiobookDetails? = nil,
         podcastChapters: [WiltedMacChapter] = []
@@ -448,6 +452,7 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
         self.feedID = feedID
         self.feedURL = feedURL
         self.episodeLink = episodeLink
+        self.enclosureURL = enclosureURL
         self.possibleDuplicateOf = possibleDuplicateOf
         self.audiobook = audiobook
         self.podcastChapters = podcastChapters
@@ -481,7 +486,8 @@ struct WiltedMacEpisode: Identifiable, Hashable, Sendable {
             lhs.downloadState == rhs.downloadState && lhs.preparationState == rhs.preparationState &&
             lhs.preparationStamp == rhs.preparationStamp &&
             lhs.isReadyMediaAvailable == rhs.isReadyMediaAvailable && lhs.feedID == rhs.feedID &&
-            lhs.feedURL == rhs.feedURL && lhs.episodeLink == rhs.episodeLink && lhs.audiobook == rhs.audiobook &&
+            lhs.feedURL == rhs.feedURL && lhs.episodeLink == rhs.episodeLink && lhs.enclosureURL == rhs.enclosureURL &&
+            lhs.audiobook == rhs.audiobook &&
             lhs.possibleDuplicateOf == rhs.possibleDuplicateOf && lhs.podcastChapters == rhs.podcastChapters &&
             lhs.selectedPodcastChapterIndex == rhs.selectedPodcastChapterIndex
     }

@@ -274,39 +274,93 @@ final class WiltedMacNowPlayingTests: XCTestCase {
         XCTAssertEqual(model.currentPlaybackShareMessage, "The Cost of Everything · Quarterly")
     }
 
-    /// A feed that publishes no per-episode page shares what it honestly has.
+    func testHostAttributionUsesOnlyExplicitHostCreditsFromNotes() {
+        XCTAssertEqual(WiltedMacShareContext.explicitHostCredit(from: "Host: Maya Chen\nPublisher: Studio"), "Maya Chen")
+        XCTAssertEqual(WiltedMacShareContext.explicitHostCredit(from: "Hosts: Priya Shah"), "Priya Shah")
+        XCTAssertNil(WiltedMacShareContext.explicitHostCredit(from: "Hosted by Simplecast"))
+        XCTAssertNil(WiltedMacShareContext.explicitHostCredit(from: "Author: Maya Chen\nPublisher: Studio"))
+    }
+
+    /// A feed without a page shares title and show plus a labeled safe search fallback.
     func testAnEpisodeWithNoPageSharesTitleAndShowAndSaysSo() {
         let (model, _, _) = makeModel()
         var linkless = episode()
         linkless.feedURL = waveformFeed
         model.installPlaybackStateForTesting(episode: linkless, isPlaying: false, position: 0, duration: 1_800)
 
-        XCTAssertNil(model.currentPlaybackShareURL, "the feed address is not the episode's page")
-        XCTAssertEqual(model.currentPlaybackShareText, "The Cost of Everything - Quarterly")
+        XCTAssertNil(model.currentPlaybackShareURL, "a search fallback is text, not a direct episode page")
+        XCTAssertTrue((model.currentPlaybackShareText ?? "").contains("Listen / Search: https://podcasts.apple.com/search?term=The%20Cost%20of%20Everything%20Quarterly"))
+        XCTAssertEqual(model.currentPlaybackShareTitle, "The Cost of Everything")
         XCTAssertEqual(model.currentPlaybackShareMessage, "The Cost of Everything · Quarterly")
         XCTAssertFalse(model.currentPlaybackShareMessage.contains("Only title and show text is shared."),
                        "control guidance must not be sent as the shared message")
         XCTAssertFalse((model.currentPlaybackShareText ?? "").contains(waveformFeed.absoluteString))
     }
 
-    /// Both destinations keep the normal Share control; the fallback explains its payload in help.
-    func testTextFallbackKeepsTheNormalShareControlAndExplainsItsPayloadInHelp() throws {
+    /// Feeds with audio enclosures, signed or tokenized URLs, or no episode page avoid leaking
+    /// tokens or enclosure media and fall back to a safe, verified listening search link.
+    func testSubscriptionOrTokenizedOrEnclosureURLsFallBackToSafeSearchLink() {
+        let (model, _, _) = makeModel()
+        // Audio media file in episodeLink falls back to search
+        var mediaLink = episode(id: "mediaLink")
+        mediaLink.feedURL = waveformFeed
+        mediaLink.episodeLink = URL(string: "https://example.test/media/stream.mp3")
+        model.installPlaybackStateForTesting(episode: mediaLink, isPlaying: false, position: 0, duration: 1_800)
+        XCTAssertNil(model.currentPlaybackShareURL)
+        XCTAssertTrue((model.currentPlaybackShareText ?? "").contains("Listen / Search:"))
+
+        // Tokenized / signed URL in episodeLink falls back to search
+        var signedLink = episode(id: "signedLink")
+        signedLink.feedURL = waveformFeed
+        signedLink.episodeLink = URL(string: "https://example.test/episode?token=secret-auth-key&sig=xyz123")
+        model.installPlaybackStateForTesting(episode: signedLink, isPlaying: false, position: 0, duration: 1_800)
+        XCTAssertNil(model.currentPlaybackShareURL)
+        XCTAssertFalse((model.currentPlaybackShareText ?? "").contains("secret-auth-key"))
+
+        // Feed URL used as episodeLink falls back to search
+        var feedAsLink = episode(id: "feedAsLink")
+        feedAsLink.feedURL = waveformFeed
+        feedAsLink.episodeLink = waveformFeed
+        model.installPlaybackStateForTesting(episode: feedAsLink, isPlaying: false, position: 0, duration: 1_800)
+        XCTAssertNil(model.currentPlaybackShareURL)
+
+        // Extensionless enclosure addresses are rejected using retained feed metadata.
+        var enclosureLink = episode(id: "enclosureLink")
+        enclosureLink.feedURL = waveformFeed
+        enclosureLink.episodeLink = URL(string: "https://cdn.example.test/media/stream")
+        enclosureLink.enclosureURL = enclosureLink.episodeLink
+        model.installPlaybackStateForTesting(episode: enclosureLink, isPlaying: false, position: 0, duration: 1_800)
+        XCTAssertNil(model.currentPlaybackShareURL)
+        XCTAssertTrue((model.currentPlaybackShareText ?? "").contains("Listen / Search:"))
+
+        // Valid safe web URL is preserved as direct link
+        var safeLink = episode(id: "safeLink")
+        safeLink.feedURL = waveformFeed
+        safeLink.episodeLink = URL(string: "https://example.test/shows/quarterly/cost-of-everything")
+        model.installPlaybackStateForTesting(episode: safeLink, isPlaying: false, position: 0, duration: 1_800)
+        XCTAssertEqual(model.currentPlaybackShareURL, URL(string: "https://example.test/shows/quarterly/cost-of-everything"))
+        XCTAssertTrue((model.currentPlaybackShareText ?? "").contains("Link: https://example.test/shows/quarterly/cost-of-everything"))
+    }
+
+    /// Both destinations keep the normal Share control; the fallback explains the full payload.
+    func testShareControlExplainsTheEpisodeTitleShowAndListeningLink() throws {
         let (model, _, _) = makeModel()
         var linked = episode()
         linked.episodeLink = waveformPage
         model.installPlaybackStateForTesting(episode: linked, isPlaying: false, position: 0, duration: 1_800)
         let withPage = try WiltedMacHeadless.recognizedText(
-            WiltedMacPlaybackShareLink(model: model).padding(12), size: CGSize(width: 320, height: 90))
+            WiltedMacPlaybackShareItems(model: model).padding(12), size: CGSize(width: 320, height: 90))
         XCTAssertFalse(withPage.contains { $0.contains("Only title") })
 
         let linkless = episode(id: "linkless-share")
         model.installPlaybackStateForTesting(episode: linkless, isPlaying: false, position: 0, duration: 1_800)
         let without = try WiltedMacHeadless.recognizedText(
-            WiltedMacPlaybackShareLink(model: model).padding(12), size: CGSize(width: 320, height: 90))
-        XCTAssertEqual(withPage, without, "the fallback must retain the normal Share presentation, got \(without)")
+            WiltedMacPlaybackShareItems(model: model).padding(12), size: CGSize(width: 320, height: 90))
+        XCTAssertTrue(withPage.contains("Share link"))
+        XCTAssertTrue(without.contains("Share episode details"), "the no-page action explains its text fallback")
         let source = try WiltedMacHeadless.viewSource("WiltedMacPlayerContent.swift")
-        XCTAssertTrue(source.contains(".help(\"Only title and show text is shared.\")"))
-        XCTAssertTrue(source.contains(#".accessibilityHint("Only title and show text is shared.")"#))
+        XCTAssertTrue(source.contains(".help(\"Share the episode title, show, and listening link.\")"))
+        XCTAssertTrue(source.contains(#".accessibilityHint("Share the episode title, show, and listening link.")"#))
     }
 
     func testAnArticleKeepsItsCanonicalURL() {

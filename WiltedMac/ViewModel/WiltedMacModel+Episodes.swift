@@ -379,23 +379,39 @@ extension WiltedMacModel {
     }
 
     /// The native URL payload for Now Playing. Articles share their canonical
-    /// URL; podcasts share the episode's own page when its feed published one,
-    /// and never the subscription feed. URL values stay URL values so the share
-    /// sheet receives link semantics instead of an ordinary string.
+    /// URL; podcasts share only the episode's own safe page when its feed published one,
+    /// and never the subscription feed or an enclosure/media address. URL values
+    /// stay URL values so the share sheet receives link semantics instead of an
+    /// ordinary string.
     var currentPlaybackShareURL: URL? {
         if let article = currentArticle {
             return article.url
         }
-        return currentEpisode?.episodeLink
+        if let episode = currentEpisode {
+            guard let link = episode.episodeLink,
+                  WiltedMacShareContext.isSafePublicWebLink(
+                    link, enclosureURL: episode.enclosureURL, feedURL: episode.feedURL
+                  ) else { return nil }
+            return link
+        }
+        return nil
     }
 
-    /// What a podcast without an episode page shares instead: its title and show.
+    /// What a podcast without an episode page shares when plain text is used:
+    /// its title, show, and a clearly labeled safe listening search link when available.
     var currentPlaybackShareText: String? {
         if let article = currentArticle {
             return article.title + " · " + article.source
         }
         if let episode = currentEpisode {
-            return episode.title + " - " + episode.feedTitle
+            let base = episode.title + " - " + episode.feedTitle
+            if let link = currentPlaybackShareURL {
+                return "\(base)\n\nLink: \(link.absoluteString)"
+            }
+            if let link = WiltedMacShareContext.safeSearchURL(title: episode.title, show: episode.feedTitle) {
+                return "\(base)\n\nListen / Search: \(link.absoluteString)"
+            }
+            return base
         }
         return nil
     }

@@ -10,6 +10,7 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Mac podcast shares include the episode page or a labeled Apple Podcasts search link. Shared summaries include the episode title, show name, and link. They use a host name when the transcript or a host credit in the episode notes identifies one.
 - Mac headline alerts appear at the bottom of the window, below the player controls.
 - Select an ad-finding provider and configure its model directly in its Providers row.
 

@@ -17,7 +17,7 @@ struct WiltedMacShareComposerKey: Hashable {
 /// Owns one item/revision summary request and a bounded verified cache.
 @MainActor @Observable
 final class WiltedMacShareComposerState {
-    struct Preview { let text: String; let title: String; let url: URL? }
+    struct Preview { let text: String; let title: String; let subtitle: String?; let url: URL? }
     private struct CacheKey: Hashable {
         let store: ObjectIdentifier
         let account: ObjectIdentifier?
@@ -28,6 +28,10 @@ final class WiltedMacShareComposerState {
         let transcriptDigest: String
         let modelDigest: String
         let semanticFingerprint: String
+        let title: String
+        let subtitle: String?
+        let hostCredit: String?
+        let shareURL: URL?
     }
     private struct Cached { let context: WiltedMacShareContext; let preview: Preview; let promptIdentity: String }
     private struct Completed {
@@ -112,7 +116,19 @@ final class WiltedMacShareComposerState {
         setIncludeSummary(true)
     }
     func payload(_ preview: Preview) -> String {
-        preview.url.map { "\(preview.text)\n\n\($0.absoluteString)" } ?? preview.text
+        let heading: String
+        if let subtitle = preview.subtitle?.trimmingCharacters(in: .whitespacesAndNewlines), !subtitle.isEmpty {
+            heading = "\(preview.title) · \(subtitle)"
+        } else {
+            heading = preview.title
+        }
+        var body = "\(heading)\n\n\(preview.text)"
+        if let url = preview.url {
+            let isSearch = url.host?.lowercased() == "podcasts.apple.com" && url.path.lowercased().contains("search")
+            let label = isSearch ? "Listen / Search" : "Link"
+            body += "\n\n\(label): \(url.absoluteString)"
+        }
+        return body
     }
 
     func summarize() {
@@ -140,17 +156,20 @@ final class WiltedMacShareComposerState {
                 let key = CacheKey(store: context.storeID, account: context.accountID,
                     owner: context.binding?.ownerToken, generation: context.accountGateGeneration,
                     item: context.itemID.rawValue, revision: context.revisionID.rawValue,
-                    transcriptDigest: context.transcriptDigest, modelDigest: digest, semanticFingerprint: semantic)
+                    transcriptDigest: context.transcriptDigest, modelDigest: digest, semanticFingerprint: semantic,
+                    title: context.title, subtitle: context.subtitle, hostCredit: context.hostCredit,
+                    shareURL: context.shareURL)
                 let candidate: Cached
                 if let retained = cache[key] { candidate = retained }
                 else {
                     progress = "Summarizing locally…"
                     let result = try await service.summarize(transcript: context.transcript, modelURL: configuration.modelURL,
-                        requestID: id, expectedModelIdentity: digest, onProgress: progressHandler(id))
+                        requestID: id, expectedModelIdentity: digest, episodeHostCredit: context.hostCredit,
+                        onProgress: progressHandler(id))
                     guard result.requestID == id, result.transcriptDigest == context.transcriptDigest,
                           result.modelIdentity == digest, await owned(id, context, semantic) else { return }
                     candidate = Cached(context: context, preview: Preview(text: result.summary, title: context.title,
-                                                                        url: context.shareURL), promptIdentity: result.promptIdentity)
+                                                                        subtitle: context.subtitle, url: context.shareURL), promptIdentity: result.promptIdentity)
                 }
                 // A cached result is never reused on path spelling alone. Rehash
                 // after the asynchronous context/worker boundary as well.
@@ -231,9 +250,9 @@ struct WiltedMacShareComposer: View {
             .accessibilityIdentifier("wilted-player-share")
             .popover(isPresented: $state.presented) {
                 WiltedMacShareComposerPanel(progress: state.progress, failure: state.failure,
-                    preview: state.preview.map { (text: $0.text, title: $0.title, url: $0.url) },
+                    preview: state.preview.map { (text: $0.text, title: $0.title, subtitle: $0.subtitle, url: $0.url) },
                     onRetry: state.summarize, onCancel: state.cancelAndDismiss,
-                    payload: { value in state.payload(.init(text: value.text, title: value.title, url: value.url)) }).padding()
+                    payload: { value in state.payload(.init(text: value.text, title: value.title, subtitle: value.subtitle, url: value.url)) }).padding()
             }
             Menu {
                 WiltedMacPlaybackShareItems(model: model)
@@ -270,10 +289,11 @@ struct WiltedMacShareComposer: View {
 struct WiltedMacShareComposerPanel: View {
     let progress: String?
     let failure: String?
-    let preview: (text: String, title: String, url: URL?)?
+    let preview: (text: String, title: String, subtitle: String?, url: URL?)?
     let onRetry: () -> Void
     let onCancel: () -> Void
-    let payload: ((text: String, title: String, url: URL?)) -> String
+    let payload: ((text: String, title: String, subtitle: String?, url: URL?)) -> String
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             if let progress {
@@ -289,8 +309,29 @@ struct WiltedMacShareComposerPanel: View {
             }
             if let preview {
                 Text("Preview").font(.headline)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(preview.title)
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+                    if let subtitle = preview.subtitle,
+                       !subtitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
                 ScrollView { Text(preview.text).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
                     .frame(maxHeight: 220).accessibilityIdentifier("wilted-share-summary-preview")
+                if let url = preview.url {
+                    let isSearch = url.host?.lowercased() == "podcasts.apple.com" && url.path.lowercased().contains("search")
+                    let label = isSearch ? "Listen / Search: " : "Link: "
+                    Text(label + url.absoluteString)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 ShareLink(item: payload(preview), subject: Text(preview.title)) {
                     Label("Share summary", systemImage: "square.and.arrow.up")
                 }.accessibilityIdentifier("wilted-player-share-summary")

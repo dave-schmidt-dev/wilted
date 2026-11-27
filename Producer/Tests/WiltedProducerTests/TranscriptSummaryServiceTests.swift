@@ -61,6 +61,21 @@ struct TranscriptSummaryServiceTests {
         #expect(object["audioPath"] == nil)
     }
 
+    @Test func sendsHostCreditSeparatelyWithoutChangingTranscriptProvenance() async throws {
+        let fixture = try SummaryModelFixture()
+        defer { fixture.remove() }
+        let runner = SummaryReplyRunner()
+        let transcript = "Welcome back. Today we explain composting."
+        let result = try await TranscriptSummaryService(runner: runner).summarize(
+            transcript: transcript, modelURL: fixture.model, episodeHostCredit: "Maya Chen"
+        )
+        let request = try #require(await runner.lastRequest())
+        let object = try #require(try JSONSerialization.jsonObject(with: request) as? [String: Any])
+        #expect(object["transcriptText"] as? String == transcript)
+        #expect(object["episodeHostCredit"] as? String == "Maya Chen")
+        #expect(result.transcriptDigest == summaryDigest(Data(transcript.utf8)))
+    }
+
     @Test(arguments: SummaryReplyFault.allCases)
     fileprivate func rejectsMalformedMismatchedOrIncompleteReplies(fault: SummaryReplyFault) async throws {
         let fixture = try SummaryModelFixture()

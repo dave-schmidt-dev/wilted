@@ -304,6 +304,7 @@ extension WiltedMacModel {
                 feedID: episode.feedID.rawValue,
                 feedURL: episode.feedURL,
                 episodeLink: episode.episodeLink,
+                enclosureURL: episode.enclosureURL,
                 possibleDuplicateOf: possibleDuplicateOf[episode.itemID],
                 podcastChapters: chapters
             ))
