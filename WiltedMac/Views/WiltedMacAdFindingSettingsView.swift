@@ -56,8 +56,6 @@ struct WiltedMacAdFindingSettingsView: View {
                         .accessibilityIdentifier("wilted-ad-finding-switch-message")
                 }
                 Divider()
-                WiltedMacAdFindingModelSection(model: appModel)
-                Divider()
                 Button {
                     presentedDestination = .allShows
                 } label: {

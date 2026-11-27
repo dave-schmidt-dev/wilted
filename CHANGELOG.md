@@ -8,6 +8,10 @@ All notable changes to this project are documented in this file.
 
 - Choose separate voices for headlines, the morning report, and weather alerts in Mac Settings.
 
+### Changed
+
+- Select an ad-finding provider and configure its model directly in its Providers row.
+
 ### Fixed
 
 - Provider check results survive reopening Wilted.

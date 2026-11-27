@@ -198,7 +198,8 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
             WiltedMacAdFindingSettingsView(model: appModel, board: board), size: CGSize(width: 700, height: 600)
         ).joined(separator: " ")
         XCTAssertTrue(cardText.contains("Find ads with the online labeller"), cardText)
-        XCTAssertTrue(cardText.contains("Ad finding model"), cardText)
+        XCTAssertFalse(cardText.contains("Ad finding model"), "model controls belong to the selected provider row: \(cardText)")
+        XCTAssertFalse(cardText.contains("Set up providers"), "the obsolete provider link is removed: \(cardText)")
         XCTAssertTrue(cardText.contains("Requests today"), cardText)
         XCTAssertFalse(cardText.contains("fixture-key"), "the key is never rendered: \(cardText)")
         XCTAssertFalse(cardText.contains("ZX9Q7"), cardText)
@@ -334,7 +335,8 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
             size: CGSize(width: 700, height: 700)
         ).joined(separator: " ")
         XCTAssertTrue(adsText.contains("Find ads with the online labeller"), adsText)
-        XCTAssertTrue(adsText.contains("Ad finding model"), adsText)
+        XCTAssertFalse(adsText.contains("Ad finding model"), "model controls belong to the selected provider row: \(adsText)")
+        XCTAssertFalse(adsText.contains("Set up providers"), "the obsolete provider link is removed: \(adsText)")
         XCTAssertTrue(adsText.contains("Requests today"), adsText)
         XCTAssertTrue(adsText.contains("Retry"), "a paused service needs an action: \(adsText)")
         XCTAssertFalse(adsText.contains("Provider key"), "Ads page must not have key field: \(adsText)")
@@ -360,19 +362,21 @@ final class WiltedMacAdFindingSettingsTests: XCTestCase {
         let providersText = lines.map(\.text).joined(separator: " ")
         XCTAssertTrue(providersText.contains("Command-line tools (use your subscription)"), providersText)
         XCTAssertTrue(providersText.contains("Keys"), providersText)
+        XCTAssertTrue(providersText.contains("Ad finding model"), providersText)
         XCTAssertTrue(providersText.contains("Ready"), providersText)
-        XCTAssertTrue(providersText.contains("Last provider check: Passed"), providersText)
+        XCTAssertTrue(providersText.localizedCaseInsensitiveContains("Last provider check: Passed"), providersText)
         XCTAssertTrue(providersText.contains("Last episode result: Found 2 ad breaks. 1 label could not be used."), providersText)
         for provider in ["OpenCode", "Claude Code", "Codex", "OpenCode Go", "OpenRouter", "OpenAI", "Anthropic"] {
             // The row draws "OpenAI", but in the system font a capital I and a lowercase l are the
             // same glyph and Vision (no language correction) reads it as "OpenAl".
             let spellings = provider == "OpenAI" ? ["OpenAI", "OpenAl"] : [provider]
-            let name = try XCTUnwrap(lines.first { line in spellings.contains { line.text.contains($0) } }, provider)
-            let row = lines.filter { abs($0.top - name.top) < 0.012 }.map(\.text).joined(separator: " ")
-            XCTAssertTrue(row.contains("Check"), row)
-            XCTAssertEqual(row.contains("Selected"), provider == "OpenAI", row)
+            let name = try XCTUnwrap(lines.first { line in spellings.contains { line.text.localizedCaseInsensitiveContains($0) } }, provider)
+            // The selection symbol can raise Vision’s bounding box above the text baseline.
+            let check = lines.first { $0.text.contains("Check") && abs($0.top - name.top) * 700 < 15 }
+            XCTAssertNotNil(check, "Missing Check beside \(provider) at \(name.top): \(lines)")
         }
-        XCTAssertEqual(WiltedMacHeadless.occurrences(of: "Selected", in: providersText), 1, providersText)
+        XCTAssertTrue(providersText.contains("Thinking level"), providersText)
+        XCTAssertTrue(providersText.contains("gpt-4o") || providersText.contains("gpt-40"), providersText)
         XCTAssertTrue(providersText.contains("Key saved"), providersText)
         XCTAssertTrue(providersText.contains("Remove"), providersText)
         XCTAssertTrue(providersText.contains("Save"), providersText)

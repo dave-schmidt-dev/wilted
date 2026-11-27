@@ -324,16 +324,23 @@ extension WiltedMacJourneyUITests {
                     let row = rows["wilted-providers-card-\(provider)"]
                     XCTAssertTrue(row.buttons["wilted-providers-check-\(provider)"].exists, provider)
                     XCTAssertTrue(row.staticTexts["wilted-providers-status-\(provider)"].exists, provider)
-                    let tag = row.staticTexts["wilted-providers-in-use-\(provider)"]
-                    XCTAssertEqual(tag.exists, provider == "opencodeGoKey", provider)
-                    if tag.exists { XCTAssertEqual(tag.label, "Selected for ad finding") }
+                    let choice = row.buttons["wilted-providers-choice-\(provider)"]
+                    XCTAssertTrue(choice.exists, provider)
+                    XCTAssertEqual(choice.isSelected, provider == "opencodeGoKey", provider)
                 }
                 XCTAssertFalse(page.staticTexts["Kind"].exists)
                 let checkAll = page.buttons["wilted-providers-check-all"]
                 XCTAssertTrue(checkAll.exists)
-                app.buttons["wilted-ad-finding-setup-providers"].click()
-                XCTAssertTrue(waitForHittable(checkAll, timeout: 5),
-                              "Set up providers must scroll the row actions into view")
+                let claudeChoice = page.buttons["wilted-providers-choice-claudeCodeCLI"]
+                for _ in 0..<12 where !claudeChoice.isHittable {
+                    app.scrollViews.firstMatch.scroll(byDeltaX: 0, deltaY: -250)
+                }
+                XCTAssertTrue(claudeChoice.isHittable)
+                claudeChoice.click()
+                XCTAssertTrue(claudeChoice.isSelected, "the provider row records the new choice")
+                XCTAssertTrue(element(app, "wilted-ad-finding-model-controls").waitForExistence(timeout: 5))
+                XCTAssertTrue(element(app, "wilted-ad-finding-level-picker").exists)
+                XCTAssertFalse(app.buttons["wilted-ad-finding-setup-providers"].exists)
             }
         }
         XCTAssertTrue(syncControls.waitForExistence(timeout: 5))
@@ -555,13 +562,6 @@ extension WiltedMacJourneyUITests {
         let confirm = byIdentifier.waitForExistence(timeout: 5) ? byIdentifier : app.buttons[label]
         XCTAssertTrue(confirm.waitForExistence(timeout: 5), "the removal dialog must offer \(label)")
         confirm.click()
-    }
-
-    private func waitForHittable(_ element: XCUIElement, timeout: TimeInterval = 10) -> Bool {
-        let expectation = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "hittable == true"), object: element
-        )
-        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 
     private func launch(arguments: [String]) throws -> XCUIApplication {

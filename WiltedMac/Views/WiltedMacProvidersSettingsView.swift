@@ -76,18 +76,30 @@ private struct WiltedMacProviderRow: View {
         VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
             Divider()
             HStack(alignment: .firstTextBaseline, spacing: WiltedTheme.Spacing.small) {
-                Text(row.name)
-                    .wiltedFont(.body)
-                if row.isChosen {
-                    Text("Selected")
-                        .wiltedFont(.caption)
-                        .fixedSize()
-                        .foregroundStyle(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme))
-                        .padding(.horizontal, WiltedTheme.Spacing.xSmall)
-                        .background(WiltedTheme.color(.wiltedLeaf, scheme: colorScheme).opacity(0.12), in: Capsule())
-                        .accessibilityLabel("Selected for ad finding")
-                        .accessibilityIdentifier("wilted-providers-in-use-\(row.provider.rawValue)")
+                Button {
+                    if !row.isChosen {
+                        providers.setProvider(row.provider)
+                    }
+                } label: {
+                    HStack(spacing: WiltedTheme.Spacing.small) {
+                        Image(systemName: row.isChosen ? "circle.inset.filled" : "circle")
+                            .foregroundStyle(row.isChosen
+                                ? WiltedTheme.color(.wiltedLeaf, scheme: colorScheme)
+                                : WiltedTheme.color(.secondaryText, scheme: colorScheme))
+                            .font(.system(size: 13))
+                            .accessibilityHidden(true)
+                        Text(row.name)
+                            .wiltedFont(.body)
+                            .foregroundStyle(WiltedTheme.color(.primaryText, scheme: colorScheme))
+                    }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("wilted-providers-choice-\(row.provider.rawValue)")
+                .accessibilityLabel(row.name)
+                .accessibilityValue(row.isChosen ? "Selected for ad finding" : "Not selected for ad finding")
+                .accessibilityAddTraits(row.isChosen ? [.isSelected] : [])
+
                 Spacer(minLength: WiltedTheme.Spacing.small)
                 VStack(alignment: .leading, spacing: WiltedTheme.Spacing.xSmall) {
                     Text(row.status)
@@ -115,6 +127,11 @@ private struct WiltedMacProviderRow: View {
                     .accessibilityIdentifier("wilted-providers-last-episode-result-\(row.provider.rawValue)")
             }
             if row.provider.requiresSavedKey { keyControls }
+            if row.isChosen {
+                WiltedMacAdFindingModelSection(providers: providers)
+                    .padding(.leading, WiltedTheme.Spacing.large)
+                    .padding(.top, WiltedTheme.Spacing.xSmall)
+            }
         }
         .controlSize(.small)
         .alert("Remove the provider key?", isPresented: $isConfirmingKeyRemoval) {
