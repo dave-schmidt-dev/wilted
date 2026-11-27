@@ -270,18 +270,7 @@ final class WiltedMacModel {
             preferences: AdLabellerPreferences(preferences: preferences),
             inMemory: fixtureMode || Self.hostsTests
         )
-    @ObservationIgnored lazy var providers = WiltedMacProviderSettings(
-        preferences: preferences,
-        keyStore: adLabellerKeyStore,
-        check: (fixtureMode || Self.hostsTests)
-            ? { @Sendable provider in
-                provider == .openCodeCLI ? .ready : .notFound
-            }
-            : { await LabellerCommandLineCheck.check(provider: $0) },
-        makeKeySender: (fixtureMode || Self.hostsTests)
-            ? { @Sendable _, _ in WiltedMacFixtureProviderCheckSender() }
-            : nil
-    )
+    @ObservationIgnored lazy var providers = makeProviderSettings()
     /// Settings' Ad finding card. It reads the key store once, so views ask it, not the Keychain.
     @ObservationIgnored lazy var adFinding = WiltedMacAdFindingSettings(
         preferences: preferences, keyStore: adLabellerKeyStore,

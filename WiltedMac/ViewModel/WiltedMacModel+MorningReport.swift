@@ -122,6 +122,7 @@ final class WiltedMorningReportController {
         let location = model.bulletinHub.location
         let builder = MorningReportBuilder(
             store: store,
+            voiceID: model.morningReportVoiceID,
             coordinates: { await MainActor.run {
                 location.coordinates.map { ($0.latitude, $0.longitude) }
             } },

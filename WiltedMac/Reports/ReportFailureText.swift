@@ -32,7 +32,7 @@ enum ReportFailureCause: Equatable, Sendable {
         default:
             break
         }
-        if error is SpeechIPCError { return .speechUnavailable }
+        if error is SpeechIPCError || error is ArticleNarrationError { return .speechUnavailable }
         return .other
     }
 

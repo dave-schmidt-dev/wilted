@@ -73,12 +73,22 @@ struct WiltedMacReportsCard: View {
                             .accessibilityIdentifier("wilted-reports-alerts")
                         note("Checks for local National Weather Service alerts using this Mac’s location.",
                              id: "wilted-reports-weather-explanation")
+                        #if canImport(WiltedProducer)
+                        roleVoicePicker(
+                            title: "Weather voice",
+                            selection: Binding(get: { model.weatherVoiceID }, set: { model.selectWeatherVoice($0) }),
+                            identifier: "wilted-reports-weather-voice")
+                        #endif
                         WiltedMacLastWeatherAlertDisclosure(bulletin: model.bulletinHub.lastSpokenWeatherAlert)
                         Toggle("Read headlines aloud", isOn: reportsBinding(\.headlinesEnabled))
                             .accessibilityIdentifier("wilted-reports-headlines")
                         note("Reads eligible posts from your headline feeds at an ad break.",
                              id: "wilted-reports-headlines-explanation")
                         #if canImport(WiltedProducer)
+                        roleVoicePicker(
+                            title: "Headline voice",
+                            selection: Binding(get: { model.headlineVoiceID }, set: { model.selectHeadlineVoice($0) }),
+                            identifier: "wilted-reports-headline-voice")
                         readingVoiceSection
                         #endif
                         topicsSection
@@ -113,6 +123,12 @@ struct WiltedMacReportsCard: View {
                         DatePicker("Report time", selection: reportTimeBinding, displayedComponents: .hourAndMinute)
                             .disabled(!settings.reportEnabled)
                             .accessibilityIdentifier("wilted-reports-time")
+                        #if canImport(WiltedProducer)
+                        roleVoicePicker(
+                            title: "Morning report voice",
+                            selection: Binding(get: { model.morningReportVoiceID }, set: { model.selectMorningReportVoice($0) }),
+                            identifier: "wilted-reports-morning-report-voice")
+                        #endif
                         #if canImport(WiltedProducer)
                         reportStatusRow
                         #endif
@@ -185,8 +201,24 @@ struct WiltedMacReportsCard: View {
             .foregroundStyle(WiltedTheme.color(.secondaryText, scheme: colorScheme))
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("wilted-reports-reading-voice-status")
-        note("Reads headline announcements and stories you choose with Listen next. Weather alerts use the selected story voice. Without an available local voice, weather alerts and headlines are not spoken; headlines still appear on screen.",
+        note("Sets the voice for stories you choose with Listen next. Headline, weather and morning report voices are set separately.",
              id: "wilted-reports-reading-voice-explanation")
+    }
+
+    @ViewBuilder private func roleVoicePicker(
+        title: String,
+        selection: Binding<ApprovedReadingVoiceID>,
+        identifier: String
+    ) -> some View {
+        Picker(title, selection: selection) {
+            ForEach(ApprovedReadingVoiceID.allCases, id: \.rawValue) { option in
+                Text("\(option.displayName) — \(model.readingVoiceAvailabilityText(for: option))")
+                    .tag(option)
+                    .disabled(!model.readingVoiceIsAvailable(option))
+            }
+        }
+        .pickerStyle(.menu)
+        .accessibilityIdentifier(identifier)
     }
 
     @ViewBuilder private var readinessSection: some View {

@@ -188,6 +188,8 @@ final class WiltedMacBulletinHubTests: XCTestCase {
         defer { narration.shutdown() }
         let speaker = HubStartingSpeaker()
         let rig = try await makeRig(speaker: speaker, weatherNarration: narration)
+        rig.model.selectHeadlineVoice(.paulHarvey)
+        rig.model.selectWeatherVoice(.wolfmanJack)
         let now = Date()
         let issuedAlert = NWSAlert(
             id: "local-weather-ready", event: "Special Marine Warning", areaDesc: "Hawk Channel",
@@ -204,6 +206,8 @@ final class WiltedMacBulletinHubTests: XCTestCase {
 
         let alert = try XCTUnwrap(AlertMonitor.bulletin(for: issuedAlert, now: now))
         try await gate.waitForCount(1)
+        let renderVoices = await gate.voices()
+        XCTAssertEqual(renderVoices, [.wolfmanJack], "weather uses its independent voice setting")
         XCTAssertTrue(speaker.bulletins.isEmpty, "the player cannot receive an unprepared weather alert")
         XCTAssertNil(rig.model.speakingBulletin)
 
@@ -305,8 +309,10 @@ final class WiltedMacBulletinHubTests: XCTestCase {
     func testLegacyHeadlineBulletinIDStillBecomesTheFeaturedStory() async throws {
         let speaker = HubStartingSpeaker()
         let now = Date()
+        let renderedVoices = HubVoiceRenderCapture()
         let narrator = WiltedMacHeadlineNarration(
             render: { _, voiceID, outputURL in
+                await renderedVoices.record(voiceID)
                 try Data(repeating: 0x39, count: 128).write(to: outputURL)
                 return ArticleNarrationAudio(
                     audioURL: outputURL, duration: 1,
@@ -315,6 +321,7 @@ final class WiltedMacBulletinHubTests: XCTestCase {
             availability: { _ in .available }, now: { now })
         defer { narrator.shutdown() }
         let rig = try await makeRig(speaker: speaker, narration: narrator)
+        rig.model.selectHeadlineVoice(.wolfmanJack)
         set(rig.model, interruptions: true)
         rig.model.updateAutomationSettings { settings in
             settings.updatingReports { $0.headlinesEnabled = true }
@@ -351,6 +358,8 @@ final class WiltedMacBulletinHubTests: XCTestCase {
         await WiltedMacHeadless.eventually("the eligible story is ready") {
             narrator.readyBulletins.contains(where: { $0.id == legacy.id })
         }
+        let voiceCalls = await renderedVoices.values()
+        XCTAssertEqual(voiceCalls, [.wolfmanJack], "headlines use their own voice setting")
         XCTAssertTrue(speaker.texts.isEmpty, "a ready headline waits for an ad-break snapshot")
         XCTAssertTrue(rig.model.playback?.adBreakReached() == true)
         await WiltedMacHeadless.eventually("the eligible story is spoken and featured") {
@@ -380,6 +389,13 @@ final class WiltedMacBulletinHubTests: XCTestCase {
     }
 }
 
+private actor HubVoiceRenderCapture {
+    private var rendered: [ApprovedReadingVoiceID] = []
+
+    func record(_ voice: ApprovedReadingVoiceID) { rendered.append(voice) }
+    func values() -> [ApprovedReadingVoiceID] { rendered }
+}
+
 private actor HubWeatherRenderGate {
     private enum Timeout: Error { case waitingForRequest }
     private var requests: [(
@@ -387,13 +403,17 @@ private actor HubWeatherRenderGate {
         outputURL: URL,
         continuation: CheckedContinuation<ArticleNarrationAudio, Error>
     )] = []
+    private var renderedVoices: [ApprovedReadingVoiceID] = []
     var count: Int { requests.count }
 
     func wait(voiceID: ApprovedReadingVoiceID, outputURL: URL) async throws -> ArticleNarrationAudio {
         try await withCheckedThrowingContinuation { continuation in
+            renderedVoices.append(voiceID)
             requests.append((voiceID, outputURL, continuation))
         }
     }
+
+    func voices() -> [ApprovedReadingVoiceID] { renderedVoices }
 
     func waitForCount(_ expected: Int) async throws {
         for _ in 0..<100 {

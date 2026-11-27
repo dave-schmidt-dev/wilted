@@ -29,7 +29,8 @@ actor ListenNextAudioFixture: LibraryStoryAudioTransport {
     func setStatus(_ status: LibraryListenNextStatus) { statuses[status.requestID] = status }
     func publishReadyBulletinStatus(
         for intent: LibraryIntent, at date: Date, revision: UInt64 = 1,
-        includeSpokenTextDigest: Bool = true, digestOverride: String? = nil
+        includeSpokenTextDigest: Bool = true, digestOverride: String? = nil,
+        voiceID: String = "casey-kasem", voiceRevision: String? = nil
     ) throws {
         guard case let .requestBulletinAudio(bulletinID) = intent.action else { return }
         let attributes = try FileManager.default.attributesOfItem(atPath: sourceFile.path)
@@ -38,7 +39,7 @@ actor ListenNextAudioFixture: LibraryStoryAudioTransport {
         }
         let offer = try LibraryStoryAudioOffer(
             requestID: intent.id, storyID: bulletinID, requesterDeviceID: intent.deviceID,
-            voiceID: "casey-kasem", voiceRevision: "casey-kasem-short-v1",
+            voiceID: voiceID, voiceRevision: voiceRevision ?? "\(voiceID)-short-v1",
             audioRevision: RevisionID(rawValue: "rev-bulletin-audio"),
             contentHash: try MediaHash.sha256(fileAt: sourceFile), byteCount: byteCount,
             mediaType: "audio/mp4", durationSeconds: 2,

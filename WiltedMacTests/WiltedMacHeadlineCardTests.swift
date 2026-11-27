@@ -7,6 +7,38 @@ import WiltedProducer
 
 @MainActor
 final class WiltedMacHeadlineCardTests: XCTestCase {
+    func testRoleVoicesInheritTheOldSelectionOnceThenPersistIndependently() throws {
+        let preferences = WiltedMacTestPreferences.ephemeral()
+        preferences.set(ApprovedReadingVoiceID.wolfmanJack.rawValue,
+                        forKey: WiltedMacReadingVoiceSelection.preferenceKey)
+
+        let selection = WiltedMacReadingVoiceSelection(preferences: preferences)
+        XCTAssertEqual(selection.headlineVoiceID, .wolfmanJack)
+        XCTAssertEqual(selection.weatherVoiceID, .rodSerling)
+        XCTAssertEqual(selection.morningReportVoiceID, .caseyKasem)
+
+        selection.select(ApprovedReadingVoiceID.paulHarvey.rawValue)
+        selection.selectHeadlineVoice(.caseyKasem)
+        selection.selectWeatherVoice(.paulHarvey)
+        selection.selectMorningReportVoice(.wolfmanJack)
+
+        let restored = WiltedMacReadingVoiceSelection(preferences: preferences)
+        XCTAssertEqual(restored.selectedVoice, .paulHarvey)
+        XCTAssertEqual(restored.headlineVoiceID, .caseyKasem)
+        XCTAssertEqual(restored.weatherVoiceID, .paulHarvey)
+        XCTAssertEqual(restored.morningReportVoiceID, .wolfmanJack)
+    }
+
+    func testRoleVoiceDefaultsWhenThereIsNoPreviousStoryVoice() throws {
+        let preferences = WiltedMacTestPreferences.ephemeral()
+
+        let selection = WiltedMacReadingVoiceSelection(preferences: preferences)
+
+        XCTAssertEqual(selection.headlineVoiceID, .paulHarvey)
+        XCTAssertEqual(selection.weatherVoiceID, .rodSerling)
+        XCTAssertEqual(selection.morningReportVoiceID, .caseyKasem)
+    }
+
     func testSpeakingHeadlineWinsOverNewerCandidateAndKeepsItsArticleLink() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let announcedLink = try XCTUnwrap(URL(string: "https://wire.example.test/story/announced"))
@@ -231,8 +263,11 @@ final class WiltedMacHeadlineCardTests: XCTestCase {
         XCTAssertTrue(rendered.contains("Recent stories"), rendered)
         XCTAssertTrue(rendered.contains("Weather alerts"), rendered)
         XCTAssertTrue(rendered.contains("Read headlines aloud"), rendered)
+        XCTAssertTrue(rendered.contains("Headline voice"), rendered)
+        XCTAssertTrue(rendered.contains("Weather voice"), rendered)
+        XCTAssertTrue(rendered.contains("Morning report voice"), rendered)
         XCTAssertTrue(rendered.contains("Story voice"), rendered)
-        XCTAssertTrue(rendered.contains("Choose a voice for weather alerts"), rendered)
+        XCTAssertTrue(rendered.contains("Choose a voice for stories you queue"), rendered)
         XCTAssertFalse(model.automationSettings.alertsEnabled)
         XCTAssertTrue(model.automationSettings.headlinesEnabled)
         XCTAssertFalse(model.automationSettings.interruptionsEnabled)

@@ -1,3 +1,4 @@
+import AVFoundation
 import CryptoKit
 import Foundation
 import os
@@ -42,6 +43,9 @@ struct MorningReportBuilder: Sendable {
     typealias Forecast = @Sendable (_ latitude: Double, _ longitude: Double) async throws -> [MorningReportForecastPeriod]
     typealias Coordinates = @Sendable () async -> (latitude: Double, longitude: Double)?
     typealias HeadlineSource = @Sendable (_ publishedSince: Date, _ publishedThrough: Date) async throws -> MorningReportHeadlines
+    typealias VoiceRenderer = @Sendable (
+        _ text: String, _ voiceID: ApprovedReadingVoiceID, _ outputURL: URL
+    ) async throws -> ArticleNarrationAudio
 
     private static let log = Logger(subsystem: "com.zerodelta.wilted.mac", category: "MorningReport")
 
@@ -61,20 +65,25 @@ struct MorningReportBuilder: Sendable {
     static let maximumPeriodTextCharacters = 1500
     static let maximumPeriods = 14
     static let maximumScriptCharacters = 6000
+    static let maximumScriptUTF8Bytes = ArticleNarrationCoordinator.maximumShortTextUTF8Bytes
 
     let store: LocalLibraryStore
-    let synthesize: BookConversion.Synthesizer
+    let voiceID: ApprovedReadingVoiceID
+    let renderVoice: VoiceRenderer
     let coordinates: Coordinates
     let forecast: Forecast
     let headlines: HeadlineSource
     let calendar: Calendar
-    /// Test seam: runs after the already-saved pre-check and before media is written, so a test can
+    /// Runs after the duplicate check and before the library save, so a test can
     /// make two builds both pass the pre-check.
     let afterPrecheck: @Sendable () async -> Void
 
     init(
         store: LocalLibraryStore,
-        synthesize: @escaping BookConversion.Synthesizer = BookConversion.daemonSynthesizer,
+        voiceID: ApprovedReadingVoiceID,
+        renderVoice: @escaping VoiceRenderer = { text, voiceID, outputURL in
+            try await ArticleNarrationCoordinator().synthesizeShortText(text, voiceID: voiceID, outputURL: outputURL)
+        },
         coordinates: @escaping Coordinates,
         forecast: @escaping Forecast,
         headlines: HeadlineSource? = nil,
@@ -84,7 +93,8 @@ struct MorningReportBuilder: Sendable {
         afterPrecheck: @escaping @Sendable () async -> Void = {}
     ) {
         self.store = store
-        self.synthesize = synthesize
+        self.voiceID = voiceID
+        self.renderVoice = renderVoice
         self.coordinates = coordinates
         self.forecast = forecast
         self.headlines = headlines ?? { since, through in
@@ -147,6 +157,13 @@ struct MorningReportBuilder: Sendable {
         now: Date = Date(), progress: @escaping @Sendable (MorningReportProgress) -> Void = { _ in }
     ) async -> MorningReportOutcome {
         func report(_ fraction: Double, _ detail: String) { progress(MorningReportProgress(fraction: fraction, detail: detail)) }
+        var activeRenderedAudioURL: URL?
+        defer {
+            if let activeRenderedAudioURL {
+                store.inFlightMedia.end(activeRenderedAudioURL)
+                try? FileManager.default.removeItem(at: activeRenderedAudioURL)
+            }
+        }
         do {
             report(0.02, "Gathering the forecast")
             var forecastPeriods: [MorningReportForecastPeriod]?
@@ -178,16 +195,45 @@ struct MorningReportBuilder: Sendable {
             var shortened = false
             while true {
                 try Task.checkCancellation()
+                guard text.utf8.count <= Self.maximumScriptUTF8Bytes else {
+                    return .skipped(reason: "No report built: the report text exceeds the local voice limit.")
+                }
                 attempt += 1
                 report(0.15 + 0.6 * Double(min(attempt, 4)) / 4, "Speaking the report (attempt \(attempt))")
-                let spoken = text
-                let speech = try await Self.blocking { [synthesize] in try synthesize(spoken, { Task.isCancelled }) }
-                guard speech.sampleRate > 0, !speech.samples.isEmpty else {
-                    return .skipped(reason: "No report built: the speech engine returned no audio.")
+                let media = store.mediaDirectory
+                try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
+                let outputURL = media.appendingPathComponent("report-synthesis-\(UUID().uuidString).m4a")
+                store.inFlightMedia.begin(outputURL)
+                activeRenderedAudioURL = outputURL
+                let renderedVoice = try await renderVoice(text, voiceID, outputURL)
+                let attributes = try? FileManager.default.attributesOfItem(atPath: outputURL.path)
+                let byteCount = (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+                let mediaDuration = try? await AVURLAsset(url: outputURL).load(.duration).seconds
+                try Task.checkCancellation()
+                guard renderedVoice.audioURL.standardizedFileURL == outputURL.standardizedFileURL,
+                      renderedVoice.voiceRevision == ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID),
+                      renderedVoice.duration.isFinite, renderedVoice.duration > 0, byteCount > 44,
+                      let mediaDuration, mediaDuration.isFinite, mediaDuration > 0,
+                      abs(mediaDuration - renderedVoice.duration) <= max(0.2, renderedVoice.duration * 0.02),
+                      FileManager.default.fileExists(atPath: outputURL.path) else {
+                    return .skipped(reason: "No report built: the speech engine returned invalid audio.")
                 }
-                lastSeconds = Double(speech.samples.count) / Double(speech.sampleRate)
+                let validatedVoice = ArticleNarrationAudio(
+                    audioURL: outputURL, duration: mediaDuration, voiceRevision: renderedVoice.voiceRevision)
+                lastSeconds = mediaDuration
                 if lastSeconds <= Self.maximumSeconds {
-                    return try await publish(speech, text: text, now: now, headlineCount: titles.count, report: report)
+                    let outcome = try await publish(
+                        validatedVoice, text: text, now: now, headlineCount: titles.count, report: report)
+                    if case .published = outcome, let activeURL = activeRenderedAudioURL {
+                        store.inFlightMedia.end(activeURL)
+                        activeRenderedAudioURL = nil
+                    }
+                    return outcome
+                }
+                if let activeURL = activeRenderedAudioURL {
+                    store.inFlightMedia.end(activeURL)
+                    try? FileManager.default.removeItem(at: activeURL)
+                    activeRenderedAudioURL = nil
                 }
                 if !shortened {
                     if attempt < Self.maximumAttempts, !titles.isEmpty {
@@ -219,26 +265,23 @@ struct MorningReportBuilder: Sendable {
     }
 
     private func publish(
-        _ speech: SpeechSynthesisResult, text: String, now: Date, headlineCount: Int,
+        _ renderedVoice: ArticleNarrationAudio, text: String, now: Date, headlineCount: Int,
         report: (Double, String) -> Void
     ) async throws -> MorningReportOutcome {
         report(0.8, "Saving the audio")
         let day = Self.dayText(now, calendar: calendar)
-        let itemID = try LocalLibraryStore.reportItemID(script: text, day: day)
+        let voiceIdentity = renderedVoice.voiceRevision
+        let itemScript = "\(voiceIdentity)\n\(text)"
+        let itemID = try LocalLibraryStore.reportItemID(script: itemScript, day: day)
         // A report already saved for this ID stays; writing media for it would leave an unreferenced file.
         if try await store.hasMorningReport(itemID) {
             return .skipped(reason: "Today's report was already built; it stays.")
         }
         await afterPrecheck()
-        let media = store.mediaDirectory
-        try FileManager.default.createDirectory(at: media, withIntermediateDirectories: true)
-        let destination = media.appendingPathComponent("report-\(itemID.rawValue)-\(UUID().uuidString).m4a")
-        store.inFlightMedia.begin(destination)
-        defer { store.inFlightMedia.end(destination) }
+        let destination = renderedVoice.audioURL
         var saved = false
         defer { if !saved { try? FileManager.default.removeItem(at: destination) } }
-        let samples = speech.samples, rate = speech.sampleRate
-        let duration = try await Self.blocking { try MorningReportAudio.write(samples: samples, sampleRate: rate, to: destination) }
+        let duration = renderedVoice.duration
         let size = (try FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.int64Value ?? 0
         let hash = try MediaHash.sha256Hex(fileAt: destination)
         let textHash = SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -246,7 +289,7 @@ struct MorningReportBuilder: Sendable {
         let revision = try AudioRevision(
             itemID: itemID,
             revisionID: RevisionID.derive(
-                extractedTextSHA256: textHash, voiceID: BookConversion.daemonDefaultVoice, synthesisSettingsCanonicalJSON: "{}",
+                extractedTextSHA256: textHash, voiceID: voiceIdentity, synthesisSettingsCanonicalJSON: "{}",
                 audioFormatCanonicalJSON: "{\"container\":\"m4a\",\"source\":\"morning-report\"}"),
             durationSeconds: duration, byteCount: size, contentHash: "sha256:\(hash)",
             mediaType: AudioAssembler.mediaType, createdAt: Timestamp(createdAt), schemaVersion: 1)
@@ -285,10 +328,4 @@ struct MorningReportBuilder: Sendable {
             titles: fresh.sorted { $0.publishedAt > $1.publishedAt }.map(\.title))
     }
 
-    // MARK: Helpers
-
-    private static func blocking<T: Sendable>(_ work: @escaping @Sendable () throws -> T) async throws -> T {
-        let task = Task.detached { try work() }
-        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
-    }
 }

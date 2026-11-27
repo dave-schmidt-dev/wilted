@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Choose separate voices for headlines, the morning report, and weather alerts in Mac Settings.
+
+### Fixed
+
+- Provider check results survive reopening Wilted.
+
 ## [0.10.0] - 2026-11-26
 
 ### Added

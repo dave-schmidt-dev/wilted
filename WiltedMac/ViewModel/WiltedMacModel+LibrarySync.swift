@@ -97,6 +97,13 @@ private nonisolated(unsafe) var librarySyncShutdownKey: UInt8 = 0
 extension WiltedMacModel {
     static let libraryDeviceIDPreferenceKey = "wilted.library.deviceID"
 
+    func bulletinVoice(for bulletin: Bulletin) -> ApprovedReadingVoiceID? {
+        switch bulletin.kind {
+        case .headline: headlineVoiceID
+        case .alert: weatherVoiceID
+        }
+    }
+
     /// The running publisher owner, kept alive by the model without a stored property.
     var librarySyncController: WiltedMacLibrarySyncController? {
         objc_getAssociatedObject(self, &librarySyncControllerKey) as? WiltedMacLibrarySyncController
@@ -185,10 +192,10 @@ extension WiltedMacModel {
                     await WiltedMacPublicNWSBulletinLookup().bulletin(id: id)
                 },
                 readyAudioURL: { [weak self] bulletin, voice in
-                    guard let self, self.readingVoiceSelection.selectedVoice == voice else { return nil }
+                    guard let self, self.bulletinVoice(for: bulletin) == voice else { return nil }
                     return self.bulletinHub.narrationAudioURL(for: bulletin)
                 },
-                selectedVoice: { [weak self] in self?.readingVoiceSelection.selectedVoice })
+                selectedVoice: { [weak self] bulletin in self?.bulletinVoice(for: bulletin) })
         }
         Task { await bulletinAudioRuntime?.cleanupExpiredOffers() }
         if listenNextRuntime == nil {

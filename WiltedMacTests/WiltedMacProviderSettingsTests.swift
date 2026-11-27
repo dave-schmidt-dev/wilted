@@ -147,6 +147,145 @@ final class WiltedMacProviderSettingsTests: XCTestCase {
         }
     }
 
+    func testCommandLineReadinessPersistsForMatchingConfiguration() async throws {
+        let (settings, preferences, keyStore, mockCheck) = makeSettings()
+        settings.setProvider(.openCodeCLI)
+        await settings.check(.openCodeCLI)
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .openCodeCLI })?.status, "Ready")
+
+        let saved = try XCTUnwrap(preferences.data(forKey: "wilted.providerReadiness.v1.openCodeCLI"))
+        let savedText = try XCTUnwrap(String(data: saved, encoding: .utf8))
+        XCTAssertTrue(savedText.contains("commandLineReady"))
+
+        let reopened = WiltedMacProviderSettings(
+            preferences: preferences,
+            keyStore: keyStore,
+            check: { await mockCheck.check(provider: $0) }
+        )
+        XCTAssertEqual(reopened.rows.first(where: { $0.id == .openCodeCLI })?.status, "Ready")
+        XCTAssertEqual(mockCheck.invocationCount, 1, "Restoring readiness must not call the provider again.")
+
+        reopened.setModel("deepseek-v4-pro")
+        XCTAssertEqual(reopened.rows.first(where: { $0.id == .openCodeCLI })?.status, "Readiness unknown")
+        XCTAssertNil(preferences.data(forKey: "wilted.providerReadiness.v1.openCodeCLI"))
+    }
+
+    func testSavedKeyReadinessPersistsOnlyCodesAndClearsWhenKeyChanges() async throws {
+        let (settings, preferences, keyStore, _) = makeSettings()
+        settings.setProvider(.openAIKey)
+        settings.setModel("gpt-4o")
+        let fakeKey = "test-only-fake-provider-key"
+        settings.saveKey(fakeKey, for: .openAIKey)
+        await settings.check(.openAIKey)
+        XCTAssertEqual(settings.rows.first(where: { $0.id == .openAIKey })?.status, "Ready")
+
+        let saved = try XCTUnwrap(preferences.data(forKey: "wilted.providerReadiness.v1.openAIKey"))
+        let savedText = try XCTUnwrap(String(data: saved, encoding: .utf8))
+        XCTAssertTrue(savedText.contains("keyReady"))
+        XCTAssertFalse(savedText.contains(fakeKey))
+
+        let reopened = WiltedMacProviderSettings(
+            preferences: preferences,
+            keyStore: keyStore,
+            check: { _ in .notFound }
+        )
+        XCTAssertEqual(reopened.rows.first(where: { $0.id == .openAIKey })?.status, "Ready")
+
+        reopened.saveKey("another-test-only-fake-key", for: .openAIKey)
+        XCTAssertEqual(reopened.rows.first(where: { $0.id == .openAIKey })?.status, "Readiness unknown")
+        XCTAssertNil(preferences.data(forKey: "wilted.providerReadiness.v1.openAIKey"))
+    }
+
+    func testNewerEpisodeEvidenceUpdatesReadinessLineWithoutAProviderCheck() async {
+        let preferences = WiltedMacTestPreferences.ephemeral()
+        let labeller = AdLabellerPreferences(preferences: preferences)
+        labeller.isEnabled = true
+        let keyStore = ActiveProviderKeyStore.inMemory(preferences: labeller)
+        let occurredAt = Date().addingTimeInterval(60)
+        let evidence = WiltedMacProviderEpisodeEvidence(
+            modelID: "deepseek-v4.1-flash",
+            level: "low",
+            keyGeneration: nil,
+            occurredAt: occurredAt,
+            succeeded: true
+        )
+        let mockCheck = MockCheckBox()
+        let settings = WiltedMacProviderSettings(
+            preferences: preferences,
+            keyStore: keyStore,
+            check: { await mockCheck.check(provider: $0) },
+            latestEpisodeEvidence: { $0 == .openCodeCLI ? evidence : nil }
+        )
+        settings.setProvider(.openCodeCLI)
+
+        XCTAssertEqual(settings.readinessLine, "Ready: OpenCode · Last episode succeeded.")
+        XCTAssertEqual(mockCheck.invocationCount, 0)
+
+        let olderEvidence = WiltedMacProviderEpisodeEvidence(
+            modelID: "deepseek-v4.1-flash",
+            level: "low",
+            keyGeneration: nil,
+            occurredAt: .distantPast,
+            succeeded: true
+        )
+        let olderEvidenceSettings = WiltedMacProviderSettings(
+            preferences: preferences,
+            keyStore: keyStore,
+            check: { await mockCheck.check(provider: $0) },
+            latestEpisodeEvidence: { $0 == .openCodeCLI ? olderEvidence : nil }
+        )
+        mockCheck.setStatus(.notFound, for: .openCodeCLI)
+        await olderEvidenceSettings.check(.openCodeCLI)
+        XCTAssertEqual(olderEvidenceSettings.readinessLine, "Not ready: OpenCode · Last provider check: Tool not found on this Mac.")
+
+        olderEvidenceSettings.setModel("deepseek-v4-pro")
+        olderEvidenceSettings.setModel("deepseek-v4.1-flash")
+        let reopened = WiltedMacProviderSettings(preferences: preferences, keyStore: keyStore,
+            latestEpisodeEvidence: { _ in olderEvidence })
+        XCTAssertEqual(reopened.rows.first { $0.id == .openCodeCLI }?.status, "Readiness unknown")
+
+        labeller.isEnabled = false
+        XCTAssertEqual(settings.readinessLine, "Readiness unknown: OpenCode · Check it in Providers.")
+    }
+
+    func testKeyProviderEpisodeEvidenceMustMatchSavedKeyGeneration() {
+        let preferences = WiltedMacTestPreferences.ephemeral()
+        let labeller = AdLabellerPreferences(preferences: preferences)
+        labeller.isEnabled = true
+        labeller.setModelID("gpt-4o", for: .openAIKey)
+        let keyStore = ActiveProviderKeyStore.inMemory(
+            preferences: labeller,
+            initialKeys: [.openAIKey: "test-only-fake-key"]
+        )
+        var evidence = WiltedMacProviderEpisodeEvidence(
+            modelID: "gpt-4o",
+            level: "low",
+            keyGeneration: 0,
+            occurredAt: Date().addingTimeInterval(60),
+            succeeded: true
+        )
+        let settings = WiltedMacProviderSettings(
+            preferences: preferences,
+            keyStore: keyStore,
+            check: { _ in .notFound },
+            latestEpisodeEvidence: { $0 == .openAIKey ? evidence : nil }
+        )
+        settings.setProvider(.openAIKey)
+        XCTAssertEqual(settings.readinessLine, "Ready: OpenAI · Last episode succeeded.")
+
+        settings.saveKey("test-only-replacement-key", for: .openAIKey)
+        XCTAssertEqual(settings.readinessLine, "Readiness unknown: OpenAI · Check it in Providers.")
+
+        evidence = WiltedMacProviderEpisodeEvidence(
+            modelID: "gpt-4o",
+            level: "low",
+            keyGeneration: 1,
+            occurredAt: Date().addingTimeInterval(120),
+            succeeded: true
+        )
+        XCTAssertEqual(settings.readinessLine, "Ready: OpenAI · Last episode succeeded.")
+    }
+
     // MARK: - Provider Switching
 
     func testProviderSwitchKeepsEachProviderOwnModelAndLevel() {

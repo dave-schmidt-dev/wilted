@@ -295,6 +295,7 @@ extension PodcastPreparationPipeline {
             transcript = try Self.readLabelledTranscript(stage)
         }
         let cues = transcript.cues
+        let episodeProvider = AdLabellerProvider(rawValue: provenance.provider) ?? services.preferences.provider
         onStatus(PodcastPreparationProgress(
             stage: "ads.label.start",
             detail: "\(cues.count) transcript cues",
@@ -303,6 +304,7 @@ extension PodcastPreparationPipeline {
                 "provider": provenance.provider,
                 "modelID": provenance.modelID,
                 "level": provenance.level,
+                "keyGeneration": String(services.preferences.providerKeyGeneration(for: episodeProvider)),
             ])))
         let reply: LabellerReply
         do {

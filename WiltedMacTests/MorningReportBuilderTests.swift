@@ -7,8 +7,7 @@ import WiltedDomain
 
 private struct PlainFailure: Error {}
 
-/// Builder behaviour with an injected stub synthesizer (never real speech), a stub forecast and
-/// stub headlines. "Long" results carry a low sample rate so 320 s costs few samples and is never encoded.
+/// Builder behaviour with an injected M4A renderer, a stub forecast and stub headlines.
 @MainActor
 final class MorningReportBuilderTests: XCTestCase {
     private final class Calls: @unchecked Sendable {
@@ -18,15 +17,26 @@ final class MorningReportBuilderTests: XCTestCase {
         var all: [String] { lock.lock(); defer { lock.unlock() }; return texts }
     }
 
-    /// Returns `seconds(callNumber)` of audio per call; short results use a real 24 kHz tone.
-    private func stub(_ calls: Calls, seconds: @escaping @Sendable (Int) -> Double) -> BookConversion.Synthesizer {
-        { text, _ in
-            let seconds = seconds(calls.record(text))
-            if seconds > 30 {
-                return SpeechSynthesisResult(requestID: "stub", samples: [Float](repeating: 0.1, count: Int(seconds * 1000)), sampleRate: 1000)
-            }
-            let samples = (0..<Int(seconds * 24_000)).map { Float(0.3 * sin(2 * Double.pi * 330 * Double($0) / 24_000)) }
-            return SpeechSynthesisResult(requestID: "stub", samples: samples, sampleRate: 24_000)
+    private final class VoiceCalls: @unchecked Sendable {
+        private let lock = NSLock()
+        private var voices: [ApprovedReadingVoiceID] = []
+        func record(_ voice: ApprovedReadingVoiceID) { lock.lock(); defer { lock.unlock() }; voices.append(voice) }
+        var all: [ApprovedReadingVoiceID] { lock.lock(); defer { lock.unlock() }; return voices }
+    }
+
+    /// Produces a local M4A of `seconds(callNumber)` duration for each test render.
+    private func voiceRenderer(
+        _ calls: Calls, seconds: @escaping @Sendable (Int) -> Double = { _ in 2 }
+    ) -> MorningReportBuilder.VoiceRenderer {
+        { text, voiceID, outputURL in
+            let duration = seconds(calls.record(text))
+            let sampleRate = duration > 30 ? 8_000 : 24_000
+            let sampleCount = Int(duration * Double(sampleRate))
+            let samples = (0..<sampleCount).map { Float(0.3 * sin(2 * Double.pi * 330 * Double($0) / Double(sampleRate))) }
+            let actualDuration = try MorningReportAudio.write(samples: samples, sampleRate: sampleRate, to: outputURL)
+            return ArticleNarrationAudio(
+                audioURL: outputURL, duration: actualDuration,
+                voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID))
         }
     }
 
@@ -52,7 +62,7 @@ final class MorningReportBuilderTests: XCTestCase {
     ) -> MorningReportBuilder {
         let periods = self.periods
         return MorningReportBuilder(
-            store: store, synthesize: stub(calls, seconds: seconds),
+            store: store, voiceID: .caseyKasem, renderVoice: voiceRenderer(calls, seconds: seconds),
             coordinates: { located ? (35.0, -80.0) : nil }, forecast: { _, _ in periods },
             headlines: { _, _ in news }, calendar: Calendar(identifier: .gregorian))
     }
@@ -76,6 +86,55 @@ final class MorningReportBuilderTests: XCTestCase {
         XCTAssertLessThan(headlineCount(text), 5, "an over-long script is trimmed")
         XCTAssertEqual(count, headlineCount(text))
         XCTAssertEqual(calls.all.count, 1)
+    }
+
+    func testSelectedVoiceRendersAndIdentifiesTheSavedReport() async throws {
+        let (store, _) = try makeStore()
+        let selectedVoices = VoiceCalls()
+        let periods = self.periods
+        let builder = MorningReportBuilder(
+            store: store, voiceID: .caseyKasem,
+            renderVoice: { _, voiceID, outputURL in
+                selectedVoices.record(voiceID)
+                let samples = (0..<48_000).map { Float(0.3 * sin(2 * Double.pi * 330 * Double($0) / 24_000)) }
+                let duration = try MorningReportAudio.write(samples: samples, sampleRate: 24_000, to: outputURL)
+                return ArticleNarrationAudio(
+                    audioURL: outputURL, duration: duration,
+                    voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID))
+            },
+            coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods },
+            headlines: { _, _ in MorningReportHeadlines(hasNewsFeeds: true, titles: ["A headline"])
+            }, calendar: Calendar(identifier: .gregorian))
+
+        let outcome = await builder.build(now: Date(timeIntervalSince1970: 1_800_000_000))
+
+        guard case let .published(itemID, _, duration, _, _) = outcome else {
+            return XCTFail("expected a report, got \(outcome)")
+        }
+        XCTAssertEqual(selectedVoices.all, [.caseyKasem])
+        XCTAssertEqual(duration, 2, accuracy: 0.1)
+        let firstIsSaved = try await store.hasMorningReport(itemID)
+        XCTAssertTrue(firstIsSaved)
+
+        let secondBuilder = MorningReportBuilder(
+            store: store, voiceID: .rodSerling,
+            renderVoice: { _, voiceID, outputURL in
+                selectedVoices.record(voiceID)
+                let samples = (0..<48_000).map { Float(0.3 * sin(2 * Double.pi * 330 * Double($0) / 24_000)) }
+                let duration = try MorningReportAudio.write(samples: samples, sampleRate: 24_000, to: outputURL)
+                return ArticleNarrationAudio(
+                    audioURL: outputURL, duration: duration,
+                    voiceRevision: ArticleNarrationCoordinator.shortTextVoiceRevision(for: voiceID))
+            },
+            coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods },
+            headlines: { _, _ in MorningReportHeadlines(hasNewsFeeds: true, titles: ["A headline"]) },
+            calendar: Calendar(identifier: .gregorian))
+        let secondOutcome = await secondBuilder.build(now: Date(timeIntervalSince1970: 1_800_000_000))
+        guard case let .published(secondItemID, _, _, _, _) = secondOutcome else {
+            return XCTFail("expected the changed voice to publish a report, got \(secondOutcome)")
+        }
+        XCTAssertNotEqual(itemID, secondItemID)
+        XCTAssertEqual(selectedVoices.all, [.caseyKasem, .rodSerling])
     }
 
     func testAnOverlongSynthesisIsRedoneWithOneFewerHeadline() async throws {
@@ -141,13 +200,32 @@ final class MorningReportBuilderTests: XCTestCase {
         let calls = Calls()
         let huge = String(repeating: "x", count: 1_000_000)
         let builder = MorningReportBuilder(
-            store: store, synthesize: stub(calls) { _ in 2 },
+            store: store, voiceID: .caseyKasem, renderVoice: voiceRenderer(calls),
             coordinates: { (35.0, -80.0) }, forecast: { _, _ in [MorningReportForecastPeriod(name: "Today", text: huge)] },
             headlines: { _, _ in MorningReportHeadlines(hasNewsFeeds: true, titles: [huge]) }, calendar: Calendar(identifier: .gregorian))
         _ = await builder.build(now: Date(timeIntervalSince1970: 1_800_000_000))
         XCTAssertFalse(calls.all.isEmpty)
         for text in calls.all { XCTAssertLessThanOrEqual(text.count, MorningReportBuilder.maximumScriptCharacters) }
         XCTAssertGreaterThanOrEqual(MorningReportBuilder.estimatedSeconds(huge), 300, "a no-space token estimates long")
+    }
+
+    func testUTF8OverflowSkipsInsteadOfClippingTheReport() async throws {
+        let (store, _) = try makeStore()
+        let calls = Calls()
+        let periods = (1...5).map { _ in
+            MorningReportForecastPeriod(name: "Today", text: String(repeating: "🌤", count: 1_000))
+        }
+        let builder = MorningReportBuilder(
+            store: store, voiceID: .caseyKasem, renderVoice: voiceRenderer(calls),
+            coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods },
+            headlines: { _, _ in MorningReportHeadlines(hasNewsFeeds: true, titles: []) },
+            calendar: Calendar(identifier: .gregorian))
+
+        let outcome = await builder.build(now: Date(timeIntervalSince1970: 1_800_000_000))
+
+        guard case let .skipped(reason) = outcome else { return XCTFail("expected a skip, got \(outcome)") }
+        XCTAssertEqual(reason, "No report built: the report text exceeds the local voice limit.")
+        XCTAssertTrue(calls.all.isEmpty, "oversized UTF-8 text is rejected before voice rendering")
     }
 
     func testBuildingTwiceForTheSameReportLeavesNoOrphanMedia() async throws {
@@ -170,7 +248,7 @@ final class MorningReportBuilderTests: XCTestCase {
         let periods = self.periods
         func racing() -> MorningReportBuilder {
             MorningReportBuilder(
-                store: store, synthesize: stub(Calls(), seconds: { _ in 2 }),
+                store: store, voiceID: .caseyKasem, renderVoice: voiceRenderer(Calls()),
                 coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods }, headlines: { _, _ in MorningReportHeadlines(hasNewsFeeds: true, titles: ["Headline1 a b c"]) },
                 calendar: Calendar(identifier: .gregorian), afterPrecheck: { await barrier.arrive() })
         }
@@ -249,7 +327,7 @@ final class MorningReportBuilderTests: XCTestCase {
         let calls = Calls()
         let periods = self.periods
         let builder = MorningReportBuilder(
-            store: store, synthesize: stub(calls) { _ in 2 },
+            store: store, voiceID: .caseyKasem, renderVoice: voiceRenderer(calls),
             coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods }, feedClient: client,
             topics: HeadlineTopicFilter(skipSports: true),
             calendar: Calendar(identifier: .gregorian))
@@ -323,7 +401,7 @@ final class MorningReportBuilderTests: XCTestCase {
         let (store, _) = try makeStore()
         let periods = self.periods
         let builder = MorningReportBuilder(
-            store: store, synthesize: stub(Calls()) { _ in 2 },
+            store: store, voiceID: .caseyKasem, renderVoice: voiceRenderer(Calls()),
             coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods },
             headlines: { _, _ in
                 throw URLError(
@@ -342,7 +420,8 @@ final class MorningReportBuilderTests: XCTestCase {
         let periods = self.periods
         let news = headlines(2)
         let builder = MorningReportBuilder(
-            store: store, synthesize: { _, _ in throw SpeechIPCError.timeout("speech") },
+            store: store, voiceID: .caseyKasem,
+            renderVoice: { _, _, _ in throw ArticleNarrationError.runtimeUnavailable },
             coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods },
             headlines: { _, _ in news }, calendar: Calendar(identifier: .gregorian))
         let outcome = await builder.build(now: Date(timeIntervalSince1970: 1_800_000_000))
@@ -355,7 +434,7 @@ final class MorningReportBuilderTests: XCTestCase {
         let (store, _) = try makeStore()
         let periods = self.periods
         let builder = MorningReportBuilder(
-            store: store, synthesize: stub(Calls()) { _ in 2 },
+            store: store, voiceID: .caseyKasem, renderVoice: voiceRenderer(Calls()),
             coordinates: { (35.0, -80.0) }, forecast: { _, _ in periods },
             headlines: { _, _ in throw PlainFailure() }, calendar: Calendar(identifier: .gregorian))
         let outcome = await builder.build(now: Date(timeIntervalSince1970: 1_800_000_000))

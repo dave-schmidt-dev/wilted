@@ -70,6 +70,38 @@ extension LibraryListenNextPhoneModelTests {
         XCTAssertFalse(offlineManager.canSpeak(bulletin), "a missing local asset must never pause playback")
     }
 
+    func testBulletinAudioKeepsTheMacSelectedVoiceForHeadlinesAndWeather() async throws {
+        let transport = transport(OutboxSendScript(.deliver))
+        let model = model(transport)
+        await model.loadLocalState()
+        model.macAddActions = ["requestBulletinAudio"]
+        let manager = model.bulletinAudioManager
+        let cases: [(String, BulletinKind, String)] = [
+            ("headline:paul-harvey", .headline, "paul-harvey"),
+            ("alert:rod-serling", .alert, "rod-serling"),
+        ]
+
+        for (id, kind, voiceID) in cases {
+            let bulletin = try Bulletin(
+                id: id, kind: kind, text: "A role-specific bulletin",
+                issuedAt: now, expiresAt: now.addingTimeInterval(900))
+            manager.prepare(bulletin)
+            await manager.refreshPreparedAudio()
+            let intents = await server.allIntents()
+            let request = try XCTUnwrap(intents.last)
+
+            try await transport.audio.publishReadyBulletinStatus(
+                for: request, at: now, voiceID: voiceID, voiceRevision: "\(voiceID)-short-v1")
+            clock.advance(by: 11)
+            await manager.refreshPreparedAudio()
+
+            XCTAssertTrue(manager.canSpeak(bulletin), "approved Mac voice \(voiceID) must remain playable on iPhone")
+            let fetchedOffers = await transport.audio.fetchedOffers
+            XCTAssertEqual(fetchedOffers.last?.voiceID, voiceID)
+            XCTAssertEqual(fetchedOffers.last?.voiceRevision, "\(voiceID)-short-v1")
+        }
+    }
+
     func testUpdatedSameIDBulletinPurgesLegacyCachedSpeech() async throws {
         let activeTransport = transport(OutboxSendScript(.deliver), autoReadyBulletinAudio: true)
         let activeModel = model(activeTransport)

@@ -455,7 +455,7 @@ final class WiltedMacBulletinHub {
                     }
                     return self.weatherAlertNarration?.audioURL(for: bulletin)
                 }, audioPlayer: makeHeadlineAudioPlayer(),
-                selectedVoice: { [weak self] in self?.model?.readingVoiceSelection.selectedVoice },
+                selectedVoice: { [weak self] in self?.model?.headlineVoiceID },
                 renderShortText: renderShortTextNarration)
         }
         return WiltedMacRememberingWeatherAlertSpeaker(base: speaker) { [weak self] alert in
@@ -470,7 +470,7 @@ final class WiltedMacBulletinHub {
         guard alertMonitor != nil || weatherAlertNarration != nil else { return }
         weatherNarration.update(
             current: Array(activeAlerts.values), enabled: enabled,
-            selectedVoice: model?.readingVoiceSelection.selectedVoice)
+            selectedVoice: model?.weatherVoiceID)
     }
 
     private var approvedPublicationOwner: String? {
@@ -517,7 +517,7 @@ final class WiltedMacBulletinHub {
         let enabled = (override ?? canRun) && settings?.interruptionsEnabled == true && settings?.headlinesEnabled == true
         narration.update(
             current: headlines, newlyPublished: newlyPublished, enabled: enabled,
-            selectedVoice: model?.readingVoiceSelection.selectedVoice,
+            selectedVoice: model?.headlineVoiceID,
             accountIdentity: approvedPublicationOwner,
             isEligible: { [weak self] bulletin in self?.isEligibleHeadline(bulletin) ?? false })
     }

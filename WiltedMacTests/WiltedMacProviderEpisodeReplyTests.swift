@@ -22,6 +22,8 @@ final class WiltedMacProviderEpisodeReplyTests: XCTestCase {
         let replies = WiltedMacProviderEpisodeReply.latestByProvider(in: [first, otherProvider, latest])
 
         XCTAssertEqual(replies[.openAIKey]?.outcome, .reply(breakCount: 3, rejectedCount: 1))
+        XCTAssertEqual(replies[.openAIKey]?.level, "low")
+        XCTAssertEqual(replies[.openAIKey]?.keyGeneration, 0)
         XCTAssertTrue(try XCTUnwrap(replies[.openAIKey]).detail.contains("Found 3 ad breaks. 1 label could not be used."))
         XCTAssertEqual(replies[.anthropicKey]?.outcome, .reply(breakCount: 0, rejectedCount: 0))
         XCTAssertNil(replies[.openRouterKey])
@@ -60,6 +62,8 @@ final class WiltedMacProviderEpisodeReplyTests: XCTestCase {
         provider: AdLabellerProvider,
         model: String,
         at date: Date,
+        level: String = "low",
+        keyGeneration: Int? = 0,
         result: (breaks: Int, rejected: Int)? = nil,
         failureKind: String? = nil
     ) throws -> PreparationRunSummary {
@@ -68,7 +72,7 @@ final class WiltedMacProviderEpisodeReplyTests: XCTestCase {
         let request = try entry(
             id: "\(id)-request", itemID: itemID, at: startedAt.date,
             kind: "labeller-request",
-            fields: ["provider": provider.rawValue, "modelID": model],
+            fields: requestFields(provider: provider, model: model, level: level, keyGeneration: keyGeneration),
             step: "ads.label.request"
         )
         let resultEntry: PreparationJournalEntry
@@ -92,6 +96,18 @@ final class WiltedMacProviderEpisodeReplyTests: XCTestCase {
             fraction: nil, isTerminal: false, outcome: nil, failure: nil,
             entries: [request, resultEntry]
         )
+    }
+
+    private func requestFields(
+        provider: AdLabellerProvider,
+        model: String,
+        level: String?,
+        keyGeneration: Int?
+    ) -> [String: String] {
+        var fields = ["provider": provider.rawValue, "modelID": model]
+        if let level { fields["level"] = level }
+        if let keyGeneration { fields["keyGeneration"] = String(keyGeneration) }
+        return fields
     }
 
     private func entry(

@@ -43,7 +43,7 @@ final class LibrarySettingsTestBulletinPlayer: ObservableObject {
         return switch state {
         case .idle: nil
         case .preparing: "Preparing the approved voice on your Mac. This can take a few minutes."
-        case .playing: "Playing the approved story voice."
+        case .playing: "Playing the headline voice."
         case .completed: "Test bulletin finished."
         case .waiting: "No voice clip is ready yet. Check Wilted on your Mac, then try again."
         case .failed: "The approved voice clip could not be played. No system voice was used."

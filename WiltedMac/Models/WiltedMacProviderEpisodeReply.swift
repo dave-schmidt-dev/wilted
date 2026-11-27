@@ -10,8 +10,26 @@ struct WiltedMacProviderEpisodeReply: Equatable, Sendable {
 
     let provider: AdLabellerProvider
     let modelID: String
+    let level: String?
+    let keyGeneration: Int?
     let occurredAt: Date
     let outcome: Outcome
+
+    init(
+        provider: AdLabellerProvider,
+        modelID: String,
+        level: String? = nil,
+        keyGeneration: Int? = nil,
+        occurredAt: Date,
+        outcome: Outcome
+    ) {
+        self.provider = provider
+        self.modelID = modelID
+        self.level = level
+        self.keyGeneration = keyGeneration
+        self.occurredAt = occurredAt
+        self.outcome = outcome
+    }
 
     var detail: String {
         let result: String
@@ -39,12 +57,29 @@ struct WiltedMacProviderEpisodeReply: Equatable, Sendable {
         return "\(result) · \(modelID) · \(occurredAt.formatted(date: .numeric, time: .shortened))"
     }
 
+    var readinessEvidence: WiltedMacProviderEpisodeEvidence? {
+        guard let level else { return nil }
+        let succeeded: Bool
+        if case .reply = outcome {
+            succeeded = true
+        } else {
+            succeeded = false
+        }
+        return WiltedMacProviderEpisodeEvidence(
+            modelID: modelID,
+            level: level,
+            keyGeneration: keyGeneration,
+            occurredAt: occurredAt,
+            succeeded: succeeded
+        )
+    }
+
     /// Reads only actual episode requests and their recorded reply or failure.
     /// Manual provider checks have a different journal purpose and stay separate.
     static func latestByProvider(in runs: [PreparationRunSummary]) -> [AdLabellerProvider: Self] {
         var latest: [AdLabellerProvider: Self] = [:]
         for run in runs {
-            var request: (provider: AdLabellerProvider, modelID: String)?
+            var request: (provider: AdLabellerProvider, modelID: String, level: String?, keyGeneration: Int?)?
             for entry in run.entries {
                 guard let evidence = entry.status.evidence else { continue }
                 if evidence.kind == "labeller-request" {
@@ -54,7 +89,12 @@ struct WiltedMacProviderEpisodeReply: Equatable, Sendable {
                         request = nil
                         continue
                     }
-                    request = (provider, modelID)
+                    request = (
+                        provider,
+                        modelID,
+                        evidence.fields["level"],
+                        evidence.fields["keyGeneration"].flatMap(Int.init)
+                    )
                     continue
                 }
                 guard let request else { continue }
@@ -77,6 +117,8 @@ struct WiltedMacProviderEpisodeReply: Equatable, Sendable {
                 let candidate = Self(
                     provider: request.provider,
                     modelID: request.modelID,
+                    level: request.level,
+                    keyGeneration: request.keyGeneration,
                     occurredAt: entry.status.emittedAt.date,
                     outcome: outcome
                 )

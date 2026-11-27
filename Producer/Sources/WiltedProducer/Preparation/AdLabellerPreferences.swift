@@ -23,6 +23,7 @@ public struct AdLabellerPreferences: @unchecked Sendable {
     static let levelKey = keyPrefix + "level"
     static let providerModelKeyPrefix = keyPrefix + "providerModel."
     static let providerLevelKeyPrefix = keyPrefix + "providerLevel."
+    static let providerKeyGenerationKeyPrefix = keyPrefix + "providerKeyGeneration."
     static let capKey = keyPrefix + "dailyCap"
     static let waitLimitKey = keyPrefix + "waitLimitSeconds"
     static let useOpenCodeCLIKey = keyPrefix + "useOpenCodeCLI"
@@ -162,6 +163,19 @@ public struct AdLabellerPreferences: @unchecked Sendable {
     public func setLevel(_ level: String, for provider: AdLabellerProvider) {
         let providerKey = Self.providerLevelKeyPrefix + provider.rawValue
         preferences.set(level, forKey: providerKey)
+    }
+
+    /// A non-secret generation number advanced whenever a provider key is saved or removed.
+    public func providerKeyGeneration(for provider: AdLabellerProvider) -> Int {
+        max(0, preferences.integer(forKey: Self.providerKeyGenerationKeyPrefix + provider.rawValue))
+    }
+
+    /// Advances the provider-key generation without reading or storing the key value.
+    @discardableResult
+    public func advanceProviderKeyGeneration(for provider: AdLabellerProvider) -> Int {
+        let next = providerKeyGeneration(for: provider) + 1
+        preferences.set(next, forKey: Self.providerKeyGenerationKeyPrefix + provider.rawValue)
+        return next
     }
 
     /// Whether the chosen provider's model and level choice is valid.

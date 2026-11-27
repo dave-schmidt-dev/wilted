@@ -10,13 +10,40 @@ private nonisolated(unsafe) var readingVoiceSelectionKey: UInt8 = 0
 @Observable
 final class WiltedMacReadingVoiceSelection {
     static let preferenceKey = "wilted.headlines.readingVoiceID"
+    static let headlinePreferenceKey = "wilted.reports.headlineVoiceID"
+    static let weatherPreferenceKey = "wilted.reports.weatherVoiceID"
+    static let morningReportPreferenceKey = "wilted.reports.morningReportVoiceID"
 
     @ObservationIgnored private let preferences: UserDefaults
     private(set) var selectedReadingVoiceID: String?
+    private(set) var headlineVoiceID: ApprovedReadingVoiceID
+    private(set) var weatherVoiceID: ApprovedReadingVoiceID
+    private(set) var morningReportVoiceID: ApprovedReadingVoiceID
 
     init(preferences: UserDefaults) {
         self.preferences = preferences
-        selectedReadingVoiceID = preferences.string(forKey: Self.preferenceKey)
+        let legacyVoiceID = preferences.string(forKey: Self.preferenceKey)
+        selectedReadingVoiceID = legacyVoiceID
+
+        let inheritedHeadlineVoice = preferences.string(forKey: Self.headlinePreferenceKey)
+            .flatMap(ApprovedReadingVoiceID.init(rawValue:))
+        let legacyHeadlineVoice = legacyVoiceID.flatMap(ApprovedReadingVoiceID.init(rawValue:))
+        let headlineVoice = inheritedHeadlineVoice ?? legacyHeadlineVoice ?? .paulHarvey
+        headlineVoiceID = headlineVoice
+        preferences.set(headlineVoice.rawValue, forKey: Self.headlinePreferenceKey)
+
+        weatherVoiceID = Self.storedVoice(
+            forKey: Self.weatherPreferenceKey, default: .rodSerling, in: preferences)
+        morningReportVoiceID = Self.storedVoice(
+            forKey: Self.morningReportPreferenceKey, default: .caseyKasem, in: preferences)
+    }
+
+    private static func storedVoice(
+        forKey key: String, default defaultVoice: ApprovedReadingVoiceID, in preferences: UserDefaults
+    ) -> ApprovedReadingVoiceID {
+        let voice = preferences.string(forKey: key).flatMap(ApprovedReadingVoiceID.init(rawValue:)) ?? defaultVoice
+        preferences.set(voice.rawValue, forKey: key)
+        return voice
     }
 
     var selectedVoice: ApprovedReadingVoiceID? {
@@ -37,14 +64,29 @@ final class WiltedMacReadingVoiceSelection {
         preferences.set(voice.rawValue, forKey: Self.preferenceKey)
     }
 
+    func selectHeadlineVoice(_ voice: ApprovedReadingVoiceID) {
+        headlineVoiceID = voice
+        preferences.set(voice.rawValue, forKey: Self.headlinePreferenceKey)
+    }
+
+    func selectWeatherVoice(_ voice: ApprovedReadingVoiceID) {
+        weatherVoiceID = voice
+        preferences.set(voice.rawValue, forKey: Self.weatherPreferenceKey)
+    }
+
+    func selectMorningReportVoice(_ voice: ApprovedReadingVoiceID) {
+        morningReportVoiceID = voice
+        preferences.set(voice.rawValue, forKey: Self.morningReportPreferenceKey)
+    }
+
     func availability(for voice: ApprovedReadingVoiceID) -> ArticleVoiceAvailability {
         ArticleNarrationCoordinator().availability(for: voice)
     }
 
     var selectedStatus: String {
-        guard let voice = selectedVoice else { return "Choose a voice for weather alerts, headlines, and stories you queue." }
+        guard let voice = selectedVoice else { return "Choose a voice for stories you queue." }
         switch availability(for: voice) {
-        case .available: return "\(voice.displayName) is ready for local narration."
+        case .available: return "\(voice.displayName) is ready for story narration."
         case .missingVoice: return "The selected voice files are missing. Choose an available voice."
         case .missingModel: return "The Chatterbox model is missing."
         case .missingRuntime: return "The local narration runtime is unavailable."
@@ -84,11 +126,32 @@ extension WiltedMacModel {
     /// Raw stable voice ID shared with the local request and narration services.
     var selectedReadingVoiceID: String? { readingVoiceSelection.selectedReadingVoiceID }
 
+    var headlineVoiceID: ApprovedReadingVoiceID { readingVoiceSelection.headlineVoiceID }
+
+    var weatherVoiceID: ApprovedReadingVoiceID { readingVoiceSelection.weatherVoiceID }
+
+    var morningReportVoiceID: ApprovedReadingVoiceID { readingVoiceSelection.morningReportVoiceID }
+
     /// Local voice/model/runtime revision attached to queued requests.
     var readingVoiceRevision: String? { readingVoiceSelection.readingVoiceRevision }
 
     func selectReadingVoice(_ rawValue: String?) {
         readingVoiceSelection.select(rawValue)
+        bulletinHub.readingVoiceSelectionChanged()
+    }
+
+    func selectHeadlineVoice(_ voice: ApprovedReadingVoiceID) {
+        readingVoiceSelection.selectHeadlineVoice(voice)
+        bulletinHub.readingVoiceSelectionChanged()
+    }
+
+    func selectWeatherVoice(_ voice: ApprovedReadingVoiceID) {
+        readingVoiceSelection.selectWeatherVoice(voice)
+        bulletinHub.readingVoiceSelectionChanged()
+    }
+
+    func selectMorningReportVoice(_ voice: ApprovedReadingVoiceID) {
+        readingVoiceSelection.selectMorningReportVoice(voice)
         bulletinHub.readingVoiceSelectionChanged()
     }
 

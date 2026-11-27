@@ -403,6 +403,7 @@ final class WiltedMacBulletinAudioCoordinatorTests: XCTestCase {
         XCTAssertEqual(ready.requesterDeviceID, phoneID)
         XCTAssertEqual(ready.audioOffer?.spokenTextSHA256, MediaHash.sha256(text: phoneBulletin.text))
         XCTAssertEqual(Data(try XCTUnwrap(rendered.first?.text).utf8), Data(phoneBulletin.text.utf8))
+        XCTAssertEqual(rendered.first?.voice, .rodSerling)
     }
 
     private func makeCoordinator(
@@ -420,7 +421,8 @@ final class WiltedMacBulletinAudioCoordinatorTests: XCTestCase {
             currentOwner: { await authority.owner() },
             currentGeneration: { await authority.generation() },
             bulletin: activeBulletin, bulletinFallback: bulletinFallback, readyAudioURL: readyAudioURL,
-            selectedVoice: { .caseyKasem }, voiceAvailability: { _ in .available },
+            selectedVoice: { bulletin in bulletin.kind == .alert ? .rodSerling : .caseyKasem },
+            voiceAvailability: { _ in .available },
             render: render, now: { fixedNow })
     }
 
