@@ -95,6 +95,7 @@ final class WiltedMacActiveHeadlineCardTests: XCTestCase {
             return text.contains(story.title) && text.contains(story.publisherName)
         }
         XCTAssertTrue(toastVisible)
+        try assertToastNearBottom(mainHost, story: story)
 
         XCTAssertEqual(model.speakingBulletin?.headlineStoryID, story.id)
         XCTAssertTrue(model.isPlaying, "the interruption keeps the listener's playing intent")
@@ -130,7 +131,7 @@ final class WiltedMacActiveHeadlineCardTests: XCTestCase {
         }
 
         let (fullWindowHost, fullWindow) = hostedRoot(
-            model: model, size: size, presentation: .notes)
+            model: model, size: CGSize(width: 680, height: 760), presentation: .notes)
         _ = fullWindow
         let fullWindowToastVisible = await WiltedMacHeadless.eventually(
             "the full-window player shows the active headline") {
@@ -138,6 +139,7 @@ final class WiltedMacActiveHeadlineCardTests: XCTestCase {
                 return activeCardContentIsVisible(text, publisher: story.publisherName, title: story.title)
             }
         XCTAssertTrue(fullWindowToastVisible)
+        try assertToastNearBottom(fullWindowHost, story: story)
         let expanded = try hostedText(fullWindowHost)
         XCTAssertTrue(expanded.contains("City Wire"), expanded)
         XCTAssertTrue(expanded.contains(story.title), expanded)
@@ -167,6 +169,17 @@ final class WiltedMacActiveHeadlineCardTests: XCTestCase {
         XCTAssertEqual(backend.isPlaying, true, "finishing a headline resumes the episode")
     }
 
+    private func assertToastNearBottom(_ host: NSHostingView<AnyView>, story: LibraryHeadlineStory) throws {
+        let bitmap = try hostedBitmap(host)
+        let lines = try WiltedMacHeadless.recognizedLines(in: bitmap)
+        let title = try XCTUnwrap(lines.first { $0.text.contains(story.title) })
+        XCTAssertGreaterThan(title.top, 0.65, "The toast belongs below the player controls")
+        let attachment = XCTAttachment(image: NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: bitmap.size))
+        attachment.name = "Headline at bottom - \(Int(host.bounds.width))"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     private func hostedRoot(
         model: WiltedMacModel, size: CGSize, presentation: WiltedMacPlayerSection? = nil
     ) -> (NSHostingView<AnyView>, NSWindow) {
@@ -181,14 +194,14 @@ final class WiltedMacActiveHeadlineCardTests: XCTestCase {
     }
 
     private func hostedText(_ host: NSHostingView<AnyView>) throws -> String {
-        try WiltedMacHeadless.recognizedLines(in: hostedBitmap(host)).map(\.text).joined(separator: " ")
+        try WiltedMacHeadless.recognizedLines(in: hostedBitmap(host), readEnglish: true).map(\.text).joined(separator: " ")
     }
 
     private func hostedBitmap(_ host: NSHostingView<AnyView>) throws -> NSBitmapImageRep {
         host.layoutSubtreeIfNeeded()
         let size = host.bounds.size
         let bitmap = try XCTUnwrap(NSBitmapImageRep(
-            bitmapDataPlanes: nil, pixelsWide: Int(size.width), pixelsHigh: Int(size.height),
+            bitmapDataPlanes: nil, pixelsWide: Int(size.width * 2), pixelsHigh: Int(size.height * 2),
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
             colorSpaceName: .deviceRGB, bitmapFormat: [], bytesPerRow: 0, bitsPerPixel: 0))
         bitmap.size = size

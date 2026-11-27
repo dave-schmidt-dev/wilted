@@ -10,6 +10,7 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- Mac headline alerts appear at the bottom of the window, below the player controls.
 - Select an ad-finding provider and configure its model directly in its Providers row.
 
 ### Fixed

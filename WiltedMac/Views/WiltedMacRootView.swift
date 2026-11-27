@@ -76,9 +76,12 @@ struct WiltedMacRootView: View {
     private var readyRoot: some View {
         // The window's width, not the detail's: the rail hands the detail
         // width back, and a threshold read from it would chase its own result.
-        GeometryReader { proxy in
-            splitView
-                .onChange(of: proxy.size.width, initial: true) { _, width in windowWidth = width }
+        VStack(spacing: 0) {
+            GeometryReader { proxy in
+                splitView
+                    .onChange(of: proxy.size.width, initial: true) { _, width in windowWidth = width }
+            }
+            headlineToast
         }
         .frame(minWidth: WiltedMacShellLayout.windowMinimumWidth(scale: model.textScale))
         .task(id: model.subscriptions.map(\.id)) {
@@ -98,7 +101,6 @@ struct WiltedMacRootView: View {
             }
         }
 #endif
-        .overlay(alignment: .top) { headlineToast }
         .onAppear { considerHeadlineToast(headlineToastCandidate) }
         .onChange(of: headlineToastEventID) { _, _ in
             considerHeadlineToast(headlineToastCandidate)
@@ -198,10 +200,10 @@ struct WiltedMacRootView: View {
             }
             .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
             .padding(.horizontal, WiltedTheme.Spacing.large)
-            .padding(.top, WiltedTheme.Spacing.medium)
+            .padding(.vertical, WiltedTheme.Spacing.medium)
             .onHover(perform: setHeadlineToastHover)
             .accessibilityIdentifier("wilted-headline-toast")
-            .transition(.move(edge: .top).combined(with: .opacity))
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
 #endif
     }
