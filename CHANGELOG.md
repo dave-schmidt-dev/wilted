@@ -15,6 +15,7 @@ All notable changes to this project are documented in this file.
 ### Fixed
 
 - Provider check results survive reopening Wilted.
+- Podcast preparation checks for the current Python runtime module at startup.
 
 ## [0.10.0] - 2026-11-26
 

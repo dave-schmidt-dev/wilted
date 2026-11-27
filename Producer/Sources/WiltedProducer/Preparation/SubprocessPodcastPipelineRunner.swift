@@ -144,7 +144,7 @@ public struct SubprocessPodcastPipelineRunner: PodcastPipelineRunning, Sendable 
             throw PodcastPreparationError.workerUnavailable("no worker at \(configuration.workerURL.path)")
         }
         if let pythonPath = configuration.pythonPath {
-            let requiredRuntimeSource = pythonPath.appending(path: "wilted/ads.py")
+            let requiredRuntimeSource = pythonPath.appending(path: "wilted/execution_capability.py")
             guard fileManager.fileExists(atPath: requiredRuntimeSource.path) else {
                 throw PodcastPreparationError.workerUnavailable(
                     "no Wilted runtime source at \(requiredRuntimeSource.path); "

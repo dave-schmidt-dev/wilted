@@ -63,8 +63,11 @@ extension PodcastPreparationPipelineTests {
         printf '{"ok":true,"echo":%s}' "$request"
         """.write(to: worker, atomically: true, encoding: .utf8)
 
+        let package = directory.appendingPathComponent("wilted")
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        try Data().write(to: package.appendingPathComponent("execution_capability.py"))
         let runner = SubprocessPodcastPipelineRunner(configuration: .init(
-            interpreterURL: URL(fileURLWithPath: "/bin/sh"), workerURL: worker, timeout: 30
+            interpreterURL: URL(fileURLWithPath: "/bin/sh"), workerURL: worker, pythonPath: directory, timeout: 30
         ))
         let statuses = StatusLog()
         let output = try await runner.run(request: Data(#"{"audioPath":"/tmp/a.mp3"}"#.utf8)) { progress in
@@ -143,7 +146,7 @@ extension PodcastPreparationPipelineTests {
             _ = try await runner.run(request: Data("{}".utf8)) { _ in }
             Issue.record("expected the missing runtime source preflight to fail")
         } catch let error as PodcastPreparationError {
-            #expect(String(describing: error).contains(missingSource.path))
+            #expect(String(describing: error).contains(missingSource.appending(path: "wilted/execution_capability.py").path))
             #expect(String(describing: error).contains("restore Producer/Runtime/src"))
             #expect(String(describing: error).contains("WILTED_PIPELINE_PYTHONPATH"))
         }
