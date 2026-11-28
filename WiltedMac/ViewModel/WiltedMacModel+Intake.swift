@@ -27,7 +27,13 @@ extension WiltedMacModel {
     /// A refusal leaves the preparation failed so a direct caller still sees why.
     @discardableResult
     func addArticle() -> Bool {
-        guard let url = Self.articleURL(from: urlDraft) else {
+        addArticle(from: urlDraft)
+    }
+
+    /// Adds a selected link without changing the user's draft in the Add sheet.
+    @discardableResult
+    func addArticle(from address: String) -> Bool {
+        guard let url = Self.articleURL(from: address) else {
             preparation = WiltedMacPreparation(
                 phase: .failed, detail: Self.invalidArticleURLDetail, fraction: nil, cancellable: false
             )

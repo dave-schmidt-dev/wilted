@@ -10,6 +10,7 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 
+- The Mac headline ticker scrolls continuously. Hover to pause, click for story actions, or right-click to add the article to Larder or save it to Notebook.
 - Recent stories keeps the last 24 hours. Save a story to Notebook to keep it longer.
 - Mac podcast shares include the episode page or a labeled Apple Podcasts search link. Shared summaries include the episode title, show name, and link. They use a host name when the transcript or a host credit in the episode notes identifies one.
 - Mac headline alerts appear at the bottom of the window, below the player controls.
@@ -17,6 +18,7 @@ All notable changes to this project are documented in this file.
 
 ### Fixed
 
+- Skip sports removes recognized sports feeds before refresh and removes category-only sports cards from Recent without deleting saved Notebook copies.
 - Mac Reports opens Recent stories in groups of 25. Report settings and spoken bulletins check local voice files in the background so those checks can’t block clicks.
 - Provider check results survive reopening Wilted.
 - Podcast preparation checks for the current Python runtime module at startup.

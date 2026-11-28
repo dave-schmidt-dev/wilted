@@ -45,6 +45,7 @@ final class WiltedMacBulletinHub {
     @ObservationIgnored private var newsReadinessRequest = 0
     @ObservationIgnored private weak var newsReadinessStore: LocalLibraryStore?
     @ObservationIgnored private var knownNewsFeedIDs: Set<String> = []
+    @ObservationIgnored private var newsReadinessTopics: HeadlineTopicFilter?
     @ObservationIgnored private var testBulletinSpeaker: (any BulletinSpeaking)?
 
     @ObservationIgnored private let heardHistory: HeardHeadlineHistory
@@ -204,24 +205,35 @@ final class WiltedMacBulletinHub {
             isCheckingNewsSource = false
             newsReadinessStore = nil
             knownNewsFeedIDs = []
+            newsReadinessTopics = nil
             return
         }
         isCheckingNewsSource = true
+        let topics = currentTopics
         defer {
-            if request == newsReadinessRequest { isCheckingNewsSource = false }
+            if request == newsReadinessRequest {
+                isCheckingNewsSource = false
+                if currentTopics != topics { scheduleNewsSourceReadinessRefreshIfNeeded() }
+            }
         }
         do {
-            let feeds = try await NewsHeadlineCandidateReader.headlineFeeds(in: store)
-            let feedIDs = Set(feeds.map { $0.itemID.rawValue })
-            guard request == newsReadinessRequest, model.store === store else { return }
+            let selection = try await NewsHeadlineCandidateReader.selectHeadlineFeeds(in: store, topics: topics)
+            let feedIDs = Set(selection.feeds.map { $0.itemID.rawValue })
+            guard request == newsReadinessRequest, model.store === store, currentTopics == topics else { return }
+            _ = model.headlineCatalogState.reconcileFilteredStories(
+                at: now(), excludedPublisherIDs: selection.excludedSportsFeedIDs)
+            let filterChanged = newsReadinessTopics != nil && newsReadinessTopics != topics
             let sourceListChanged = knownNewsFeedIDs != feedIDs
             knownNewsFeedIDs = feedIDs
             newsReadinessStore = store
+            newsReadinessTopics = topics
             hasNewsSource = !feedIDs.isEmpty
             hasCheckedNewsSource = true
             let wasProducerRunning = producer != nil
             reconcile()
-            if sourceListChanged, wasProducerRunning, let producer { Task { await producer.sourcesChanged() } }
+            if sourceListChanged, !filterChanged, wasProducerRunning, let producer {
+                Task { await producer.sourcesChanged() }
+            }
         } catch {
             guard request == newsReadinessRequest else { return }
             hasCheckedNewsSource = false
@@ -290,14 +302,23 @@ final class WiltedMacBulletinHub {
     /// Rechecks the conditions when the scheduled task runs, since an explicit read may finish
     /// after this task is queued but before it starts.
     private func scheduleNewsSourceReadinessRefreshIfNeeded() {
+        let topics = currentTopics
         guard let model, canRun, let store = model.store,
-              (!hasCheckedNewsSource || newsReadinessStore !== store), !isCheckingNewsSource else { return }
+              (!hasCheckedNewsSource || newsReadinessStore !== store || newsReadinessTopics != topics),
+              !isCheckingNewsSource else { return }
         Task { @MainActor [weak self] in
             guard let self, let model = self.model, self.canRun, let store = model.store,
-                  (!self.hasCheckedNewsSource || self.newsReadinessStore !== store),
+                  (!self.hasCheckedNewsSource || self.newsReadinessStore !== store
+                    || self.newsReadinessTopics != self.currentTopics),
                   !self.isCheckingNewsSource else { return }
             await self.refreshNewsSourceReadiness()
         }
+    }
+
+    private var currentTopics: HeadlineTopicFilter {
+        guard let model else { return HeadlineTopicFilter() }
+        let settings = model.automationSettings
+        return HeadlineTopicFilter(skipSports: settings.skipSportsHeadlines, words: settings.skippedHeadlineWords)
     }
 
     private func makeProducer() -> BulletinProducer {
@@ -316,13 +337,6 @@ final class WiltedMacBulletinHub {
                 guard let self else { throw CancellationError() }
                 try await self.publisher().publishBulletins(bulletins)
                 await self.channelUpdated(bulletins)
-            },
-            onCandidates: { [weak self] candidates in
-                guard let self else { throw CancellationError() }
-                try await MainActor.run {
-                    guard let model = self.model else { throw CancellationError() }
-                    try model.headlineCatalogState.mergeCandidates(candidates, at: self.now())
-                }
             })
     }
 
@@ -368,15 +382,24 @@ final class WiltedMacBulletinHub {
 
     /// The posts of every followed article feed marked as news. A feed that fails is skipped; the
     /// poll fails only when every feed did.
-    private func newsCandidates() async throws -> [NewsHeadlineCandidate] {
+    func newsCandidates() async throws -> [NewsHeadlineCandidate] {
         guard let model, let store = model.store else { throw CancellationError() }
-        let candidates = try await NewsHeadlineCandidateReader.read(in: store, using: model.podcastFeedClient).candidates
+        let topics = currentTopics
+        let supply = try await NewsHeadlineCandidateReader.read(
+            in: store, using: model.podcastFeedClient, topics: topics)
+        try Task.checkCancellation()
+        guard currentTopics == topics else { throw CancellationError() }
         let projection = try model.headlineCatalogStore.projection(at: now())
         let mutedPublisherIDs = Set(projection.publishers.filter(\.isMuted).map(\.id))
-        return candidates.filter { candidate in
+        let candidates = supply.candidates.filter { candidate in
             guard let publisherID = candidate.feedID else { return true }
             return !mutedPublisherIDs.contains(publisherID)
         }
+        try model.headlineCatalogState.mergeCandidates(
+            candidates,
+            excludedPublisherIDs: supply.excludedSportsFeedIDs,
+            at: now())
+        return candidates
     }
 
     func publisherMuteChanged(_ publisherID: String) {

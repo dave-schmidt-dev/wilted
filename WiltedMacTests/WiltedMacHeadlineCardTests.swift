@@ -167,7 +167,7 @@ final class WiltedMacHeadlineCardTests: XCTestCase {
         XCTAssertTrue(rendered.contains("Remove from Notebook"), rendered)
     }
 
-    func testTickerRendersKeyboardReachableHeadlinesAndUsesPinnedStoryActions() async throws {
+    func testTickerHeadlessFrameAndStoryActionsRender() async throws {
         let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-ready"])
         addTeardownBlock { await model.close() }
         let now = Date(timeIntervalSince1970: 1_800_000_000)
@@ -179,18 +179,39 @@ final class WiltedMacHeadlineCardTests: XCTestCase {
         model.headlineCatalogState.refresh(at: now)
         model.headlineTickerEnabled = true
 
-        let ticker = WiltedMacHeadlineTicker(model: model, stories: [story])
+        let secondStory = try LibraryHeadlineStory(
+            id: "ticker-story-second", title: "Transit board adds late service", publisherID: "wire",
+            publisherName: "City Wire", link: URL(string: "https://wire.example.test/second"),
+            publishedAt: now, firstSeenAt: now, lastSeenAt: now)
+        let ticker = WiltedMacHeadlineTicker(
+            model: model, stories: [story, secondStory], motionPausedForTesting: true)
         let rendered = try WiltedMacHeadless.recognizedText(
             ticker, size: CGSize(width: 900, height: 100)).joined(separator: " ")
-        let source = try WiltedMacHeadless.viewSource("WiltedMacPlayerHeadlineCard.swift")
+        let bitmap = try WiltedMacHeadless.render(ticker, size: CGSize(width: 900, height: 100), scale: 2)
+        let image = NSImage(cgImage: try XCTUnwrap(bitmap.cgImage), size: CGSize(width: 900, height: 100))
+        let attachment = XCTAttachment(image: image)
+        attachment.name = "Synthetic headline ticker frame"
+        attachment.lifetime = .keepAlways
+        add(attachment)
 
         XCTAssertTrue(rendered.contains("Headlines"), rendered)
         XCTAssertTrue(rendered.contains("City Wire"), rendered)
         XCTAssertTrue(rendered.contains("Council approves night service"), rendered)
-        XCTAssertTrue(source.contains(".focused($focusedStoryID, equals: story.id)"), source)
-        XCTAssertTrue(source.contains(".popover(item: $selectedStorySnapshot"), source)
-        XCTAssertTrue(source.contains("WiltedMacPlayerHeadlineCard("), source)
-        XCTAssertTrue(source.contains("queue audio after the current episode"), source)
+        XCTAssertTrue(rendered.contains("Transit board adds late service"), rendered)
+
+        XCTAssertEqual(
+            WiltedMacHeadlineTicker.storyAccessibilityLabel(story),
+            "City Wire: Council approves night service")
+        let menuText = try WiltedMacHeadless.recognizedText(
+            WiltedMacTickerStoryMenu(model: model, snapshot: story),
+            size: CGSize(width: 500, height: 180)).joined(separator: " ")
+        XCTAssertTrue(menuText.contains("Read story"), menuText)
+        XCTAssertTrue(menuText.contains("Add to Larder"), menuText)
+        XCTAssertTrue(menuText.contains("Save to Notebook"), menuText)
+
+        let popoverText = try WiltedMacHeadless.recognizedText(
+            ticker.storyActions(for: story), size: CGSize(width: 600, height: 700)).joined(separator: " ")
+        XCTAssertTrue(popoverText.contains("Add to Larder"), popoverText)
     }
 
     func testTickerShowsAnEmptyStateWhenNoRecentStoriesExist() async throws {

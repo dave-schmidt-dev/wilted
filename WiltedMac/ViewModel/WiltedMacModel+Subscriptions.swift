@@ -391,6 +391,9 @@ extension WiltedMacModel {
     func refreshArticleFeed(
         url: URL, subscribing: Bool, store: LocalLibraryStore, isHeadlineSource: Bool = false
     ) async throws -> (feedID: ItemID, title: String, duplicate: Bool) {
+        if !subscribing, let skipped = try await recognizedSportsHeadlineSource(for: url, in: store) {
+            return (skipped.itemID, skipped.title, false)
+        }
         let document = try await podcastFeedClient.loadArticleFeed(url)
         if subscribing, document.items.isEmpty { throw PodcastFeedHasNoAudio() }
         let feed = try ArticleFeed(
@@ -430,6 +433,18 @@ extension WiltedMacModel {
         }
         setOfferedArticles(outcome.offered, feed: feed)
         return (feed.itemID, feed.title, duplicate)
+    }
+
+    /// Identifies a followed sports-only Headlines feed without fetching its document again.
+    func recognizedSportsHeadlineSource(for url: URL, in store: LocalLibraryStore) async throws -> ArticleFeed? {
+        let feedID = try ItemID.articleFeed(canonicalFeedURL: url)
+        guard let feed = try await store.articleFeed(for: feedID),
+              try await store.isNews(feedID: feedID),
+              automationSettings.skipSportsHeadlines,
+              HeadlineTopicFilter.isRecognizableSportsSource(title: feed.title, url: feed.canonicalURL) else {
+            return nil
+        }
+        return feed
     }
 
     /// Prepares one feed article behind the same admission gate as a pasted article, so text-to-speech

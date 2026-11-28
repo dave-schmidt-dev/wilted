@@ -104,6 +104,18 @@ final class WiltedMacLarderFeedbackTests: XCTestCase {
         XCTAssertNil(model.preparation, "a refused address starts no preparation")
     }
 
+    func testAddingTickerArticleUsesTheSelectedLinkAndPreservesTheDraft() async throws {
+        let model = await WiltedMacHeadless.model(self, ["--wilted-ui-fixture-ready"])
+        addTeardownBlock { await model.close() }
+        model.urlDraft = "unfinished draft"
+        let address = "https://wire.example.test/selected-headline"
+
+        XCTAssertTrue(model.addArticle(from: address))
+        XCTAssertEqual(model.articlePreparationURL?.absoluteString, address)
+        XCTAssertEqual(model.urlDraft, "unfinished draft")
+        XCTAssertEqual(model.preparation?.phase, .preparing)
+    }
+
     func testRetryAfterFailureRerunsTheCanonicalArticleURL() async throws {
         let model = try await bootedModel("larder-feedback-retry")
         let gate = model.preparationGateForTesting

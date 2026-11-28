@@ -50,12 +50,65 @@ final class WiltedMacHeadlineToastTests: XCTestCase {
             (false, true, false, false, 2),
             (false, false, true, false, 2),
             (false, false, false, true, 2),
-            (false, false, false, false, 1)
+            (false, false, false, false, 0)
         ] {
             XCTAssertFalse(WiltedMacHeadlineTickerMotion.shouldAutoScroll(
                 reduceMotion: condition.0, isHovering: condition.1, hasKeyboardFocus: condition.2,
                 isPresentingStory: condition.3, storyCount: condition.4))
         }
+        XCTAssertTrue(WiltedMacHeadlineTickerMotion.shouldAutoScroll(
+            reduceMotion: false, isHovering: false, hasKeyboardFocus: false,
+            isPresentingStory: false, storyCount: 1))
+    }
+
+    func testTickerCrawlWrapsSeamlesslyAndRepeatsEnoughCopies() {
+        XCTAssertEqual(WiltedMacHeadlineTickerMotion.wrapOffset(0, loopWidth: 500), 0)
+        XCTAssertEqual(WiltedMacHeadlineTickerMotion.wrapOffset(530, loopWidth: 500), 30)
+        XCTAssertEqual(WiltedMacHeadlineTickerMotion.wrapOffset(-20, loopWidth: 500), 480)
+        XCTAssertGreaterThan(
+            WiltedMacHeadlineTickerMotion.copiesNeeded(containerWidth: 1_100, loopWidth: 300), 2)
+        XCTAssertEqual(
+            WiltedMacHeadlineTickerMotion.focusedStoryOffset(leadingEdge: 740, leftInset: 12, loopWidth: 1_000),
+            728)
+    }
+
+    func testKeyboardFocusStopsMotionBeforeSeekingEvenIfPauseArrivesLater() {
+        var motion = WiltedMacHeadlineTickerMotionState()
+        let start = Date(timeIntervalSinceReferenceDate: 100)
+        motion.resume(at: start)
+        motion.revealFocusedStory(at: 400, loopWidth: 1_000)
+        motion.pause(at: start.addingTimeInterval(5), loopWidth: 1_000)
+        XCTAssertEqual(motion.offset(at: start.addingTimeInterval(15), loopWidth: 1_000), 400)
+    }
+
+    func testTickerHoverFreezesExactPositionAndPinsIncomingSequenceUntilExit() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let hoverStart = start.addingTimeInterval(4)
+        var motion = WiltedMacHeadlineTickerMotionState()
+        motion.resume(at: start)
+        let visibleOffset = motion.offset(at: hoverStart, loopWidth: 1_000)
+        motion.pause(at: hoverStart, loopWidth: 1_000)
+        XCTAssertEqual(motion.offset(at: hoverStart.addingTimeInterval(30), loopWidth: 1_000), visibleOffset)
+
+        motion.resume(at: hoverStart.addingTimeInterval(30))
+        XCTAssertEqual(
+            motion.offset(at: hoverStart.addingTimeInterval(31), loopWidth: 1_000),
+            WiltedMacHeadlineTickerMotion.wrapOffset(visibleOffset + 36, loopWidth: 1_000))
+
+        let original = try LibraryHeadlineStory(
+            id: "ticker-original", title: "Original lead", publisherID: "wire",
+            publisherName: "City Wire", link: URL(string: "https://wire.example.test/original"),
+            publishedAt: start, firstSeenAt: start, lastSeenAt: start)
+        let prepended = try LibraryHeadlineStory(
+            id: "ticker-prepended", title: "New lead", publisherID: "wire",
+            publisherName: "City Wire", link: URL(string: "https://wire.example.test/new"),
+            publishedAt: start.addingTimeInterval(1), firstSeenAt: start.addingTimeInterval(1),
+            lastSeenAt: start.addingTimeInterval(1))
+        var pin = WiltedMacHeadlineTickerSequencePin()
+        pin.pin([original])
+        XCTAssertEqual(pin.stories(current: [prepended, original]), [original])
+        pin.release()
+        XCTAssertEqual(pin.stories(current: [prepended, original]), [prepended, original])
     }
 
     func testSpeakingEventShowsOnceAndAccountResetAllowsNewStories() throws {

@@ -86,6 +86,14 @@ extension WiltedMacModel {
             var persistedSubscriptionTitle: String?
             var wasAlreadySubscribed = false
             do {
+                if !subscribing, let sportsFeed = try await recognizedSportsHeadlineSource(for: url, in: store) {
+                    result.articleFeedIDs.insert(sportsFeed.itemID)
+                    result.successfulFeedTitles.append(sportsFeed.title)
+                    result.successfulFeedCount += 1
+                    result.feedOutcomes[url] = .done
+                    markFeedRefresh(forURL: url, .done)
+                    continue
+                }
                 let loaded = try await podcastFeedClient.load(url)
                 try Task.checkCancellation()
                 guard requestID == nil || podcastSubscriptionRequestID == requestID else {

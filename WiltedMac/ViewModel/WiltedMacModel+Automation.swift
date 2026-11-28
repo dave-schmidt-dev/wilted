@@ -65,6 +65,12 @@ extension WiltedMacModel {
         let previous = automationSettings
         automationSettings = settings
         preferences.set(data, forKey: Self.automationSettingsPreferenceKey)
+#if canImport(WiltedProducer)
+        if previous.skipSportsHeadlines != settings.skipSportsHeadlines
+            || previous.skippedHeadlineWords != settings.skippedHeadlineWords {
+            _ = headlineCatalogState.reconcileFilteredStories()
+        }
+#endif
         // Turning an override on acts on the Larder the reader is looking at,
         // through the same bulk admission the matching Larder button uses.
         // Without this the setting would only ever affect later arrivals.

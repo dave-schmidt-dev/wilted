@@ -26,8 +26,31 @@ struct HeadlineTopicFilter: Equatable, Sendable {
         "ryder cup", "six nations", "playoffs", "playoff", "transfer window", "quarterback", "touchdown"
     ].map(words(in:))
 
+    /// Brand names that identify sports publishers without using the word "sport".
+    private static let sportsPublisherPhrases = [
+        "espn", "sportsnet", "eurosport", "bbc sport", "sky sports", "fox sports", "cbs sports", "nbc sports"
+    ].map(words(in:))
+
     /// Link path parts that mark a sports section.
     static let sportsSections: Set<String> = ["sport", "sports", "football", "soccer"]
+
+    /// A conservative source-level check used before loading a feed document.
+    /// It deliberately inspects only the source label and URL, never story content.
+    static func isRecognizableSportsSource(title: String, url: URL) -> Bool {
+        let titleWords = words(in: title)
+        if sportsPublisherPhrases.contains(where: { contains(titleWords, $0) }) { return true }
+        let broadNewsWords: Set<String> = ["news", "weather", "world", "local", "general", "politics"]
+        let broadWordCount = Set(titleWords).intersection(broadNewsWords).count
+        if broadWordCount < 2,
+           sportsPhrases.contains(where: { contains(titleWords, $0) }) { return true }
+
+        let urlParts = (url.host.map { $0.split(separator: ".").map(String.init) } ?? []) + url.pathComponents
+        return urlParts.contains { part in
+            let partWords = words(in: part)
+            return sportsSections.contains(part.lowercased())
+                || (sportsPhrases + sportsPublisherPhrases).contains(where: { contains(partWords, $0) })
+        }
+    }
 
     var isEmpty: Bool { !skipSports && customPhrases.isEmpty }
 

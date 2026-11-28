@@ -10,6 +10,7 @@ private nonisolated(unsafe) var headlineCatalogStateKey: UInt8 = 0
 final class WiltedMacHeadlineCatalogState {
     @ObservationIgnored private let store: WiltedMacHeadlineCatalogStore
     @ObservationIgnored private weak var model: WiltedMacModel?
+    @ObservationIgnored private var appliedTopics: HeadlineTopicFilter?
     private(set) var projection: LibraryHeadlineProjection?
     private(set) var projectionMessage: String?
     private(set) var actionMessage: String?
@@ -18,15 +19,57 @@ final class WiltedMacHeadlineCatalogState {
     init(model: WiltedMacModel) {
         self.model = model
         store = model.headlineCatalogStore
-        do { projection = try store.projection(at: Date()) }
+        do {
+            let filter = Self.topicFilter(model)
+            projection = try store.pruneRecent(
+                matching: { filter.skips(title: $0.title, link: $0.link) },
+                skipKnownSports: filter.skipSports, at: Date())
+            appliedTopics = filter
+        }
         catch { projectionMessage = "Recent stories could not be loaded." }
+    }
+
+    private static func topicFilter(_ model: WiltedMacModel) -> HeadlineTopicFilter {
+        HeadlineTopicFilter(
+            skipSports: model.automationSettings.skipSportsHeadlines,
+            words: model.automationSettings.skippedHeadlineWords)
+    }
+
+    func reconcileFilteredStories(
+        at date: Date = Date(),
+        excludedPublisherIDs: Set<String> = [],
+        classifiedSportsStoryIDs: Set<String> = []
+    ) -> Bool {
+        guard let model else { return false }
+        let filter = Self.topicFilter(model)
+        do {
+            let previousRevision = projection?.revision
+            projection = try store.pruneRecent(matching: { story in
+                filter.skips(title: story.title, link: story.link)
+            }, classifiedSportsStoryIDs: classifiedSportsStoryIDs,
+               excludedPublisherIDs: excludedPublisherIDs,
+               skipKnownSports: filter.skipSports, at: date)
+            projectionMessage = nil
+            appliedTopics = filter
+            if previousRevision != projection?.revision {
+                model.librarySyncController?.requestPublish()
+            }
+            return true
+        } catch {
+            projectionMessage = "Recent stories could not be updated. Try again later."
+            return false
+        }
     }
 
     func refresh(at date: Date = Date()) {
         do {
             let previousRevision = projection?.revision
-            projection = try store.projection(at: date)
+            let filter = model.map(Self.topicFilter)
+            projection = try store.pruneRecent(matching: { story in
+                filter?.skips(title: story.title, link: story.link) ?? false
+            }, skipKnownSports: filter?.skipSports ?? false, at: date)
             projectionMessage = nil
+            appliedTopics = filter
             if previousRevision != projection?.revision {
                 model?.librarySyncController?.requestPublish()
             }
@@ -35,8 +78,55 @@ final class WiltedMacHeadlineCatalogState {
         }
     }
 
-    func mergeCandidates(_ candidates: [NewsHeadlineCandidate], at date: Date) throws {
-        let stories = candidates.compactMap { candidate -> LibraryHeadlineStory? in
+    /// Reads current local state for sync, then reuses the same topic-filtered projection as Reports.
+    func projectionForPublication(at date: Date) -> LibraryHeadlineProjection? {
+        guard let model else { return projection }
+        let filter = Self.topicFilter(model)
+        do {
+            let latest = try store.projection(at: date)
+            guard latest.revision != projection?.revision || appliedTopics != filter else { return projection }
+            let previousRevision = projection?.revision
+            projection = try store.pruneRecent(matching: { story in
+                filter.skips(title: story.title, link: story.link)
+            }, skipKnownSports: filter.skipSports, at: date)
+            projectionMessage = nil
+            appliedTopics = filter
+            if previousRevision != projection?.revision {
+                model.librarySyncController?.requestPublish()
+            }
+            return projection
+        } catch {
+            projectionMessage = "Recent stories could not be loaded. Try again later."
+            return nil
+        }
+    }
+
+    func mergeCandidates(
+        _ candidates: [NewsHeadlineCandidate],
+        excludedPublisherIDs: Set<String> = [],
+        at date: Date
+    ) throws {
+        let filter = model.map(Self.topicFilter) ?? HeadlineTopicFilter()
+        let sportsOnlyFilter = HeadlineTopicFilter(skipSports: true)
+        let classifiedSportsIDs = Set(candidates.filter {
+            sportsOnlyFilter.skips(title: $0.title, link: $0.link, categories: $0.categories)
+        }.map(\.id))
+        let filteredCandidates = candidates.filter { candidate in
+            !filter.skips(title: candidate.title, link: candidate.link, categories: candidate.categories)
+        }
+        let previousRevision = projection?.revision
+        do {
+            projection = try store.pruneRecent(matching: { story in
+                filter.skips(title: story.title, link: story.link)
+            }, classifiedSportsStoryIDs: classifiedSportsIDs,
+               excludedPublisherIDs: excludedPublisherIDs,
+               skipKnownSports: filter.skipSports, at: date)
+        } catch {
+            projectionMessage = "Recent stories could not be updated. Try again later."
+            throw error
+        }
+
+        let stories = filteredCandidates.compactMap { candidate -> LibraryHeadlineStory? in
             let title = String(candidate.title.trimmingCharacters(in: .whitespacesAndNewlines)
                 .prefix(LibraryHeadlineStory.maximumTitleLength))
             let publisherName = String(candidate.feedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -47,13 +137,17 @@ final class WiltedMacHeadlineCatalogState {
                 link: candidate.link, publishedAt: candidate.publishedAt, firstSeenAt: date, lastSeenAt: date)
         }
         do {
-            let previousRevision = projection?.revision
-            projection = try store.mergeRecent(stories, at: date)
+            projection = try store.mergeRecent(
+                stories, classifiedSportsStoryIDs: classifiedSportsIDs, at: date)
             projectionMessage = nil
+            appliedTopics = filter
             if previousRevision != projection?.revision {
                 model?.librarySyncController?.requestPublish()
             }
         } catch {
+            if previousRevision != projection?.revision {
+                model?.librarySyncController?.requestPublish()
+            }
             projectionMessage = "Recent stories could not be updated. Try again later."
             throw error
         }

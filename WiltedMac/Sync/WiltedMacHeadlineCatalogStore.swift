@@ -60,6 +60,8 @@ final class WiltedMacHeadlineCatalogStore {
         var receipts: [String: Receipt]
         /// Local ordering metadata; old version 1 files decode without it.
         var expiredIdentityAnchors: [String: Date]?
+        /// Sports classifications learned from feed categories; this stays local to Mac.
+        var sportsStoryIDs: [String]?
     }
 
     private let fileURL: URL?
@@ -69,6 +71,8 @@ final class WiltedMacHeadlineCatalogStore {
     private var receipts: [String: Receipt] = [:]
     /// Keeps bounded expired identities ranked across restarts without changing the CloudKit shape.
     private var expiredIdentityAnchors: [String: Date] = [:]
+    /// Category-only sports markers stay beside the local catalog, not in the shared projection.
+    private var sportsStoryIDs: Set<String> = []
     private var loadFailed = false
 
     init(
@@ -89,7 +93,9 @@ final class WiltedMacHeadlineCatalogStore {
             let stored = try JSONDecoder().decode(Stored.self, from: data)
             guard stored.version == 1, Self.isWithinBounds(stored.projection),
                   stored.receipts.count <= Self.maximumReceipts,
-                  (stored.expiredIdentityAnchors?.count ?? 0) <= Self.maximumExpiredIdentityCount else {
+                  (stored.expiredIdentityAnchors?.count ?? 0) <= Self.maximumExpiredIdentityCount,
+                  (stored.sportsStoryIDs?.count ?? 0) <= Self.maximumSportsStoryCount,
+                  Set(stored.sportsStoryIDs ?? []).count == (stored.sportsStoryIDs ?? []).count else {
                 throw LibraryTransportError.transport("headline catalog file exceeds its supported format")
             }
             current = stored.projection
@@ -98,6 +104,9 @@ final class WiltedMacHeadlineCatalogStore {
             expiredIdentityAnchors = Dictionary(uniqueKeysWithValues: stored.projection.expiredIdentities.map {
                 ($0.id, storedAnchors[$0.id] ?? .distantPast)
             })
+            let storyIDs = Set((stored.sportsStoryIDs ?? []).filter { !$0.isEmpty && $0.count <= 1_024 })
+            let currentStoryIDs = Set((stored.projection.recent + stored.projection.saved).map(\.id))
+            sportsStoryIDs = storyIDs.intersection(currentStoryIDs)
         } catch {
             loadFailed = true
             headlineCatalogLog.error("Headline catalog was unreadable; writes are disabled until repaired: \(String(describing: error), privacy: .public)")
@@ -112,7 +121,11 @@ final class WiltedMacHeadlineCatalogStore {
     }
 
     /// Merges a Mac feed refresh while retaining saved cards and per-field revisions.
-    func mergeRecent(_ stories: [LibraryHeadlineStory], at date: Date) throws -> LibraryHeadlineProjection {
+    func mergeRecent(
+        _ stories: [LibraryHeadlineStory],
+        classifiedSportsStoryIDs: Set<String> = [],
+        at date: Date
+    ) throws -> LibraryHeadlineProjection {
         try ensureWritable()
         guard date.timeIntervalSinceReferenceDate.isFinite else {
             throw LibraryTransportError.transport("headline catalog date is invalid")
@@ -208,10 +221,68 @@ final class WiltedMacHeadlineCatalogStore {
             publishers: publishersByID.values.sorted { $0.id < $1.id },
             expiredIdentities: expiredByID.values.sorted { $0.id < $1.id },
             at: date)
-        guard next != current else { return current }
-        try save(projection: next, receipts: receipts, expiredIdentityAnchors: expiredAnchors)
+        let retainedSportsStoryIDs = sportsStoryIDs
+            .union(classifiedSportsStoryIDs)
+            .intersection(Set((recent + saved).map(\.id)))
+        guard next != current || retainedSportsStoryIDs != sportsStoryIDs else { return current }
+        try save(
+            projection: next, receipts: receipts, expiredIdentityAnchors: expiredAnchors,
+            sportsStoryIDs: retainedSportsStoryIDs)
         current = next
         expiredIdentityAnchors = expiredAnchors
+        sportsStoryIDs = retainedSportsStoryIDs
+        return current
+    }
+
+    /// Removes topic-filtered stories from Recent while retaining Notebook and sync identities.
+    /// Category markers and source IDs let the Mac clean cached stories without changing the shared schema.
+    func pruneRecent(
+        matching isExcluded: (LibraryHeadlineStory) -> Bool,
+        classifiedSportsStoryIDs: Set<String> = [],
+        excludedPublisherIDs: Set<String> = [],
+        skipKnownSports: Bool = true,
+        at date: Date
+    ) throws -> LibraryHeadlineProjection {
+        try ensureWritable()
+        guard date.timeIntervalSinceReferenceDate.isFinite else {
+            throw LibraryTransportError.transport("headline catalog date is invalid")
+        }
+
+        let cutoff = date.addingTimeInterval(-LibraryHeadlineProjection.recentRetention)
+        let savedIDs = Set(current.saved.map(\.id))
+        let observedSports = classifiedSportsStoryIDs
+        let knownSports = sportsStoryIDs.union(observedSports)
+        var expiredByID = Dictionary(uniqueKeysWithValues: current.expiredIdentities.map { ($0.id, $0) })
+        var expiredAnchors = expiredIdentityAnchors
+        let filteredRecent = try current.recent.filter { story in
+            let isExpired = story.recentAnchorAt < cutoff
+            let isTopicExcluded = (skipKnownSports
+                && (knownSports.contains(story.id) || excludedPublisherIDs.contains(story.publisherID)))
+                || isExcluded(story)
+            guard isExpired || isTopicExcluded else { return true }
+            if !savedIDs.contains(story.id) {
+                expiredByID[story.id] = try LibraryHeadlineStoryIdentity(
+                    id: story.id, publisherID: story.publisherID, link: story.link,
+                    savedRevision: story.savedRevision)
+                expiredAnchors[story.id] = story.recentAnchorAt
+            }
+            return false
+        }
+        Self.retainNewestExpiredIdentities(&expiredByID, anchors: &expiredAnchors)
+        let expired = expiredByID.values.sorted { $0.id < $1.id }
+        let retainedSportsStoryIDs = sportsStoryIDs.union(observedSports)
+            .intersection(Set((filteredRecent + current.saved).map(\.id)))
+        let next = try changedProjection(
+            recent: filteredRecent, saved: current.saved, publishers: current.publishers,
+            expiredIdentities: expired, at: date)
+        guard next != current || expiredAnchors != expiredIdentityAnchors
+                || retainedSportsStoryIDs != sportsStoryIDs else { return current }
+        try save(
+            projection: next, receipts: receipts, expiredIdentityAnchors: expiredAnchors,
+            sportsStoryIDs: retainedSportsStoryIDs)
+        current = next
+        expiredIdentityAnchors = expiredAnchors
+        sportsStoryIDs = retainedSportsStoryIDs
         return current
     }
 
@@ -374,28 +445,7 @@ final class WiltedMacHeadlineCatalogStore {
     }
 
     private func pruneRecent(at date: Date) throws {
-        guard date.timeIntervalSinceReferenceDate.isFinite else {
-            throw LibraryTransportError.transport("headline catalog date is invalid")
-        }
-        let cutoff = date.addingTimeInterval(-LibraryHeadlineProjection.recentRetention)
-        let recent = current.recent.filter { $0.recentAnchorAt >= cutoff }
-        var expiredByID = Dictionary(uniqueKeysWithValues: current.expiredIdentities.map { ($0.id, $0) })
-        var expiredAnchors = expiredIdentityAnchors
-        let savedIDs = Set(current.saved.map(\.id))
-        for story in current.recent where story.recentAnchorAt < cutoff && !savedIDs.contains(story.id) {
-            expiredByID[story.id] = try LibraryHeadlineStoryIdentity(
-                id: story.id, publisherID: story.publisherID, link: story.link, savedRevision: story.savedRevision)
-            expiredAnchors[story.id] = story.recentAnchorAt
-        }
-        Self.retainNewestExpiredIdentities(&expiredByID, anchors: &expiredAnchors)
-        let expired = expiredByID.values.sorted { $0.id < $1.id }
-        guard recent != current.recent || expired != current.expiredIdentities else { return }
-        let next = try changedProjection(
-            recent: recent, saved: current.saved, publishers: current.publishers,
-            expiredIdentities: expired, at: date)
-        try save(projection: next, receipts: receipts, expiredIdentityAnchors: expiredAnchors)
-        current = next
-        expiredIdentityAnchors = expiredAnchors
+        _ = try pruneRecent(matching: { _ in false }, skipKnownSports: false, at: date)
     }
 
     private func replaceProjection(
@@ -436,16 +486,20 @@ final class WiltedMacHeadlineCatalogStore {
     private func save(
         projection: LibraryHeadlineProjection,
         receipts: [String: Receipt],
-        expiredIdentityAnchors: [String: Date]? = nil
+        expiredIdentityAnchors: [String: Date]? = nil,
+        sportsStoryIDs: Set<String>? = nil
     ) throws {
-        guard Self.isWithinBounds(projection), receipts.count <= Self.maximumReceipts else {
+        let sportsIDs = sportsStoryIDs ?? self.sportsStoryIDs
+        guard Self.isWithinBounds(projection), receipts.count <= Self.maximumReceipts,
+              sportsIDs.count <= Self.maximumSportsStoryCount else {
             throw LibraryTransportError.transport("headline catalog exceeds its bounded storage")
         }
         guard let fileURL else { return }
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let data = try JSONEncoder().encode(Stored(
             projection: projection, receipts: receipts,
-            expiredIdentityAnchors: expiredIdentityAnchors ?? self.expiredIdentityAnchors))
+            expiredIdentityAnchors: expiredIdentityAnchors ?? self.expiredIdentityAnchors,
+            sportsStoryIDs: sportsIDs.sorted()))
         let result = try writeBytes(data, fileURL)
         if case let .replacedDirectorySyncUncertain(failure) = result {
             headlineCatalogLog.warning("Headline catalog landed but its folder sync is uncertain: \(failure.description, privacy: .public)")
@@ -462,6 +516,7 @@ final class WiltedMacHeadlineCatalogStore {
         * LibraryHeadlineProjectionIndex.maximumPagesPerSection
     private static let maximumPublisherCount = LibraryHeadlineProjectionPage.maximumPublishers
         * LibraryHeadlineProjectionIndex.maximumPagesPerSection
+    private static let maximumSportsStoryCount = maximumStoryCount * 2
     static let maximumExpiredIdentityCount = LibraryHeadlineProjectionPage.maximumExpiredIdentities
         * LibraryHeadlineProjectionIndex.maximumPagesPerSection
 

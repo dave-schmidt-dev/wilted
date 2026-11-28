@@ -323,7 +323,7 @@ extension WiltedMacModel {
             approvedOwner: { [weak account] in await account?.approvedPublicationOwner },
             headlineProjectionProvider: { [weak self] in
                 guard let self else { return nil }
-                return try? self.headlineCatalogStore.projection(at: Date())
+                return self.headlineCatalogState.projectionForPublication(at: Date())
             },
             notebookAcknowledged: { entry, version, owner in
                 guard let scope = try? NotebookLocalScope(ownerToken: owner, deviceID: deviceID) else { return }

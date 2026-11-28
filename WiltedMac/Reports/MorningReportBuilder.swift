@@ -314,7 +314,7 @@ struct MorningReportBuilder: Sendable {
         _ store: LocalLibraryStore, using client: PodcastFeedClient, since cutoff: Date, through now: Date,
         topics: HeadlineTopicFilter
     ) async throws -> MorningReportHeadlines {
-        let supply = try await NewsHeadlineCandidateReader.read(in: store, using: client)
+        let supply = try await NewsHeadlineCandidateReader.read(in: store, using: client, topics: topics)
         let fresh = supply.candidates.compactMap { candidate -> (publishedAt: Date, title: String)? in
             guard let publishedAt = candidate.publishedAt,
                   publishedAt >= cutoff, publishedAt <= now,

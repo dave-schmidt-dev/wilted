@@ -93,11 +93,10 @@ struct WiltedMacReportsCard: View {
                         #endif
                         topicsSection
                             .padding(.leading, WiltedTheme.Spacing.large)
-                            .disabled(!settings.reportEnabled && !(settings.interruptionsEnabled && settings.headlinesEnabled))
                         Toggle("Scrolling news ticker", isOn: Binding(get: { model.headlineTickerEnabled },
                             set: { model.headlineTickerEnabled = $0 }))
                             .accessibilityIdentifier("wilted-reports-headline-ticker")
-                        note("Shows recent stories even when spoken bulletins are off. Select one to open the article, queue its audio after the current episode, or save it to Notebook.",
+                        note("Hover to pause. Click a headline for story actions, or right-click to add it to Larder or Notebook.",
                              id: "wilted-reports-headline-ticker-explanation")
                         Stepper(
                             value: Binding(
@@ -386,7 +385,7 @@ struct WiltedMacReportsCard: View {
         if let line = Self.skippedNote(model.bulletinHub.status.skippedHeadlineCount) {
             note(line, id: "wilted-reports-skipped-count")
         }
-        note("These filters apply to spoken headlines and the daily report.",
+        note("Skip sports also keeps sports headlines out of Recent stories and the ticker.",
              id: "wilted-reports-topic-filter-explanation")
     }
 
