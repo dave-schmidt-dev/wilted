@@ -96,7 +96,7 @@ struct WiltedMacReportsCard: View {
                         Toggle("Scrolling news ticker", isOn: Binding(get: { model.headlineTickerEnabled },
                             set: { model.headlineTickerEnabled = $0 }))
                             .accessibilityIdentifier("wilted-reports-headline-ticker")
-                        note("Hover to pause. Click a headline for story actions, or right-click to add it to Larder or Notebook.",
+                        note("Headlines scroll even when spoken bulletins are off. Hover to pause. Click for story actions or right-click to add to Larder or Notebook.",
                              id: "wilted-reports-headline-ticker-explanation")
                         Stepper(
                             value: Binding(

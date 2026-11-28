@@ -99,7 +99,8 @@ final class WiltedMacReportsCardTests: XCTestCase {
             "Point to one to keep it open",
             "Scrolling news ticker",
             "spoken bulletins are off",
-            "queue its audio after the current episode"
+            "Hover to pause",
+            "right-click to add to Larder or Notebook"
         ] {
             XCTAssertTrue(rendered.localizedCaseInsensitiveContains(detail), "Missing \(detail) in: \(rendered)")
         }
